@@ -13,10 +13,25 @@ interface Props {
   onRefresh: () => void;
 }
 
+const PRESET_IMAGES = [
+  { label: 'Ubuntu 24.04', value: 'ubuntu:24.04' },
+  { label: 'Ubuntu 22.04', value: 'ubuntu:22.04' },
+  { label: 'Debian Bookworm', value: 'debian:bookworm' },
+  { label: 'NVIDIA CUDA 12.8 (Ubuntu 24.04)', value: 'nvidia/cuda:12.8.0-base-ubuntu24.04' },
+  { label: 'NVIDIA CUDA 12.8 (Ubuntu 22.04)', value: 'nvidia/cuda:12.8.0-base-ubuntu22.04' },
+  { label: 'Python 3.12', value: 'python:3.12' },
+  { label: 'Node.js 22', value: 'node:22' },
+  { label: 'ROS 2 Jazzy', value: 'ros:jazzy' },
+  { label: 'Custom', value: '__custom__' },
+] as const;
+
 export function ImagesPanel({ registry, onRefresh }: Props) {
   const [key, setKey] = useState('');
-  const [baseImage, setBaseImage] = useState('');
+  const [selectedPreset, setSelectedPreset] = useState('');
+  const [customImage, setCustomImage] = useState('');
   const [hasAgent, setHasAgent] = useState(true);
+
+  const baseImage = selectedPreset === '__custom__' ? customImage : selectedPreset;
   const [building, setBuilding] = useState(false);
   const [buildLog, setBuildLog] = useState('');
   const [error, setError] = useState('');
@@ -67,7 +82,8 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
       } finally {
         setBuilding(false);
         setKey('');
-        setBaseImage('');
+        setSelectedPreset('');
+        setCustomImage('');
         onRefresh();
       }
     } else {
@@ -84,7 +100,8 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
           return;
         }
         setKey('');
-        setBaseImage('');
+        setSelectedPreset('');
+        setCustomImage('');
         onRefresh();
       } catch (err) {
         setError((err as Error).message);
@@ -145,14 +162,29 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
         </label>
         <label>
           Base Image
-          <input
-            type="text"
-            value={baseImage}
-            placeholder="e.g. nvidia/cuda:12.0.0-base-ubuntu22.04"
-            onChange={(e) => setBaseImage(e.target.value)}
+          <select
+            value={selectedPreset}
+            onChange={(e) => setSelectedPreset(e.target.value)}
             disabled={building}
-          />
+          >
+            <option value="" disabled>Select a base image…</option>
+            {PRESET_IMAGES.map((p) => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
         </label>
+        {selectedPreset === '__custom__' && (
+          <label>
+            Custom Image
+            <input
+              type="text"
+              value={customImage}
+              placeholder="e.g. myregistry/myimage:tag"
+              onChange={(e) => setCustomImage(e.target.value)}
+              disabled={building}
+            />
+          </label>
+        )}
         <label className="checkbox-row">
           <input
             type="checkbox"
