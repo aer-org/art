@@ -23,6 +23,7 @@ import { PropertiesPanel } from './panels/PropertiesPanel';
 import { ErrorPolicyPanel } from './panels/ErrorPolicyPanel';
 import { AgentListPanel } from './panels/AgentListPanel';
 import { FilesPanel } from './panels/FilesPanel';
+import { ProjectsPanel, type ProjectFile } from './panels/ProjectsPanel';
 import { Onboarding } from './components/Onboarding';
 import { AgentChat } from './components/AgentChat';
 import { deserialize } from './utils/deserialize';
@@ -43,6 +44,7 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [artDirs, setArtDirs] = useState<{ name: string; files: string[] }[]>([]);
+  const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
   const [dirsVersion, setDirsVersion] = useState(0);
   const [agentChatDone, setAgentChatDone] = useState(false);
   const [agentRunning, setAgentRunning] = useState<boolean | null>(null);
@@ -68,6 +70,10 @@ export default function App() {
     fetch('/api/dirs')
       .then((r) => r.json())
       .then((dirs: { name: string; files: string[] }[]) => setArtDirs(dirs))
+      .catch(() => {});
+    fetch('/api/project-files')
+      .then((r) => r.json())
+      .then((files: ProjectFile[]) => setProjectFiles(files))
       .catch(() => {});
   }, [dirsVersion]);
 
@@ -556,6 +562,7 @@ export default function App() {
                 onChange={handleUpdateErrorPolicy}
               />
               <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} onOpenChat={handleOpenChat} />
+              {isSingleMode && <ProjectsPanel files={projectFiles} />}
             </>
           )}
         </div>

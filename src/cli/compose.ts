@@ -323,6 +323,23 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       return;
     }
 
+    // API: list project files (parent of __art__/, excluding __art__ and dotfiles)
+    if (method === 'GET' && parsed.pathname === '/api/project-files') {
+      try {
+        const projectDir = path.dirname(artDir);
+        const entries = fs.readdirSync(projectDir, { withFileTypes: true });
+        const files = entries
+          .filter((e) => !e.name.startsWith('.') && e.name !== path.basename(artDir))
+          .map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(files));
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to read project files' }));
+      }
+      return;
+    }
+
     // API: stage descriptions (for onboarding)
     if (method === 'GET' && parsed.pathname === '/api/stage-descriptions') {
       const descriptions = Object.values(STAGE_TEMPLATES).map((t) => ({

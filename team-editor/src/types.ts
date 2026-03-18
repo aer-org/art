@@ -57,6 +57,8 @@ export function getMountOptions(
       opts[key] = ['rw', 'ro', 'null'];
     }
   }
+  // Project mount (parent of __art__/) — always available
+  opts['project'] = ['ro', 'rw', 'null'];
   return opts;
 }
 

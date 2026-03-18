@@ -11,6 +11,27 @@ function artApiPlugin(): Plugin {
   return {
     name: 'art-api',
     configureServer(server) {
+      server.middlewares.use('/api/project-files', (_req, res) => {
+        const artDir = process.env.ART_PROJECT_DIR
+        if (!artDir) {
+          res.statusCode = 404
+          res.end(JSON.stringify({ error: 'ART_PROJECT_DIR not set' }))
+          return
+        }
+        const projectDir = path.dirname(artDir)
+        try {
+          const entries = fs.readdirSync(projectDir, { withFileTypes: true })
+          const files = entries
+            .filter((e: fs.Dirent) => !e.name.startsWith('.') && e.name !== path.basename(artDir))
+            .map((e: fs.Dirent) => ({ name: e.name, isDirectory: e.isDirectory() }))
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(files))
+        } catch {
+          res.statusCode = 500
+          res.end(JSON.stringify({ error: 'Failed to read project files' }))
+        }
+      })
+
       server.middlewares.use('/api/pipeline', (req, res) => {
         const artDir = process.env.ART_PROJECT_DIR
         if (!artDir) {
