@@ -81,36 +81,50 @@ function maskToken(token: string): string {
   return token.slice(0, 8) + '...' + token.slice(-4);
 }
 
-async function validateToken(token: string): Promise<boolean> {
+/**
+ * Ensure authentication is available, prompting interactively if needed.
+ * Sets process.env._ART_OAUTH_TOKEN when a token is found or provided.
+ */
+export async function ensureAuth(): Promise<void> {
+  // 1. Check .env in project dir for a non-empty token
+  const envFile = path.join(process.cwd(), '.env');
   try {
-    const headers: Record<string, string> = {
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    };
-    // OAuth tokens use Authorization: Bearer, API keys use x-api-key
-    if (token.startsWith('sk-ant-oat')) {
-      headers['authorization'] = `Bearer ${token}`;
-    } else {
-      headers['x-api-key'] = token;
+    const env = fs.readFileSync(envFile, 'utf-8');
+    for (const line of env.split('\n')) {
+      const trimmed = line.trim();
+      if (
+        (trimmed.startsWith('CLAUDE_CODE_OAUTH_TOKEN=') ||
+          trimmed.startsWith('ANTHROPIC_AUTH_TOKEN=')) &&
+        trimmed.split('=', 2)[1]?.trim()
+      ) {
+        const val = trimmed.split('=', 2)[1]!.trim();
+        console.log(`Using token from .env (${maskToken(val)})`);
+        return;
+      }
     }
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20241022',
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
-    });
-    return res.ok;
   } catch {
-    return false;
+    /* no .env */
   }
-}
 
-async function promptForToken(): Promise<string> {
+  // 2. Check saved token from previous art setup
+  const saved = readSavedToken();
+  if (saved) {
+    console.log(`Using saved token (${maskToken(saved)})`);
+    process.env._ART_OAUTH_TOKEN = saved;
+    return;
+  }
+
+  // 3. Try Claude CLI credentials
+  const cliToken = readClaudeCliToken();
+  if (cliToken) {
+    console.log(`Using Claude CLI token (${maskToken(cliToken)})`);
+    process.env._ART_OAUTH_TOKEN = cliToken;
+    return;
+  }
+
+  // 4. No token found — ask user to provide one
   console.log(
-    'No valid Claude authentication found.\n\n' +
+    'No Claude authentication found.\n\n' +
       'To get a token, run:\n\n' +
       '  claude setup-token\n\n' +
       'Then paste the token below.\n',
@@ -130,67 +144,8 @@ async function promptForToken(): Promise<string> {
     console.error('No token provided. Exiting.');
     process.exit(1);
   }
-  return trimmed;
-}
 
-/**
- * Ensure authentication is available, prompting interactively if needed.
- * Validates the token against the Anthropic API before accepting it.
- * Sets process.env._ART_OAUTH_TOKEN when a valid token is confirmed.
- */
-export async function ensureAuth(): Promise<void> {
-  // 1. Check .env in project dir for a non-empty token
-  const envFile = path.join(process.cwd(), '.env');
-  try {
-    const env = fs.readFileSync(envFile, 'utf-8');
-    for (const line of env.split('\n')) {
-      const trimmed = line.trim();
-      if (
-        (trimmed.startsWith('CLAUDE_CODE_OAUTH_TOKEN=') ||
-          trimmed.startsWith('ANTHROPIC_AUTH_TOKEN=')) &&
-        trimmed.split('=', 2)[1]?.trim()
-      ) {
-        const val = trimmed.split('=', 2)[1]!.trim();
-        console.log(`Using token from .env (${maskToken(val)})`);
-        if (await validateToken(val)) return;
-        console.log('Token from .env is invalid.\n');
-      }
-    }
-  } catch {
-    /* no .env */
-  }
-
-  // 2. Check saved token from previous art setup
-  const saved = readSavedToken();
-  if (saved) {
-    console.log(`Using saved token (${maskToken(saved)})`);
-    if (await validateToken(saved)) {
-      process.env._ART_OAUTH_TOKEN = saved;
-      return;
-    }
-    console.log('Saved token is invalid or expired.\n');
-  }
-
-  // 3. Try Claude CLI credentials
-  const cliToken = readClaudeCliToken();
-  if (cliToken) {
-    console.log(`Using Claude CLI token (${maskToken(cliToken)})`);
-    if (await validateToken(cliToken)) {
-      process.env._ART_OAUTH_TOKEN = cliToken;
-      return;
-    }
-    console.log('Claude CLI token is invalid or expired.\n');
-  }
-
-  // 4. No valid token found — prompt user
-  const token = await promptForToken();
-  if (await validateToken(token)) {
-    saveToken(token);
-    process.env._ART_OAUTH_TOKEN = token;
-    console.log('Token saved to ~/.config/aer-art/token\n');
-    return;
-  }
-
-  console.error('Provided token is invalid. Exiting.');
-  process.exit(1);
+  saveToken(trimmed);
+  process.env._ART_OAUTH_TOKEN = trimmed;
+  console.log(`Token saved (${maskToken(trimmed)})\n`);
 }
