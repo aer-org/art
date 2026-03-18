@@ -217,7 +217,6 @@ export class PipelineRunner {
                 additionalMounts: parentMounts,
                 additionalDevices: stageConfig.devices || [],
                 runAsRoot: stageConfig.runAsRoot === true,
-                groupReadonly: true,
                 internalMounts,
             },
         };
