@@ -9,6 +9,7 @@ interface Props {
   files: AgentFiles;
   onChange: (files: AgentFiles) => void;
   artDirs?: DirInfo[];
+  onOpenChat?: () => void;
 }
 
 const DIR_DESCRIPTIONS: Record<string, string> = {
@@ -22,7 +23,7 @@ const DIR_DESCRIPTIONS: Record<string, string> = {
   logs: 'Debug logs',
 };
 
-export function FilesPanel({ artDirs }: Props) {
+export function FilesPanel({ artDirs, onOpenChat }: Props) {
   const dirs = artDirs && artDirs.length > 0 ? artDirs : [];
 
   if (dirs.length === 0) {
@@ -43,6 +44,11 @@ export function FilesPanel({ artDirs }: Props) {
             <span>{dir.name}/</span>
             {dir.files.length > 0 && (
               <span className="file-count">{dir.files.length}</span>
+            )}
+            {dir.name === 'plan' && onOpenChat && (
+              <button className="ai-edit-btn" onClick={onOpenChat}>
+                AI edit
+              </button>
             )}
           </div>
           {dir.files.length > 0 ? (

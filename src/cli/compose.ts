@@ -105,7 +105,7 @@ Then write /workspace/group/plan/PLAN.md with:
 2. Specific first tasks
 3. Success metrics
 
-After writing both files, let the user know what you found and ask if they'd like to discuss or adjust the plan. Continue the conversation — do not exit until the user is done.
+After writing both files, summarize your findings in 2-3 sentences. The user can then discuss and ask you to modify either file. Continue the conversation — do not exit until the user is done.
 
 Use Korean if the project contains Korean documentation, otherwise use English. You can mix both naturally.`
         : `You are an expert software architect. The project is mounted at /workspace/project/ (read-only).
@@ -359,6 +359,31 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           res.end(JSON.stringify({ error: 'Failed to write PLAN.md' }));
         }
       });
+      return;
+    }
+
+    // API: read file from artDir (relative path, with traversal protection)
+    if (method === 'GET' && parsed.pathname === '/api/file') {
+      const relPath = parsed.searchParams.get('path');
+      if (!relPath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing "path" query parameter' }));
+        return;
+      }
+      const resolved = path.resolve(artDir, relPath);
+      if (!resolved.startsWith(artDir + path.sep) && resolved !== artDir) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Path traversal not allowed' }));
+        return;
+      }
+      try {
+        const data = fs.readFileSync(resolved, 'utf-8');
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(data);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'File not found' }));
+      }
       return;
     }
 

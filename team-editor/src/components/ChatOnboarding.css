@@ -384,3 +384,102 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ── 3-Panel Init Layout ── */
+
+.chat-init-layout {
+  display: flex;
+  flex-direction: column;
+  width: 95vw;
+  max-width: 1600px;
+  height: 90vh;
+  max-height: 960px;
+  background: #1e1e2e;
+  border: 1px solid #313244;
+  border-radius: 16px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.chat-init-layout .chat-header {
+  flex-shrink: 0;
+}
+
+.chat-init-layout .chat-header-phase {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-complete-header-btn {
+  padding: 4px 14px;
+  background: #89b4fa;
+  color: #1e1e2e;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.chat-complete-header-btn:hover {
+  background: #74c7ec;
+}
+
+.chat-init-panels {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  border-top: 1px solid #313244;
+}
+
+.chat-init-doc-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #313244;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chat-init-chat-panel {
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chat-init-chat-panel .chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-init-chat-panel .chat-bottom {
+  flex-shrink: 0;
+}
+
+/* ── AI Edit Button (FilesPanel) ── */
+
+.ai-edit-btn {
+  padding: 3px 10px;
+  background: rgba(137, 180, 250, 0.1);
+  border: 1px solid rgba(137, 180, 250, 0.25);
+  border-radius: 6px;
+  color: #89b4fa;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-left: auto;
+}
+
+.ai-edit-btn:hover {
+  background: rgba(137, 180, 250, 0.2);
+  border-color: rgba(137, 180, 250, 0.45);
+}

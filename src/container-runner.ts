@@ -197,14 +197,10 @@ function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    // Re-sync if missing or empty (e.g. stale empty dir from a failed run)
-    const hasFiles =
-      fs.existsSync(groupAgentRunnerDir) &&
-      fs.readdirSync(groupAgentRunnerDir).length > 0;
-    if (!hasFiles) {
-      fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
-      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
-    }
+    // Always re-sync from package source so updates take effect.
+    // Agents can still customize at runtime; changes are overwritten on next run.
+    fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
+    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,

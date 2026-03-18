@@ -110,11 +110,6 @@ export function deserialize(config: PipelineConfig): { nodes: Node[]; edges: Edg
           ? { stroke: color, strokeWidth: 3, filter: 'drop-shadow(0 0 3px rgba(34, 197, 94, 0.4))' }
           : { stroke: color, strokeWidth: 3, strokeDasharray: '6 3', filter: 'drop-shadow(0 0 3px rgba(239, 68, 68, 0.4))' },
         markerEnd: { type: MarkerType.ArrowClosed, color, width: 20, height: 20 },
-        label: t.marker,
-        labelStyle: { fill: color, fontSize: 12, fontWeight: 600 },
-        labelBgStyle: { fill: '#1e1e2e', fillOpacity: 0.85 },
-        labelBgPadding: [6, 4] as [number, number],
-        labelBgBorderRadius: 4,
         animated: false,
       });
     }

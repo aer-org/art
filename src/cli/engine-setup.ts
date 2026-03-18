@@ -15,7 +15,6 @@ export interface EngineSetupResult {
   runtimeBin: string;
 }
 
-
 export async function setupEngine(opts: {
   projectDir: string;
   artDir: string;

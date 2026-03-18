@@ -208,11 +208,6 @@ export default function App() {
             ? { stroke: color, strokeWidth: 3, filter: 'drop-shadow(0 0 3px rgba(34, 197, 94, 0.4))' }
             : { stroke: color, strokeWidth: 3, strokeDasharray: '6 3', filter: 'drop-shadow(0 0 3px rgba(239, 68, 68, 0.4))' },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 20, height: 20 },
-          label: marker,
-          labelStyle: { fill: color, fontSize: 12, fontWeight: 600 },
-          labelBgStyle: { fill: '#1e1e2e', fillOpacity: 0.85 },
-          labelBgPadding: [6, 4] as [number, number],
-          labelBgBorderRadius: 4,
         },
         filtered,
       );
@@ -456,6 +451,8 @@ export default function App() {
     e.target.value = '';
   }, []);
 
+  const handleOpenChat = useCallback(() => setAgentChatDone(false), []);
+
   const showAgentChat = isSingleMode && agentRunning !== false && !agentChatDone;
   const showStaticOnboarding = isInitMode && agentRunning === false;
 
@@ -558,7 +555,7 @@ export default function App() {
                 policy={agent.pipeline.errorPolicy}
                 onChange={handleUpdateErrorPolicy}
               />
-              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} />
+              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} onOpenChat={handleOpenChat} />
             </>
           )}
         </div>

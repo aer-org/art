@@ -476,6 +476,20 @@ async function runQuery(
     }
     log(`[msg #${messageCount}] type=${msgType}${detail}`);
 
+    // Stream assistant text to stdout so compose.ts relays it as text_delta SSE.
+    // Only text blocks are streamed — tool_use blocks are logged to stderr only.
+    if (message.type === 'assistant' && 'message' in message) {
+      const msg = (message as any).message;
+      if (msg?.content) {
+        const parts = Array.isArray(msg.content) ? msg.content : [msg.content];
+        for (const p of parts) {
+          if (p.type === 'text' && p.text) {
+            process.stdout.write(p.text);
+          }
+        }
+      }
+    }
+
     // --- Issue tracking: capture tool_use from assistant, detect errors from tool_result ---
     if (message.type === 'assistant' && 'message' in message) {
       const msg = (message as any).message;

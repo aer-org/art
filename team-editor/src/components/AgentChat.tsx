@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAgentChat } from '../hooks/useAgentChat.ts';
+import { DocumentPanel } from './DocumentPanel.tsx';
 import './ChatOnboarding.css';
 
 // ── Simple markdown-ish rendering ──
@@ -17,7 +18,11 @@ function renderMarkdown(text: string): string {
 
 // ── Components ──
 
-function ChatHeader() {
+function ChatHeader({ isStreaming, hasMessages, onComplete }: {
+  isStreaming: boolean;
+  hasMessages: boolean;
+  onComplete: () => void;
+}) {
   return (
     <div className="chat-header">
       <div className="chat-header-title">
@@ -25,7 +30,14 @@ function ChatHeader() {
         ART Agent
       </div>
       <div className="chat-header-phase">
-        <span className="chat-phase-badge">Analyzing</span>
+        <span className="chat-phase-badge">
+          {isStreaming ? 'Analyzing...' : 'Ready'}
+        </span>
+        {!isStreaming && hasMessages && (
+          <button className="chat-complete-header-btn" onClick={onComplete}>
+            Complete &rarr;
+          </button>
+        )}
       </div>
     </div>
   );
@@ -104,62 +116,76 @@ export function AgentChat({ onComplete }: { onComplete: () => void }) {
 
   return (
     <div className="chat-overlay">
-      <div className="chat-container">
-        <ChatHeader />
+      <div className="chat-init-layout">
+        <ChatHeader
+          isStreaming={isStreaming}
+          hasMessages={messages.length > 0}
+          onComplete={handleComplete}
+        />
 
-        <div className="chat-messages">
-          {messages.map((m, i) => (
-            <MessageBubble
-              key={i}
-              role={m.role}
-              content={m.content}
-              isStreaming={
-                isStreaming &&
-                i === messages.length - 1 &&
-                m.role === 'assistant'
-              }
-            />
-          ))}
-          {isStreaming &&
-            (messages.length === 0 ||
-              messages[messages.length - 1].role === 'user') && (
-              <div className="chat-message chat-message--assistant">
-                <div className="chat-message-avatar">AI</div>
-                <div className="chat-message-bubble">
-                  <span className="chat-typing-label">쓰는 중</span>
-                  <TypingIndicator />
-                </div>
+        <div className="chat-init-panels">
+          {/* Left: ANALYSIS.md */}
+          <div className="chat-init-doc-panel">
+            <DocumentPanel title="ANALYSIS" path="plan/ANALYSIS.md" />
+          </div>
+
+          {/* Center: PLAN.md */}
+          <div className="chat-init-doc-panel">
+            <DocumentPanel title="PLAN" path="plan/PLAN.md" />
+          </div>
+
+          {/* Right: Chat */}
+          <div className="chat-init-chat-panel">
+            <div className="chat-messages">
+              {messages.map((m, i) => (
+                <MessageBubble
+                  key={i}
+                  role={m.role}
+                  content={m.content}
+                  isStreaming={
+                    isStreaming &&
+                    i === messages.length - 1 &&
+                    m.role === 'assistant'
+                  }
+                />
+              ))}
+              {isStreaming &&
+                (messages.length === 0 ||
+                  messages[messages.length - 1].role === 'user') && (
+                  <div className="chat-message chat-message--assistant">
+                    <div className="chat-message-avatar">AI</div>
+                    <div className="chat-message-bubble">
+                      <span className="chat-typing-label">Writing...</span>
+                      <TypingIndicator />
+                    </div>
+                  </div>
+                )}
+              {error && <div className="chat-error">{error}</div>}
+              <div ref={messagesEndRef} />
+            </div>
+
+            <div className="chat-bottom">
+              <div className="chat-input-row">
+                <textarea
+                  className="chat-input"
+                  placeholder={
+                    isStreaming ? 'Waiting for response...' : 'Type a message...'
+                  }
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={isStreaming || !agentRunning}
+                  rows={1}
+                />
+                <button
+                  className="chat-send-btn"
+                  onClick={handleSend}
+                  disabled={isStreaming || !input.trim() || !agentRunning}
+                >
+                  &#9654;
+                </button>
               </div>
-            )}
-          {error && <div className="chat-error">{error}</div>}
-          <div ref={messagesEndRef} />
-        </div>
-
-        <div className="chat-bottom">
-          {!isStreaming && messages.length > 0 && (
-            <button className="chat-continue-btn" onClick={handleComplete}>
-              Complete &rarr;
-            </button>
-          )}
-          <div className="chat-input-row">
-            <textarea
-              className="chat-input"
-              placeholder={
-                isStreaming ? 'Waiting for response...' : 'Type a message...'
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isStreaming || !agentRunning}
-              rows={1}
-            />
-            <button
-              className="chat-send-btn"
-              onClick={handleSend}
-              disabled={isStreaming || !input.trim() || !agentRunning}
-            >
-              &#9654;
-            </button>
+            </div>
           </div>
         </div>
       </div>
