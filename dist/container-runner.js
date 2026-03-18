@@ -133,6 +133,22 @@ function buildVolumeMounts(group, isMain) {
         containerPath: '/app/src',
         readonly: false,
     });
+    // udocker F1 (Fakechroot) can't resolve symlinked binaries like npx.
+    // Mount a patched entrypoint that calls tsc via node directly.
+    if (getRuntime().kind === 'udocker') {
+        const patchedEntrypoint = path.join(DATA_DIR, 'sessions', group.folder, 'entrypoint.sh');
+        fs.writeFileSync(patchedEntrypoint, '#!/bin/sh\nset -e\n' +
+            'cd /app && node node_modules/typescript/bin/tsc --outDir /tmp/dist 2>&1 >&2\n' +
+            'ln -s /app/node_modules /tmp/dist/node_modules\n' +
+            'chmod -R a-w /tmp/dist\n' +
+            'cat > /tmp/input.json\n' +
+            'node /tmp/dist/index.js < /tmp/input.json\n', { mode: 0o755 });
+        mounts.push({
+            hostPath: patchedEntrypoint,
+            containerPath: '/app/entrypoint.sh',
+            readonly: true,
+        });
+    }
     // Additional mounts validated against external allowlist (tamper-proof from containers)
     if (group.containerConfig?.additionalMounts) {
         const validatedMounts = validateAdditionalMounts(group.containerConfig.additionalMounts, group.name, isMain);
