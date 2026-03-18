@@ -11,6 +11,9 @@ RUN which node > /dev/null 2>&1 || \
      apt-get install -y nodejs && \
      rm -rf /var/lib/apt/lists/*)
 
+# Ensure 'node' user exists (node:22-slim has it; custom base images don't)
+RUN id node > /dev/null 2>&1 || useradd -m -s /bin/bash node
+
 # Install system dependencies (cross-distro compatible)
 COPY install-deps.sh /tmp/install-deps.sh
 RUN /tmp/install-deps.sh && rm /tmp/install-deps.sh
