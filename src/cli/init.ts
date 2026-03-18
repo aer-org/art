@@ -48,8 +48,22 @@ export async function init(targetDir: string): Promise<void> {
   const artDir = path.join(projectDir, ART_DIR_NAME);
 
   if (fs.existsSync(artDir)) {
-    console.log(`${ART_DIR_NAME}/ already exists in ${projectDir}`);
-    return;
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    const answer = await new Promise<string>((resolve) =>
+      rl.question(
+        `${ART_DIR_NAME}/ already exists. Remove and re-initialize? (y/N): `,
+        resolve,
+      ),
+    );
+    rl.close();
+    if (answer.trim().toLowerCase() !== 'y') {
+      console.log('Cancelled.');
+      return;
+    }
+    fs.rmSync(artDir, { recursive: true, force: true });
   }
 
   console.log(`\nSetting up ${ART_DIR_NAME}/ in ${projectDir}\n`);
