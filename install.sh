@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://github.com/aer-org/art.git"
+REPO_SSH="git@github.com:aer-org/art.git"
+REPO_HTTPS="https://github.com/aer-org/art.git"
 BRANCH="dev"
 INSTALL_DIR="${ART_INSTALL_DIR:-$HOME/.art}"
 BIN_NAME="art"
@@ -25,9 +26,18 @@ if ! command -v git &>/dev/null; then
   exit 1
 fi
 
+# Pick SSH if key access works, otherwise fall back to HTTPS
+if ssh -T git@github.com 2>&1 | grep -qi "successfully authenticated"; then
+  REPO="$REPO_SSH"
+else
+  REPO="$REPO_HTTPS"
+fi
+echo "Using $REPO"
+
 # Clone or update
 if [ -d "$INSTALL_DIR" ]; then
   echo "Updating existing installation at $INSTALL_DIR..."
+  git -C "$INSTALL_DIR" remote set-url origin "$REPO"
   git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet
   git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" --quiet
 else
