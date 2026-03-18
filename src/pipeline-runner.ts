@@ -265,7 +265,7 @@ export class PipelineRunner {
    * Build internal mounts for a stage based on its mount policy.
    * Returns absolute container paths under /workspace/group/ for direct overlay.
    */
-  private buildStageMounts(
+  private pipelineStageMounts(
     stageConfig: PipelineStage,
   ): Array<{ hostPath: string; containerPath: string; readonly: boolean }> {
     const groupDir = this.groupDir;
@@ -314,7 +314,7 @@ export class PipelineRunner {
     );
 
     // Build internal mounts (project dirs mounted under /workspace/group/)
-    const internalMounts = this.buildStageMounts(stageConfig);
+    const internalMounts = this.pipelineStageMounts(stageConfig);
 
     // Mount project directory (parent of __art__/) based on config
     const projectPolicy = stageConfig.mounts['project'];
@@ -499,7 +499,7 @@ export class PipelineRunner {
     logStream?: fs.WriteStream,
   ): Promise<ContainerOutput> {
     const rt = getRuntime();
-    const internalMounts = this.buildStageMounts(stageConfig);
+    const internalMounts = this.pipelineStageMounts(stageConfig);
 
     // Mount project directory based on config
     const projectPolicy = stageConfig.mounts['project'];

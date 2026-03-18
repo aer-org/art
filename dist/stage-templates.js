@@ -86,6 +86,7 @@ export const STAGE_TEMPLATES = {
         prompt: SOUL_PLANNER +
             '\n\n---\n\nRead VISION.md and INSIGHTS.md, then write PLAN.md and METRICS.md in /workspace/extra/plan/.',
         mounts: {
+            project: 'ro',
             plan: 'rw',
             src: null,
             tests: null,
@@ -103,7 +104,7 @@ export const STAGE_TEMPLATES = {
         description: 'Code implementation stage. Writes source code, cannot access tests or modify the plan.',
         prompt: SOUL_BUILDER +
             '\n\n---\n\nImplement the changes described in /workspace/extra/plan/PLAN.md. Write code in /workspace/extra/src/. Do not write tests. Do not modify the plan.',
-        mounts: { plan: 'ro', src: 'rw', tests: null, metrics: 'ro' },
+        mounts: { project: 'rw', plan: 'ro', src: 'rw', tests: null, metrics: 'ro' },
         transitions: [
             { marker: '[STAGE_COMPLETE]', next: 'test', prompt: '코드 구현 완료' },
             { marker: '[STAGE_ERROR]', next: null, prompt: '환경/도구/설정 에러' },
@@ -115,6 +116,7 @@ export const STAGE_TEMPLATES = {
         prompt: SOUL_BENCHMARK +
             '\n\n---\n\nRun the tests in /workspace/extra/tests/ against the source code in /workspace/extra/src/. Generate additional edge-case tests. Write all results to outputs/.',
         mounts: {
+            project: 'ro',
             plan: null,
             src: 'ro',
             tests: 'rw',
@@ -136,6 +138,7 @@ export const STAGE_TEMPLATES = {
         prompt: SOUL_REPORTER +
             '\n\n---\n\nExamine the source code in /workspace/extra/src/ and test results in /workspace/extra/outputs/. Write REPORT.md to /workspace/extra/metrics/.',
         mounts: {
+            project: 'ro',
             plan: null,
             src: 'ro',
             tests: 'ro',
@@ -157,6 +160,7 @@ export const STAGE_TEMPLATES = {
         prompt: SOUL_HISTORIAN +
             '\n\n---\n\nRead REPORT.md from /workspace/extra/metrics/. Update INSIGHTS.md in /workspace/extra/insights/ and experiment records in /workspace/extra/memory/.',
         mounts: {
+            project: null,
             plan: null,
             src: null,
             tests: null,
@@ -177,7 +181,7 @@ export const STAGE_TEMPLATES = {
         name: 'deploy',
         description: 'Deployment stage. Reads source, writes build artifacts.',
         prompt: 'Build and deploy the project from /workspace/extra/src/. Write outputs to /workspace/extra/build/.',
-        mounts: { plan: 'ro', src: 'ro', build: 'rw', tests: null },
+        mounts: { project: 'ro', plan: 'ro', src: 'ro', build: 'rw', tests: null },
         transitions: [
             { marker: '[STAGE_COMPLETE]', next: null, prompt: '배포 완료' },
             { marker: '[STAGE_ERROR]', next: null, prompt: '환경/도구/설정 에러' },
