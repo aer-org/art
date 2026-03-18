@@ -25,6 +25,7 @@ export interface ContainerConfig {
     runAsRoot?: boolean;
     timeout?: number;
     workspaceDir?: string;
+    groupReadonly?: boolean;
     internalMounts?: Array<{
         hostPath: string;
         containerPath: string;

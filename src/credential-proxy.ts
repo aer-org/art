@@ -114,7 +114,10 @@ export function startCredentialProxy(
 
     server.listen(port, host, () => {
       const actualPort = (server.address() as AddressInfo).port;
-      logger.info({ port: actualPort, host, authMode }, 'Credential proxy started');
+      logger.info(
+        { port: actualPort, host, authMode },
+        'Credential proxy started',
+      );
       resolve({ server, port: actualPort });
     });
 

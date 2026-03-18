@@ -111,6 +111,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             isMain: false,
             containerConfig: {
                 image: getImageForStage(),
+                groupReadonly: true,
                 internalMounts: [
                     {
                         hostPath: resolvedProjectDir,
@@ -141,9 +142,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         parseBuffer = '';
         // Start the credential proxy for container auth
         const { startCredentialProxy } = await import('../credential-proxy.js');
-        const { getCredentialProxyPort } = await import('../config.js');
+        const { setCredentialProxyPort } = await import('../config.js');
         try {
-            await startCredentialProxy(getCredentialProxyPort(), '0.0.0.0');
+            const { port: actualPort } = await startCredentialProxy(0, '0.0.0.0');
+            setCredentialProxyPort(actualPort);
         }
         catch {
             // May already be running if reused

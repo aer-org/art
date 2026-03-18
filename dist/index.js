@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { ASSISTANT_NAME, getCredentialProxyPort, IDLE_TIMEOUT, POLL_INTERVAL, TIMEZONE, TRIGGER_PATTERN, } from './config.js';
+import { ASSISTANT_NAME, setCredentialProxyPort, IDLE_TIMEOUT, POLL_INTERVAL, TIMEZONE, TRIGGER_PATTERN, } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import { getChannelFactory, getRegisteredChannelNames, } from './channels/registry.js';
@@ -417,7 +417,8 @@ export async function startEngine(opts) {
         registerGroup(jid, group);
     }
     // Start credential proxy (containers route API calls through this)
-    const proxyServer = await startCredentialProxy(getCredentialProxyPort(), getProxyBindHost());
+    const { server: proxyServer, port: proxyPort } = await startCredentialProxy(0, getProxyBindHost());
+    setCredentialProxyPort(proxyPort);
     // Graceful shutdown handlers
     const shutdown = async (signal) => {
         logger.info({ signal }, 'Shutdown signal received');

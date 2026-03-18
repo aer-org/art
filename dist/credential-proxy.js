@@ -1,15 +1,3 @@
-/**
- * Credential proxy for container isolation.
- * Containers connect here instead of directly to the Anthropic API.
- * The proxy injects real credentials so containers never see them.
- *
- * Two auth modes:
- *   API key:  Proxy injects x-api-key on every request.
- *   OAuth:    Container CLI exchanges its placeholder token for a temp
- *             API key via /api/oauth/claude_cli/create_api_key.
- *             Proxy injects real OAuth token on that exchange request;
- *             subsequent requests carry the temp key which is valid as-is.
- */
 import { createServer } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest } from 'http';
@@ -83,8 +71,9 @@ export function startCredentialProxy(port, host = '127.0.0.1') {
             });
         });
         server.listen(port, host, () => {
-            logger.info({ port, host, authMode }, 'Credential proxy started');
-            resolve(server);
+            const actualPort = server.address().port;
+            logger.info({ port: actualPort, host, authMode }, 'Credential proxy started');
+            resolve({ server, port: actualPort });
         });
         server.on('error', reject);
     });
