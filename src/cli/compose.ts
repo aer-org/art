@@ -281,7 +281,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     // CORS headers for API endpoints
     if (parsed.pathname.startsWith('/api/')) {
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, DELETE, OPTIONS',
+      );
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       if (method === 'OPTIONS') {
         res.writeHead(204);
