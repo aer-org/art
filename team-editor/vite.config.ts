@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 
 /**
@@ -29,6 +30,18 @@ function artApiPlugin(): Plugin {
         } catch {
           res.statusCode = 500
           res.end(JSON.stringify({ error: 'Failed to read project files' }))
+        }
+      })
+
+      server.middlewares.use('/api/images', (_req, res) => {
+        const imgPath = path.join(os.homedir(), '.config', 'aer-art', 'images.json')
+        try {
+          const data = fs.readFileSync(imgPath, 'utf-8')
+          res.setHeader('Content-Type', 'application/json')
+          res.end(data)
+        } catch {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({}))
         }
       })
 

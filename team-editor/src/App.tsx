@@ -24,6 +24,7 @@ import { ErrorPolicyPanel } from './panels/ErrorPolicyPanel';
 import { AgentListPanel } from './panels/AgentListPanel';
 import { FilesPanel } from './panels/FilesPanel';
 import { ProjectsPanel, type ProjectFile } from './panels/ProjectsPanel';
+import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
 import { Onboarding } from './components/Onboarding';
 import { AgentChat } from './components/AgentChat';
 import { deserialize } from './utils/deserialize';
@@ -48,6 +49,7 @@ export default function App() {
   const [dirsVersion, setDirsVersion] = useState(0);
   const [agentChatDone, setAgentChatDone] = useState(false);
   const [agentRunning, setAgentRunning] = useState<boolean | null>(null);
+  const [imageRegistry, setImageRegistry] = useState<ImageRegistry>({});
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
@@ -74,6 +76,10 @@ export default function App() {
     fetch('/api/project-files')
       .then((r) => r.json())
       .then((files: ProjectFile[]) => setProjectFiles(files))
+      .catch(() => {});
+    fetch('/api/images')
+      .then((r) => r.json())
+      .then((reg: ImageRegistry) => setImageRegistry(reg))
       .catch(() => {});
   }, [dirsVersion]);
 
@@ -554,6 +560,7 @@ export default function App() {
             onDelete={handleDeleteStage}
             onSetEntry={handleSetEntry}
             artDirs={artDirs.map((d) => d.name)}
+            imageKeys={Object.keys(imageRegistry).filter((k) => k !== 'default')}
           />
           {agent && (
             <>
@@ -563,6 +570,7 @@ export default function App() {
               />
               <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} onOpenChat={handleOpenChat} />
               {isSingleMode && <ProjectsPanel files={projectFiles} />}
+              {isSingleMode && <ImagesPanel registry={imageRegistry} onRefresh={refreshDirs} />}
             </>
           )}
         </div>

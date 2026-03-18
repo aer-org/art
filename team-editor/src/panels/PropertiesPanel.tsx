@@ -8,9 +8,10 @@ interface Props {
   onDelete: (id: string) => void;
   onSetEntry: (id: string) => void;
   artDirs?: string[];
+  imageKeys?: string[];
 }
 
-export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs }: Props) {
+export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs, imageKeys }: Props) {
   if (!node) {
     return <div className="panel empty-panel">Select a stage to edit</div>;
   }
@@ -54,6 +55,21 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs 
           onChange={(e) => update({ name: e.target.value })}
         />
       </label>
+
+      {imageKeys && imageKeys.length > 0 && (
+        <label>
+          Image
+          <select
+            value={stage.image || ''}
+            onChange={(e) => update({ image: e.target.value || undefined })}
+          >
+            <option value="">(default)</option>
+            {imageKeys.map((k) => (
+              <option key={k} value={k}>{k}</option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <label>
         Prompt

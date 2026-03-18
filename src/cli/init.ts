@@ -1,4 +1,3 @@
-import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
@@ -139,53 +138,6 @@ export async function init(targetDir: string): Promise<void> {
     };
     saveImageRegistry(registry);
   }
-
-  // Ask user if they want to register custom images
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  const prompt = (q: string) =>
-    new Promise<string>((resolve) => rl.question(q, resolve));
-
-  const answer = await prompt('Register custom container images? (y/N): ');
-  if (answer.trim().toLowerCase() === 'y') {
-    const name = (await prompt('Image name (e.g., vivado): ')).trim();
-    const baseImage = (
-      await prompt(
-        'Base Docker image (Debian/Ubuntu, e.g., xilinx/vivado:2024.1): ',
-      )
-    ).trim();
-
-    if (name && baseImage) {
-      console.log(`\nBuilding agent image on top of ${baseImage}...`);
-      console.log(
-        'Installing: Node.js 22, Chromium, agent-browser, claude-code, gcc/g++',
-      );
-      console.log(
-        '⚠️  Base image must be Debian/Ubuntu. Entrypoint will be overridden.\n',
-      );
-
-      const scriptDir = path.resolve(
-        path.dirname(new URL(import.meta.url).pathname),
-        '..',
-        '..',
-        'container',
-      );
-      execSync(`${scriptDir}/build.sh ${name} ${baseImage}`, {
-        stdio: 'inherit',
-      });
-
-      registry[name] = {
-        image: `aer-art-agent-${name}:latest`,
-        hasAgent: true,
-        baseImage,
-      };
-      saveImageRegistry(registry);
-      console.log(`\n✅ Image "${name}" registered.\n`);
-    }
-  }
-  rl.close();
 
   // Ensure Claude authentication before launching editor
   await ensureAuth();

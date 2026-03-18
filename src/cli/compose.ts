@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
 import { ART_DIR_NAME } from '../config.js';
+import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
@@ -280,7 +281,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     // CORS headers for API endpoints
     if (parsed.pathname.startsWith('/api/')) {
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       if (method === 'OPTIONS') {
         res.writeHead(204);
@@ -527,6 +528,120 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // ── Image Registry API endpoints ──
+
+    // GET /api/images — list registered images
+    if (method === 'GET' && parsed.pathname === '/api/images') {
+      try {
+        const registry = loadImageRegistry();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(registry));
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to load image registry' }));
+      }
+      return;
+    }
+
+    // POST /api/images — add a new image (with optional build)
+    if (method === 'POST' && parsed.pathname === '/api/images') {
+      const body = await readBody(req);
+      try {
+        const { key, baseImage, hasAgent } = JSON.parse(body);
+        if (!key || typeof key !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing "key" field' }));
+          return;
+        }
+        if (key === 'default') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cannot modify default image' }));
+          return;
+        }
+        if (!baseImage || typeof baseImage !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing "baseImage" field' }));
+          return;
+        }
+
+        if (hasAgent) {
+          // Build agent image — SSE stream build output
+          sseHeaders(res);
+          const scriptDir = path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '..',
+            '..',
+            'container',
+          );
+          const buildProc = spawn(`${scriptDir}/build.sh`, [key, baseImage], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          buildProc.stdout?.on('data', (data: Buffer) => {
+            sseWrite(res, { type: 'log', content: data.toString() });
+          });
+          buildProc.stderr?.on('data', (data: Buffer) => {
+            sseWrite(res, { type: 'log', content: data.toString() });
+          });
+          buildProc.on('close', (code) => {
+            if (code === 0) {
+              const registry = loadImageRegistry();
+              registry[key] = {
+                image: `aer-art-agent-${key}:latest`,
+                hasAgent: true,
+                baseImage,
+              };
+              saveImageRegistry(registry);
+              sseWrite(res, { type: 'done', success: true });
+            } else {
+              sseWrite(res, {
+                type: 'done',
+                success: false,
+                error: `Build failed with code ${code}`,
+              });
+            }
+            res.end();
+          });
+        } else {
+          // No agent — register base image directly
+          const registry = loadImageRegistry();
+          registry[key] = { image: baseImage, hasAgent: false, baseImage };
+          saveImageRegistry(registry);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        }
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+      return;
+    }
+
+    // DELETE /api/images — remove image by key
+    if (method === 'DELETE' && parsed.pathname === '/api/images') {
+      const key = parsed.searchParams.get('key');
+      if (!key) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing "key" query parameter' }));
+        return;
+      }
+      if (key === 'default') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Cannot delete default image' }));
+        return;
+      }
+      try {
+        const registry = loadImageRegistry();
+        delete registry[key];
+        saveImageRegistry(registry);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to delete image' }));
+      }
       return;
     }
 
