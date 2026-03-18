@@ -382,7 +382,7 @@ export function ensureImage(image) {
         }
         return downloadAndLoadUdockerImage(rt.bin);
     }
-    // Docker / Podman
+    // Docker / Podman — only check local existence (images are built locally)
     try {
         execSync(`${rt.bin} image inspect ${image}`, {
             stdio: 'pipe',
@@ -391,12 +391,8 @@ export function ensureImage(image) {
         return image;
     }
     catch {
-        // not found — pull
+        throw new Error(`Image "${image}" not found locally. Build it with container/build.sh`);
     }
-    console.log(`Pulling container image: ${image}...`);
-    execSync(`${rt.bin} pull ${image}`, { stdio: 'inherit', timeout: 600000 });
-    console.log('Container image pulled successfully.\n');
-    return image;
 }
 /**
  * Download the pre-built tar from GitHub Releases and load into udocker.

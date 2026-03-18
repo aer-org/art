@@ -2,8 +2,10 @@
  * Shared engine bootstrap for art init / art run / art compose.
  * Extracts common setup from run.ts so init and compose can reuse it.
  */
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 import { fileURLToPath } from 'url';
 
 import { saveImageRegistry } from '../image-registry.js';
@@ -45,19 +47,101 @@ export async function setupEngine(opts: {
   // Initialize container runtime (auto-detect or load saved choice)
   const rt = await initRuntime();
 
-  // Pull/verify all registered container images (update registry if name changed)
-  const { ensureImage } = await import('../container-runtime.js');
+  // Check registered images exist locally; prompt to build missing ones
   const { loadImageRegistry: loadReg } = await import('../image-registry.js');
+  const { CONTAINER_IMAGE } = await import('../config.js');
   const imageRegistry = loadReg();
-  let registryChanged = false;
-  for (const [key, entry] of Object.entries(imageRegistry)) {
-    const usableName = ensureImage(entry.image);
-    if (usableName !== entry.image) {
-      imageRegistry[key] = { ...entry, image: usableName };
-      registryChanged = true;
+
+  // Collect all needed images: from registry + default if registry is empty
+  const needed = new Map<string, { image: string; baseImage?: string }>();
+  if (Object.keys(imageRegistry).length === 0) {
+    needed.set('default', { image: CONTAINER_IMAGE });
+  } else {
+    for (const [key, entry] of Object.entries(imageRegistry)) {
+      needed.set(key, { image: entry.image, baseImage: entry.baseImage });
     }
   }
-  if (registryChanged) saveImageRegistry(imageRegistry);
+
+  // Also check PIPELINE.json for stage-specific images
+  const pipelinePath = path.join(artDir, 'PIPELINE.json');
+  if (fs.existsSync(pipelinePath)) {
+    try {
+      const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+      for (const stage of pipeline.stages || []) {
+        const key = stage.image || 'default';
+        if (!needed.has(key)) {
+          const regEntry = imageRegistry[key];
+          needed.set(key, {
+            image: regEntry?.image || CONTAINER_IMAGE,
+            baseImage: regEntry?.baseImage,
+          });
+        }
+      }
+    } catch {
+      // ignore malformed pipeline
+    }
+  }
+
+  // Check which images are missing locally
+  const missing: { key: string; image: string; baseImage?: string }[] = [];
+  for (const [key, info] of needed) {
+    try {
+      execSync(`${rt.bin} image inspect ${info.image}`, {
+        stdio: 'pipe',
+        timeout: 10000,
+      });
+    } catch {
+      missing.push({ key, image: info.image, baseImage: info.baseImage });
+    }
+  }
+
+  // Prompt to build missing images
+  if (missing.length > 0) {
+    console.log(`\n빌드가 필요한 이미지 ${missing.length}개:`);
+    for (const m of missing) console.log(`  - ${m.key} (${m.image})`);
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    const ask = (q: string) =>
+      new Promise<string>((resolve) => rl.question(q, resolve));
+
+    for (const m of missing) {
+      const answer = process.stdin.isTTY
+        ? await ask(`\n"${m.key}" 이미지를 빌드하시겠습니까? (y/N): `)
+        : 'y'; // auto-accept in non-interactive (CI)
+      if (answer.trim().toLowerCase() !== 'y') {
+        console.error(`\n이 이미지를 사용하지 않는 파이프라인으로 수정하세요.`);
+        rl.close();
+        process.exit(1);
+      }
+
+      // Build the image
+      const scriptDir = path.resolve(engineRoot, 'container');
+      const buildCmd =
+        m.key === 'default' || !m.baseImage
+          ? `${scriptDir}/build.sh`
+          : `${scriptDir}/build.sh ${m.key} ${m.baseImage}`;
+      console.log(`\n빌드 중: ${m.image}...`);
+      execSync(buildCmd, {
+        stdio: 'inherit',
+        timeout: 600000,
+        env: { ...process.env, CONTAINER_RUNTIME: rt.bin },
+      });
+
+      // Ensure registry entry exists
+      if (!imageRegistry[m.key]) {
+        imageRegistry[m.key] = {
+          image: m.image,
+          hasAgent: true,
+          baseImage: m.baseImage,
+        };
+        saveImageRegistry(imageRegistry);
+      }
+    }
+    rl.close();
+  }
 
   // Set credential proxy port
   setCredentialProxyPort(
