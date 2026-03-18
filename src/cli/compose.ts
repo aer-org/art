@@ -72,6 +72,7 @@ export async function startEditorServer(
 
   // ── Agent lifecycle state ──
   let agentProcess: ChildProcess | null = null;
+  let agentContainerName = '';
   let agentRunning = false;
   let ipcInputDir = '';
   let parseBuffer = '';
@@ -181,8 +182,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     runContainerAgent(
       group,
       input,
-      (proc: ChildProcess) => {
+      (proc: ChildProcess, containerName: string) => {
         agentProcess = proc;
+        agentContainerName = containerName;
 
         // Parse stdout for output markers and relay to SSE clients
         proc.stdout?.on('data', (data: Buffer) => {
@@ -201,6 +203,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         proc.on('close', () => {
           agentRunning = false;
           agentProcess = null;
+          agentContainerName = '';
           // Notify all SSE clients that agent has stopped
           for (const client of sseClients) {
             sseWrite(client, { type: 'agent_stopped' });
@@ -268,6 +271,37 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     }
 
     parseBuffer = '';
+  }
+
+  /** Kill the agent container, waiting for it to exit. */
+  async function killAgent(): Promise<void> {
+    if (agentProcess) {
+      const proc = agentProcess;
+      const exited = new Promise<void>((resolve) => {
+        proc.on('close', () => resolve());
+        // Already exited
+        if (proc.exitCode !== null || proc.signalCode !== null) resolve();
+      });
+      proc.kill('SIGTERM');
+      // Wait up to 3s for graceful exit, then docker stop
+      const timeout = setTimeout(() => {
+        if (agentContainerName) {
+          spawn('docker', ['stop', '-t', '2', agentContainerName], {
+            stdio: 'ignore',
+          });
+        }
+      }, 3000);
+      await exited;
+      clearTimeout(timeout);
+    } else if (agentContainerName) {
+      // No process handle but we know the container name — stop it directly
+      await new Promise<void>((resolve) => {
+        const stop = spawn('docker', ['stop', '-t', '3', agentContainerName], {
+          stdio: 'ignore',
+        });
+        stop.on('close', () => resolve());
+      });
+    }
   }
 
   const port = 5173;
@@ -525,9 +559,16 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
     // POST /api/chat/close — gracefully stop the agent
     if (method === 'POST' && parsed.pathname === '/api/chat/close') {
-      if (agentRunning && ipcInputDir) {
-        // Write _close sentinel to signal the agent to exit
-        fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+      if (agentRunning) {
+        // Write _close sentinel as a hint, then kill the process directly
+        if (ipcInputDir) {
+          try {
+            fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+          } catch {
+            // best effort
+          }
+        }
+        killAgent().catch(() => {});
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -698,17 +739,21 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
   });
 
   // Graceful shutdown
+  let cleaningUp = false;
   const cleanup = () => {
-    // Stop the agent if running
-    if (agentRunning && ipcInputDir) {
-      try {
-        fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
-      } catch {
-        // best effort
-      }
-    }
+    if (cleaningUp) return;
+    cleaningUp = true;
+
     server.close();
-    process.exit(0);
+
+    // Kill the agent container, then exit
+    const forceExitTimer = setTimeout(() => process.exit(1), 5000);
+    killAgent()
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(forceExitTimer);
+        process.exit(0);
+      });
   };
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
