@@ -111,7 +111,7 @@ function MessageBubble({
 // ── Main Component ──
 
 export function AgentChat({ onComplete }: { onComplete: () => void }) {
-  const { messages, isStreaming, error, agentRunning, sendMessage, closeAgent } =
+  const { messages, isStreaming, error, agentRunning, sendMessage } =
     useAgentChat();
 
   const [input, setInput] = useState('');
