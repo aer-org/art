@@ -600,51 +600,15 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           return;
         }
 
-        if (hasAgent) {
-          // Build agent image — SSE stream build output
-          sseHeaders(res);
-          const scriptDir = path.resolve(
-            path.dirname(fileURLToPath(import.meta.url)),
-            '..',
-            '..',
-            'container',
-          );
-          const buildProc = spawn(`${scriptDir}/build.sh`, [key, baseImage], {
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
-          buildProc.stdout?.on('data', (data: Buffer) => {
-            sseWrite(res, { type: 'log', content: data.toString() });
-          });
-          buildProc.stderr?.on('data', (data: Buffer) => {
-            sseWrite(res, { type: 'log', content: data.toString() });
-          });
-          buildProc.on('close', (code) => {
-            if (code === 0) {
-              const registry = loadImageRegistry();
-              registry[key] = {
-                image: `aer-art-agent-${key}:latest`,
-                hasAgent: true,
-                baseImage,
-              };
-              saveImageRegistry(registry);
-              sseWrite(res, { type: 'done', success: true });
-            } else {
-              sseWrite(res, {
-                type: 'done',
-                success: false,
-                error: `Build failed with code ${code}`,
-              });
-            }
-            res.end();
-          });
-        } else {
-          // No agent — register base image directly
-          const registry = loadImageRegistry();
-          registry[key] = { image: baseImage, hasAgent: false, baseImage };
-          saveImageRegistry(registry);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        }
+        // Register in image registry — actual build happens at `art run .`
+        const registry = loadImageRegistry();
+        const image = hasAgent
+          ? `aer-art-agent-${key}:latest`
+          : baseImage;
+        registry[key] = { image, hasAgent: !!hasAgent, baseImage };
+        saveImageRegistry(registry);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON body' }));
