@@ -3,27 +3,81 @@ import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 // ── Codebase Scanner ──
 const IGNORE_DIRS = new Set([
-    'node_modules', '.git', 'dist', 'build', '.next', '__pycache__',
-    '.venv', 'venv', 'target', '.idea', '.vscode', 'coverage',
-    '__art__', '.art', '.cache', '.turbo', '.nuxt', '.output',
+    'node_modules',
+    '.git',
+    'dist',
+    'build',
+    '.next',
+    '__pycache__',
+    '.venv',
+    'venv',
+    'target',
+    '.idea',
+    '.vscode',
+    'coverage',
+    '__art__',
+    '.art',
+    '.cache',
+    '.turbo',
+    '.nuxt',
+    '.output',
 ]);
 const PRIORITY_FILES = [
-    'README.md', 'package.json', 'Cargo.toml', 'pyproject.toml',
-    'go.mod', 'tsconfig.json', 'Dockerfile', 'docker-compose.yml',
-    'Makefile', '.env.example', 'requirements.txt', 'setup.py',
-    'pom.xml', 'build.gradle', 'CMakeLists.txt',
+    'README.md',
+    'package.json',
+    'Cargo.toml',
+    'pyproject.toml',
+    'go.mod',
+    'tsconfig.json',
+    'Dockerfile',
+    'docker-compose.yml',
+    'Makefile',
+    '.env.example',
+    'requirements.txt',
+    'setup.py',
+    'pom.xml',
+    'build.gradle',
+    'CMakeLists.txt',
 ];
 const ENTRY_PATTERNS = [
-    'src/index.ts', 'src/main.ts', 'src/app.ts',
-    'src/index.js', 'src/main.js', 'src/app.js',
-    'main.go', 'cmd/main.go', 'app.py', 'main.py',
-    'src/main.rs', 'src/lib.rs', 'index.ts', 'index.js',
-    'app/page.tsx', 'pages/index.tsx',
+    'src/index.ts',
+    'src/main.ts',
+    'src/app.ts',
+    'src/index.js',
+    'src/main.js',
+    'src/app.js',
+    'main.go',
+    'cmd/main.go',
+    'app.py',
+    'main.py',
+    'src/main.rs',
+    'src/lib.rs',
+    'index.ts',
+    'index.js',
+    'app/page.tsx',
+    'pages/index.tsx',
 ];
 const SOURCE_EXTENSIONS = new Set([
-    '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java',
-    '.c', '.cpp', '.h', '.hpp', '.rb', '.php', '.swift', '.kt',
-    '.scala', '.cs', '.vue', '.svelte',
+    '.ts',
+    '.tsx',
+    '.js',
+    '.jsx',
+    '.py',
+    '.go',
+    '.rs',
+    '.java',
+    '.c',
+    '.cpp',
+    '.h',
+    '.hpp',
+    '.rb',
+    '.php',
+    '.swift',
+    '.kt',
+    '.scala',
+    '.cs',
+    '.vue',
+    '.svelte',
 ]);
 function walkDir(dir, depth, maxDepth) {
     if (depth > maxDepth)
@@ -52,7 +106,7 @@ function walkDir(dir, depth, maxDepth) {
 }
 function buildTree(projectDir, files) {
     const lines = [];
-    const rel = files.map(f => path.relative(projectDir, f)).sort();
+    const rel = files.map((f) => path.relative(projectDir, f)).sort();
     for (const r of rel) {
         const depth = r.split(path.sep).length - 1;
         const indent = '  '.repeat(depth);
@@ -83,7 +137,9 @@ export function scanCodebase(projectDir) {
                     charCount += section.length;
                 }
             }
-            catch { /* skip */ }
+            catch {
+                /* skip */
+            }
         }
     }
     // Entry point files
@@ -100,15 +156,17 @@ export function scanCodebase(projectDir) {
                     charCount += section.length;
                 }
             }
-            catch { /* skip */ }
+            catch {
+                /* skip */
+            }
         }
     }
     // Top source files (first 50 lines each)
     parts.push('## Source Files (top 50 lines)\n');
     const sourceFiles = allFiles
-        .filter(f => SOURCE_EXTENSIONS.has(path.extname(f)))
-        .filter(f => !PRIORITY_FILES.includes(path.relative(projectDir, f)))
-        .filter(f => !ENTRY_PATTERNS.includes(path.relative(projectDir, f)))
+        .filter((f) => SOURCE_EXTENSIONS.has(path.extname(f)))
+        .filter((f) => !PRIORITY_FILES.includes(path.relative(projectDir, f)))
+        .filter((f) => !ENTRY_PATTERNS.includes(path.relative(projectDir, f)))
         .slice(0, 30);
     for (const sf of sourceFiles) {
         const rel = path.relative(projectDir, sf);
@@ -124,7 +182,9 @@ export function scanCodebase(projectDir) {
                 break;
             }
         }
-        catch { /* skip */ }
+        catch {
+            /* skip */
+        }
     }
     return parts.join('\n');
 }
@@ -173,7 +233,7 @@ function sseHeaders(res) {
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
     });
 }
@@ -195,13 +255,22 @@ function parseSuggestions(text) {
     }
     return suggestions;
 }
+// ── Client Factory ──
+function createClient(token) {
+    // OAuth tokens (sk-ant-oat*) use Authorization: Bearer header
+    if (token.startsWith('sk-ant-oat')) {
+        return new Anthropic({ authToken: token, apiKey: '' });
+    }
+    // Regular API keys use x-api-key header
+    return new Anthropic({ apiKey: token });
+}
 // ── Streaming Chat ──
 export async function initChat(apiKey, projectDir, res) {
     sseHeaders(res);
     try {
         const codebaseContext = scanCodebase(projectDir);
         const systemPrompt = analysisSystemPrompt(codebaseContext);
-        const client = new Anthropic({ apiKey });
+        const client = createClient(apiKey);
         let fullText = '';
         const stream = client.messages.stream({
             model: 'claude-sonnet-4-20250514',
@@ -241,7 +310,10 @@ export async function sendMessage(apiKey, projectDir, userMessage, res) {
     sseHeaders(res);
     const state = getSession(projectDir);
     if (!state) {
-        sseWrite(res, { type: 'error', message: 'No active session. Call /api/chat/init first.' });
+        sseWrite(res, {
+            type: 'error',
+            message: 'No active session. Call /api/chat/init first.',
+        });
         res.end();
         return;
     }
@@ -250,13 +322,16 @@ export async function sendMessage(apiKey, projectDir, userMessage, res) {
         const systemPrompt = state.phase === 'analysis'
             ? analysisSystemPrompt(state.codebaseContext)
             : directionSystemPrompt(state.analysisResult ?? '', userMessage);
-        const client = new Anthropic({ apiKey });
+        const client = createClient(apiKey);
         let fullText = '';
         const stream = client.messages.stream({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 4096,
             system: systemPrompt,
-            messages: state.messages.map(m => ({ role: m.role, content: m.content })),
+            messages: state.messages.map((m) => ({
+                role: m.role,
+                content: m.content,
+            })),
         });
         stream.on('text', (text) => {
             fullText += text;
@@ -286,10 +361,11 @@ export function advancePhase(projectDir, artDir) {
     fs.mkdirSync(planDir, { recursive: true });
     if (state.phase === 'analysis') {
         // Save ANALYSIS.md
-        const analysisContent = state.analysisResult ?? state.messages
-            .filter(m => m.role === 'assistant')
-            .map(m => m.content)
-            .join('\n\n');
+        const analysisContent = state.analysisResult ??
+            state.messages
+                .filter((m) => m.role === 'assistant')
+                .map((m) => m.content)
+                .join('\n\n');
         fs.writeFileSync(path.join(planDir, 'ANALYSIS.md'), `# Codebase Analysis\n\n${analysisContent}\n`);
         // Transition to direction phase
         state.phase = 'direction';
@@ -299,8 +375,8 @@ export function advancePhase(projectDir, artDir) {
     if (state.phase === 'direction') {
         // Save PLAN.md and METRICS.md from the conversation
         const assistantMessages = state.messages
-            .filter(m => m.role === 'assistant')
-            .map(m => m.content);
+            .filter((m) => m.role === 'assistant')
+            .map((m) => m.content);
         // Last assistant message in direction phase is the plan
         const directionContent = assistantMessages[assistantMessages.length - 1] ?? '';
         // Extract metrics section if present, otherwise use full content

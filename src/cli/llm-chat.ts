@@ -291,6 +291,17 @@ function parseSuggestions(text: string): string[] {
   return suggestions;
 }
 
+// ── Client Factory ──
+
+function createClient(token: string): Anthropic {
+  // OAuth tokens (sk-ant-oat*) use Authorization: Bearer header
+  if (token.startsWith('sk-ant-oat')) {
+    return new Anthropic({ authToken: token, apiKey: '' });
+  }
+  // Regular API keys use x-api-key header
+  return new Anthropic({ apiKey: token });
+}
+
 // ── Streaming Chat ──
 
 export async function initChat(
@@ -304,7 +315,7 @@ export async function initChat(
     const codebaseContext = scanCodebase(projectDir);
     const systemPrompt = analysisSystemPrompt(codebaseContext);
 
-    const client = new Anthropic({ apiKey });
+    const client = createClient(apiKey);
     let fullText = '';
 
     const stream = client.messages.stream({
@@ -373,7 +384,7 @@ export async function sendMessage(
         ? analysisSystemPrompt(state.codebaseContext)
         : directionSystemPrompt(state.analysisResult ?? '', userMessage);
 
-    const client = new Anthropic({ apiKey });
+    const client = createClient(apiKey);
     let fullText = '';
 
     const stream = client.messages.stream({

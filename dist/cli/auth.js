@@ -80,13 +80,20 @@ function maskToken(token) {
 }
 async function validateToken(token) {
     try {
+        const headers = {
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+        };
+        // OAuth tokens use Authorization: Bearer, API keys use x-api-key
+        if (token.startsWith('sk-ant-oat')) {
+            headers['authorization'] = `Bearer ${token}`;
+        }
+        else {
+            headers['x-api-key'] = token;
+        }
         const res = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
-            headers: {
-                'x-api-key': token,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
                 model: 'claude-haiku-4-5-20241022',
                 max_tokens: 1,
