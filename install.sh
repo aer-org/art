@@ -27,7 +27,8 @@ if ! command -v git &>/dev/null; then
 fi
 
 # Pick SSH if key access works, otherwise fall back to HTTPS
-if ssh -T git@github.com 2>&1 | grep -qi "successfully authenticated"; then
+SSH_OUTPUT=$(ssh -T git@github.com 2>&1 || true)
+if echo "$SSH_OUTPUT" | grep -qi "successfully authenticated"; then
   REPO="$REPO_SSH"
 else
   REPO="$REPO_HTTPS"
