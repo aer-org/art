@@ -212,8 +212,10 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // udocker F1 (Fakechroot) can't resolve symlinked binaries like npx.
-  // Mount a patched entrypoint that calls tsc via node directly.
+  // udocker F1 (Fakechroot) can't resolve symlinked binaries like npx,
+  // and doesn't support stdin piping. Mount a patched entrypoint that:
+  // 1. Calls tsc via node directly (no npx symlink)
+  // 2. Skips stdin cat — agent-runner reads input from IPC file instead
   if (getRuntime().kind === 'udocker') {
     const patchedEntrypoint = path.join(
       DATA_DIR,
@@ -227,8 +229,7 @@ function buildVolumeMounts(
         'cd /app && node node_modules/typescript/bin/tsc --outDir /tmp/dist 2>&1 >&2\n' +
         'ln -s /app/node_modules /tmp/dist/node_modules\n' +
         'chmod -R a-w /tmp/dist\n' +
-        'cat > /tmp/input.json\n' +
-        'node /tmp/dist/index.js < /tmp/input.json\n',
+        'node /tmp/dist/index.js\n',
       { mode: 0o755 },
     );
     mounts.push({
