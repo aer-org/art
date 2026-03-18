@@ -102,7 +102,7 @@ function buildVolumeMounts(
     mounts.push({
       hostPath: group.containerConfig?.workspaceDir || groupDir,
       containerPath: '/workspace/group',
-      readonly: false,
+      readonly: group.containerConfig?.groupReadonly === true,
     });
 
     // Global memory directory (read-only for non-main)

@@ -34,6 +34,7 @@ export interface ContainerConfig {
   runAsRoot?: boolean;
   timeout?: number; // Default: 300000 (5 minutes)
   workspaceDir?: string; // Override host path mounted at /workspace/group
+  groupReadonly?: boolean; // Mount /workspace/group as read-only (default: false)
   internalMounts?: Array<{
     hostPath: string;
     containerPath: string;

@@ -138,6 +138,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       isMain: false,
       containerConfig: {
         image: getImageForStage(),
+        groupReadonly: true,
         internalMounts: [
           {
             hostPath: resolvedProjectDir,
