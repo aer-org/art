@@ -8,11 +8,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import {
-  loadImageRegistry,
-  saveImageRegistry,
-} from '../image-registry.js';
-import { initRuntime } from '../container-runtime.js';
+import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
+import { initRuntime, resolveLocalImageName } from '../container-runtime.js';
 
 const TAR_RELEASE_URL =
   'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
@@ -61,30 +58,29 @@ function udockerLoadFromTar(runtimeBin: string, image: string): boolean {
     });
     console.log(loadOutput);
 
-    // udocker can't handle slash-heavy registry names (ghcr.io/org/image).
-    // Tag the loaded image with a short local name.
-    const shortName = 'art-agent:latest';
+    // Tag with the resolved local name (short name for udocker)
+    const localName = resolveLocalImageName(image);
     const match = loadOutput.match(/\['([^']+)'\]/);
     if (match) {
       const loadedName = match[1];
-      if (loadedName !== shortName) {
+      if (loadedName !== localName) {
         try {
-          execSync(`${runtimeBin} tag ${loadedName} ${shortName}`, {
+          execSync(`${runtimeBin} tag ${loadedName} ${localName}`, {
             stdio: 'pipe',
             timeout: 10000,
           });
-          console.log(`  tagged ${loadedName} → ${shortName}`);
+          console.log(`  tagged ${loadedName} → ${localName}`);
         } catch {
           // non-fatal
         }
       }
     }
 
-    // Update image registry to use the short name
+    // Update image registry to use the local name
     const reg = loadImageRegistry();
     for (const [key, entry] of Object.entries(reg)) {
-      if (entry.image === image || entry.image === shortName) {
-        reg[key] = { ...entry, image: shortName };
+      if (entry.image === image || entry.image === localName) {
+        reg[key] = { ...entry, image: localName };
       }
     }
     saveImageRegistry(reg);

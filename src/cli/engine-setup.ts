@@ -8,10 +8,8 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import {
-  loadImageRegistry,
-  saveImageRegistry,
-} from '../image-registry.js';
+import { resolveLocalImageName } from '../container-runtime.js';
+import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
 
 export interface EngineSetupResult {
   engineRoot: string;
@@ -33,8 +31,9 @@ function ensureContainerImage(
   runtimeBin: string,
 ): void {
   const isUdocker = runtimeBin === 'udocker';
+  const localName = resolveLocalImageName(containerImage);
   const inspectCmd = isUdocker
-    ? `${runtimeBin} inspect ${containerImage}`
+    ? `${runtimeBin} inspect ${localName}`
     : `${runtimeBin} image inspect ${containerImage}`;
 
   try {
@@ -58,14 +57,13 @@ function ensureContainerImage(
         timeout: 600000,
       });
 
-      // udocker can't handle slash-heavy registry names. Tag with short name.
-      const shortName = 'art-agent:latest';
+      // Tag with the resolved local name (short name for udocker)
       const match = loadOutput.match(/\['([^']+)'\]/);
       if (match) {
         const loadedName = match[1];
-        if (loadedName !== shortName) {
+        if (loadedName !== localName) {
           try {
-            execSync(`${runtimeBin} tag ${loadedName} ${shortName}`, {
+            execSync(`${runtimeBin} tag ${loadedName} ${localName}`, {
               stdio: 'pipe',
               timeout: 10000,
             });
@@ -75,11 +73,11 @@ function ensureContainerImage(
         }
       }
 
-      // Update image registry to use the short name
+      // Update image registry to use the local name
       const reg = loadImageRegistry();
       for (const [key, entry] of Object.entries(reg)) {
-        if (entry.image === containerImage || entry.image === shortName) {
-          reg[key] = { ...entry, image: shortName };
+        if (entry.image === containerImage || entry.image === localName) {
+          reg[key] = { ...entry, image: localName };
         }
       }
       saveImageRegistry(reg);

@@ -23,6 +23,7 @@ import {
   getRuntime,
   hostGatewayArgs,
   readonlyMountArgs,
+  resolveLocalImageName,
   stopContainer,
   writableMountArgs,
 } from './container-runtime.js';
@@ -423,7 +424,7 @@ export async function runContainerAgent(
 
     // udocker: create a named container with F1 (Fakechroot) mode before running
     if (rt.kind === 'udocker') {
-      udockerCreateContainer(rt.bin, image, containerName);
+      udockerCreateContainer(rt.bin, resolveLocalImageName(image), containerName);
     }
 
     const container = spawn(rt.bin, containerArgs, {

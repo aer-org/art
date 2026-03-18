@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { CONTAINER_IMAGE, IMAGE_REGISTRY_PATH } from './config.js';
+import { resolveLocalImageName } from './container-runtime.js';
 
 export interface RegisteredImage {
   image: string; // Docker image name
@@ -40,18 +41,18 @@ export function getImageForStage(
 ): string {
   if (!stageImage) {
     const registry = loadImageRegistry();
-    return registry['default']?.image || CONTAINER_IMAGE;
+    return resolveLocalImageName(registry['default']?.image || CONTAINER_IMAGE);
   }
 
   if (isCommandMode) {
     // Command mode: use image name directly (no registry lookup required)
-    return stageImage;
+    return resolveLocalImageName(stageImage);
   }
 
   // Agent mode: try registry lookup first
   const registry = loadImageRegistry();
   const entry = registry[stageImage];
-  if (entry) return entry.image;
+  if (entry) return resolveLocalImageName(entry.image);
 
   // Not in registry — error for agent mode
   throw new Error(

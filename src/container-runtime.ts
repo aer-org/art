@@ -487,6 +487,17 @@ export function getRuntimeBin(): string {
   return getRuntime().bin;
 }
 
+/**
+ * udocker can't handle slash-heavy registry names (ghcr.io/org/image).
+ * Return the short local name (last path segment) for udocker, or the
+ * original name for Docker/Podman.
+ */
+export function resolveLocalImageName(image: string): string {
+  if (!cachedRuntime || cachedRuntime.kind !== 'udocker') return image;
+  const parts = image.split('/');
+  return parts[parts.length - 1];
+}
+
 /** Get the hostname containers use to reach the host. */
 export function getHostGateway(): string {
   return getRuntime().hostGateway;
