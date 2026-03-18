@@ -74,8 +74,9 @@ describe('credential-proxy', () => {
     Object.assign(mockEnv, env, {
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstreamPort}`,
     });
-    proxyServer = await startCredentialProxy(0);
-    return (proxyServer.address() as AddressInfo).port;
+    const result = await startCredentialProxy(0);
+    proxyServer = result.server;
+    return result.port;
   }
 
   it('API-key mode injects x-api-key and strips placeholder', async () => {
@@ -173,8 +174,9 @@ describe('credential-proxy', () => {
       ANTHROPIC_API_KEY: 'sk-ant-real-key',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:59999',
     });
-    proxyServer = await startCredentialProxy(0);
-    proxyPort = (proxyServer.address() as AddressInfo).port;
+    const result = await startCredentialProxy(0);
+    proxyServer = result.server;
+    proxyPort = result.port;
 
     const res = await makeRequest(
       proxyPort,

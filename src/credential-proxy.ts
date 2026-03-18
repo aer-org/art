@@ -10,6 +10,7 @@
  *             Proxy injects real OAuth token on that exchange request;
  *             subsequent requests carry the temp key which is valid as-is.
  */
+import { AddressInfo } from 'net';
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
@@ -26,7 +27,7 @@ export interface ProxyConfig {
 export function startCredentialProxy(
   port: number,
   host = '127.0.0.1',
-): Promise<Server> {
+): Promise<{ server: Server; port: number }> {
   const secrets = readEnvFile([
     'ANTHROPIC_API_KEY',
     'CLAUDE_CODE_OAUTH_TOKEN',
@@ -112,8 +113,9 @@ export function startCredentialProxy(
     });
 
     server.listen(port, host, () => {
-      logger.info({ port, host, authMode }, 'Credential proxy started');
-      resolve(server);
+      const actualPort = (server.address() as AddressInfo).port;
+      logger.info({ port: actualPort, host, authMode }, 'Credential proxy started');
+      resolve({ server, port: actualPort });
     });
 
     server.on('error', reject);

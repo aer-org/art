@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   getCredentialProxyPort,
+  setCredentialProxyPort,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TIMEZONE,
@@ -640,10 +641,11 @@ export async function startEngine(opts?: StartEngineOpts): Promise<void> {
   }
 
   // Start credential proxy (containers route API calls through this)
-  const proxyServer = await startCredentialProxy(
-    getCredentialProxyPort(),
+  const { server: proxyServer, port: proxyPort } = await startCredentialProxy(
+    0,
     getProxyBindHost(),
   );
+  setCredentialProxyPort(proxyPort);
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
