@@ -52,6 +52,7 @@ export async function startEditorServer(artDir, mode, projectDir) {
     }
     // ── Agent lifecycle state ──
     let agentProcess = null;
+    let agentContainerName = '';
     let agentRunning = false;
     let ipcInputDir = '';
     let parseBuffer = '';
@@ -148,8 +149,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             // May already be running if reused
         }
         // Fire and forget — the container runs in the background
-        runContainerAgent(group, input, (proc) => {
+        runContainerAgent(group, input, (proc, containerName) => {
             agentProcess = proc;
+            agentContainerName = containerName;
             // Parse stdout for output markers and relay to SSE clients
             proc.stdout?.on('data', (data) => {
                 const chunk = data.toString();
@@ -166,6 +168,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             proc.on('close', () => {
                 agentRunning = false;
                 agentProcess = null;
+                agentContainerName = '';
                 // Notify all SSE clients that agent has stopped
                 for (const client of sseClients) {
                     sseWrite(client, { type: 'agent_stopped' });
@@ -226,6 +229,26 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             cursor = endIdx + OUTPUT_END_MARKER.length;
         }
         parseBuffer = '';
+    }
+    /** Kill the agent container, waiting for it to exit. */
+    async function killAgent() {
+        if (agentContainerName) {
+            // Stop the container directly by name — this is the only reliable way.
+            // Sending SIGTERM to the docker run CLI process just disconnects it;
+            // the container itself keeps running.
+            const { getRuntimeBin } = await import('../container-runtime.js');
+            const bin = getRuntimeBin();
+            await new Promise((resolve) => {
+                const stop = spawn(bin, ['stop', '-t', '3', agentContainerName], {
+                    stdio: 'ignore',
+                });
+                stop.on('close', () => resolve());
+            });
+        }
+        else if (agentProcess) {
+            // No container name yet (still starting) — kill the process directly
+            agentProcess.kill('SIGTERM');
+        }
     }
     const port = 5173;
     const url = `http://localhost:${port}?mode=${mode}`;
@@ -463,9 +486,17 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         }
         // POST /api/chat/close — gracefully stop the agent
         if (method === 'POST' && parsed.pathname === '/api/chat/close') {
-            if (agentRunning && ipcInputDir) {
-                // Write _close sentinel to signal the agent to exit
-                fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+            if (agentRunning) {
+                // Write _close sentinel as a hint, then kill the process directly
+                if (ipcInputDir) {
+                    try {
+                        fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+                    }
+                    catch {
+                        // best effort
+                    }
+                }
+                killAgent().catch(() => { });
             }
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
@@ -505,48 +536,13 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                     res.end(JSON.stringify({ error: 'Missing "baseImage" field' }));
                     return;
                 }
-                if (hasAgent) {
-                    // Build agent image — SSE stream build output
-                    sseHeaders(res);
-                    const scriptDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'container');
-                    const buildProc = spawn(`${scriptDir}/build.sh`, [key, baseImage], {
-                        stdio: ['ignore', 'pipe', 'pipe'],
-                    });
-                    buildProc.stdout?.on('data', (data) => {
-                        sseWrite(res, { type: 'log', content: data.toString() });
-                    });
-                    buildProc.stderr?.on('data', (data) => {
-                        sseWrite(res, { type: 'log', content: data.toString() });
-                    });
-                    buildProc.on('close', (code) => {
-                        if (code === 0) {
-                            const registry = loadImageRegistry();
-                            registry[key] = {
-                                image: `aer-art-agent-${key}:latest`,
-                                hasAgent: true,
-                                baseImage,
-                            };
-                            saveImageRegistry(registry);
-                            sseWrite(res, { type: 'done', success: true });
-                        }
-                        else {
-                            sseWrite(res, {
-                                type: 'done',
-                                success: false,
-                                error: `Build failed with code ${code}`,
-                            });
-                        }
-                        res.end();
-                    });
-                }
-                else {
-                    // No agent — register base image directly
-                    const registry = loadImageRegistry();
-                    registry[key] = { image: baseImage, hasAgent: false, baseImage };
-                    saveImageRegistry(registry);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: true }));
-                }
+                // Register in image registry — actual build happens at `art run .`
+                const registry = loadImageRegistry();
+                const image = hasAgent ? `aer-art-agent-${key}:latest` : baseImage;
+                registry[key] = { image, hasAgent: !!hasAgent, baseImage };
+                saveImageRegistry(registry);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
             }
             catch {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -625,18 +621,20 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         });
     });
     // Graceful shutdown
+    let cleaningUp = false;
     const cleanup = () => {
-        // Stop the agent if running
-        if (agentRunning && ipcInputDir) {
-            try {
-                fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
-            }
-            catch {
-                // best effort
-            }
-        }
+        if (cleaningUp)
+            return;
+        cleaningUp = true;
         server.close();
-        process.exit(0);
+        // Kill the agent container, then exit
+        const forceExitTimer = setTimeout(() => process.exit(1), 5000);
+        killAgent()
+            .catch(() => { })
+            .finally(() => {
+            clearTimeout(forceExitTimer);
+            process.exit(0);
+        });
     };
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);

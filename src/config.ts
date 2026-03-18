@@ -56,6 +56,10 @@ export function setEngineRoot(engineRoot: string): void {
   DATA_DIR = path.resolve(engineRoot, 'data');
 }
 
+export function setDataDir(dir: string): void {
+  DATA_DIR = path.resolve(dir);
+}
+
 export function getProjectRoot(): string {
   return PROJECT_ROOT;
 }

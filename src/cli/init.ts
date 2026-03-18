@@ -124,7 +124,7 @@ export async function init(targetDir: string): Promise<void> {
   // .gitignore
   fs.writeFileSync(
     path.join(artDir, '.gitignore'),
-    'logs/\nsessions/\nPIPELINE_STATE.json\n',
+    'logs/\nsessions/\nPIPELINE_STATE.json\n.tmp/\n',
   );
 
   console.log(`  ${ART_DIR_NAME}/ created with default pipeline.`);

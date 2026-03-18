@@ -31,6 +31,9 @@ export function setEngineRoot(engineRoot) {
     GROUPS_DIR = path.resolve(engineRoot, 'groups');
     DATA_DIR = path.resolve(engineRoot, 'data');
 }
+export function setDataDir(dir) {
+    DATA_DIR = path.resolve(dir);
+}
 export function getProjectRoot() {
     return PROJECT_ROOT;
 }

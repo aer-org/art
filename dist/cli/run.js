@@ -54,7 +54,11 @@ export async function run(targetDir) {
     // Ensure Claude authentication is available (before any engine imports)
     await ensureAuth();
     // Setup engine (paths, runtime, images, IPC dirs)
-    const { folderName } = await setupEngine({ projectDir, artDir });
+    const { folderName } = await setupEngine({
+        projectDir,
+        artDir,
+        ensureImages: true,
+    });
     const artGroup = {
         name: 'art',
         folder: folderName,

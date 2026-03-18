@@ -14,6 +14,7 @@ export declare let DATA_DIR: string;
  * engineRoot = AerArt install dir (for DB, store, groups)
  */
 export declare function setEngineRoot(engineRoot: string): void;
+export declare function setDataDir(dir: string): void;
 export declare function getProjectRoot(): string;
 export declare const CONTAINER_IMAGE: string;
 export declare const CONTAINER_TIMEOUT: number;
