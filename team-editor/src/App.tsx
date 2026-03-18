@@ -560,7 +560,7 @@ export default function App() {
             onDelete={handleDeleteStage}
             onSetEntry={handleSetEntry}
             artDirs={artDirs.map((d) => d.name)}
-            imageKeys={Object.keys(imageRegistry).filter((k) => k !== 'default')}
+            imageKeys={Object.keys(imageRegistry)}
           />
           {agent && (
             <>

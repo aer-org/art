@@ -56,20 +56,17 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
         />
       </label>
 
-      {imageKeys && imageKeys.length > 0 && (
-        <label>
-          Image
-          <select
-            value={stage.image || ''}
-            onChange={(e) => update({ image: e.target.value || undefined })}
-          >
-            <option value="">(default)</option>
-            {imageKeys.map((k) => (
-              <option key={k} value={k}>{k}</option>
-            ))}
-          </select>
-        </label>
-      )}
+      <label>
+        Image
+        <select
+          value={stage.image || 'default'}
+          onChange={(e) => update({ image: e.target.value === 'default' ? undefined : e.target.value })}
+        >
+          {(imageKeys && imageKeys.length > 0 ? imageKeys : ['default']).map((k) => (
+            <option key={k} value={k}>{k}</option>
+          ))}
+        </select>
+      </label>
 
       <label>
         Prompt

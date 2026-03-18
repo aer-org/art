@@ -602,9 +602,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
         // Register in image registry — actual build happens at `art run .`
         const registry = loadImageRegistry();
-        const image = hasAgent
-          ? `aer-art-agent-${key}:latest`
-          : baseImage;
+        const image = hasAgent ? `aer-art-agent-${key}:latest` : baseImage;
         registry[key] = { image, hasAgent: !!hasAgent, baseImage };
         saveImageRegistry(registry);
         res.writeHead(200, { 'Content-Type': 'application/json' });

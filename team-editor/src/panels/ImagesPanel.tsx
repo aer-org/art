@@ -32,80 +32,29 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
   const [hasAgent, setHasAgent] = useState(true);
 
   const baseImage = selectedPreset === '__custom__' ? customImage : selectedPreset;
-  const [building, setBuilding] = useState(false);
-  const [buildLog, setBuildLog] = useState('');
   const [error, setError] = useState('');
 
   const handleAdd = async () => {
     if (!key || !baseImage) return;
     setError('');
-    setBuildLog('');
 
-    if (hasAgent) {
-      // SSE stream build
-      setBuilding(true);
-      try {
-        const resp = await fetch('/api/images', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key, baseImage, hasAgent: true }),
-        });
-        const reader = resp.body?.getReader();
-        if (!reader) return;
-
-        const decoder = new TextDecoder();
-        let buf = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-
-          // Parse SSE lines
-          const lines = buf.split('\n');
-          buf = lines.pop() ?? '';
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const evt = JSON.parse(line.slice(6));
-              if (evt.type === 'log') {
-                setBuildLog((prev) => prev + evt.content);
-              } else if (evt.type === 'done') {
-                if (!evt.success) {
-                  setError(evt.error || 'Build failed');
-                }
-              }
-            } catch { /* skip non-JSON lines */ }
-          }
-        }
-      } catch (err) {
-        setError((err as Error).message);
-      } finally {
-        setBuilding(false);
-        setKey('');
-        setSelectedPreset('');
-        setCustomImage('');
-        onRefresh();
+    try {
+      const resp = await fetch('/api/images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, baseImage, hasAgent }),
+      });
+      if (!resp.ok) {
+        const data = await resp.json();
+        setError(data.error || 'Failed to add image');
+        return;
       }
-    } else {
-      // Direct register
-      try {
-        const resp = await fetch('/api/images', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key, baseImage, hasAgent: false }),
-        });
-        if (!resp.ok) {
-          const data = await resp.json();
-          setError(data.error || 'Failed to add image');
-          return;
-        }
-        setKey('');
-        setSelectedPreset('');
-        setCustomImage('');
-        onRefresh();
-      } catch (err) {
-        setError((err as Error).message);
-      }
+      setKey('');
+      setSelectedPreset('');
+      setCustomImage('');
+      onRefresh();
+    } catch (err) {
+      setError((err as Error).message);
     }
   };
 
@@ -157,7 +106,6 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
             value={key}
             placeholder="e.g. vivado"
             onChange={(e) => setKey(e.target.value)}
-            disabled={building}
           />
         </label>
         <label>
@@ -165,7 +113,6 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
           <select
             value={selectedPreset}
             onChange={(e) => setSelectedPreset(e.target.value)}
-            disabled={building}
           >
             <option value="" disabled>Select a base image…</option>
             {PRESET_IMAGES.map((p) => (
@@ -181,7 +128,6 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
               value={customImage}
               placeholder="e.g. myregistry/myimage:tag"
               onChange={(e) => setCustomImage(e.target.value)}
-              disabled={building}
             />
           </label>
         )}
@@ -190,32 +136,15 @@ export function ImagesPanel({ registry, onRefresh }: Props) {
             type="checkbox"
             checked={hasAgent}
             onChange={(e) => setHasAgent(e.target.checked)}
-            disabled={building}
           />
           Install agent stack (Node.js, Claude Code, etc.)
         </label>
-        <button onClick={handleAdd} disabled={building || !key || !baseImage}>
-          {building ? 'Building...' : 'Add Image'}
+        <button onClick={handleAdd} disabled={!key || !baseImage}>
+          Add Image
         </button>
       </div>
 
       {error && <div style={{ color: '#f38ba8', marginTop: 4, fontSize: '0.9em' }}>{error}</div>}
-
-      {buildLog && (
-        <pre style={{
-          marginTop: 8,
-          maxHeight: 200,
-          overflow: 'auto',
-          fontSize: '0.75em',
-          background: '#11111b',
-          padding: 8,
-          borderRadius: 4,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-        }}>
-          {buildLog}
-        </pre>
-      )}
     </div>
   );
 }
