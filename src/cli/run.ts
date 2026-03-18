@@ -71,7 +71,7 @@ export async function run(targetDir: string): Promise<void> {
   await ensureAuth();
 
   // Setup engine (paths, runtime, images, IPC dirs)
-  const { folderName } = await setupEngine({ projectDir, artDir });
+  const { folderName } = await setupEngine({ projectDir, artDir, ensureImages: true });
 
   const artGroup = {
     name: 'art',
