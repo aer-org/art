@@ -8,5 +8,6 @@ export declare function setupEngine(opts: {
     projectDir: string;
     artDir: string;
     credentialProxyPort?: number;
+    ensureImages?: boolean;
 }): Promise<EngineSetupResult>;
 //# sourceMappingURL=engine-setup.d.ts.map

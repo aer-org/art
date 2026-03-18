@@ -9,14 +9,14 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { saveImageRegistry } from '../image-registry.js';
 export async function setupEngine(opts) {
-    const { projectDir, artDir, credentialProxyPort = 3002 } = opts;
+    const { projectDir, artDir, credentialProxyPort = 3002, ensureImages = false, } = opts;
     // Set env vars for TUI-mode logging
     process.env.ART_TUI_MODE = 'true';
     process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
     const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
     process.env.ART_TUI_JID = `art://${projectDir}`;
     // Import engine modules (logger will see ART_TUI_LOG_DIR)
-    const { setEngineRoot, setCredentialProxyPort } = await import('../config.js');
+    const { setEngineRoot, setDataDir, setCredentialProxyPort } = await import('../config.js');
     const { initRuntime } = await import('../container-runtime.js');
     const { registerExternalGroupFolder } = await import('../group-folder.js');
     // Derive engine root from the installed package location
@@ -24,103 +24,104 @@ export async function setupEngine(opts) {
     const engineRoot = path.resolve(path.dirname(thisFile), '..', '..');
     // Configure engine paths
     setEngineRoot(engineRoot);
+    setDataDir(path.join(artDir, '.tmp'));
     // Initialize container runtime (auto-detect or load saved choice)
     const rt = await initRuntime();
     // Check registered images exist locally; prompt to build missing ones
-    const { loadImageRegistry: loadReg } = await import('../image-registry.js');
-    const { CONTAINER_IMAGE } = await import('../config.js');
-    const imageRegistry = loadReg();
-    // Collect all needed images: from registry + default if registry is empty
-    const needed = new Map();
-    if (Object.keys(imageRegistry).length === 0) {
-        needed.set('default', { image: CONTAINER_IMAGE });
-    }
-    else {
-        for (const [key, entry] of Object.entries(imageRegistry)) {
-            needed.set(key, { image: entry.image, baseImage: entry.baseImage });
-        }
-    }
-    // Also check PIPELINE.json for stage-specific images
-    const pipelinePath = path.join(artDir, 'PIPELINE.json');
-    if (fs.existsSync(pipelinePath)) {
-        try {
-            const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
-            for (const stage of pipeline.stages || []) {
-                const key = stage.image || 'default';
-                if (!needed.has(key)) {
-                    const regEntry = imageRegistry[key];
-                    needed.set(key, {
-                        image: regEntry?.image || CONTAINER_IMAGE,
-                        baseImage: regEntry?.baseImage,
-                    });
+    if (ensureImages) {
+        const { loadImageRegistry: loadReg } = await import('../image-registry.js');
+        const { CONTAINER_IMAGE } = await import('../config.js');
+        const imageRegistry = loadReg();
+        // Always need the default image (stages without explicit image use it)
+        const needed = new Map();
+        const defaultEntry = imageRegistry['default'];
+        needed.set('default', {
+            image: defaultEntry?.image || CONTAINER_IMAGE,
+            baseImage: defaultEntry?.baseImage,
+        });
+        // Only add images actually referenced by pipeline stages
+        const pipelinePath = path.join(artDir, 'PIPELINE.json');
+        if (fs.existsSync(pipelinePath)) {
+            try {
+                const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+                for (const stage of pipeline.stages || []) {
+                    if (stage.image && !needed.has(stage.image)) {
+                        const regEntry = imageRegistry[stage.image];
+                        if (regEntry) {
+                            needed.set(stage.image, {
+                                image: regEntry.image,
+                                baseImage: regEntry.baseImage,
+                            });
+                        }
+                    }
                 }
             }
-        }
-        catch {
-            // ignore malformed pipeline
-        }
-    }
-    // Check which images are missing locally
-    const missing = [];
-    for (const [key, info] of needed) {
-        try {
-            execSync(`${rt.bin} image inspect ${info.image}`, {
-                stdio: 'pipe',
-                timeout: 10000,
-            });
-        }
-        catch {
-            missing.push({ key, image: info.image, baseImage: info.baseImage });
-        }
-    }
-    // Prompt to build missing images
-    if (missing.length > 0) {
-        console.log(`\n빌드가 필요한 이미지 ${missing.length}개:`);
-        for (const m of missing)
-            console.log(`  - ${m.key} (${m.image})`);
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-        });
-        const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
-        for (const m of missing) {
-            const answer = process.stdin.isTTY
-                ? await ask(`\n"${m.key}" 이미지를 빌드하시겠습니까? (y/N): `)
-                : 'y'; // auto-accept in non-interactive (CI)
-            if (answer.trim().toLowerCase() !== 'y') {
-                console.error(`\n이 이미지를 사용하지 않는 파이프라인으로 수정하세요.`);
-                rl.close();
-                process.exit(1);
-            }
-            // Build the image
-            const scriptDir = path.resolve(engineRoot, 'container');
-            const buildCmd = m.key === 'default' || !m.baseImage
-                ? `${scriptDir}/build.sh`
-                : `${scriptDir}/build.sh ${m.key} ${m.baseImage}`;
-            console.log(`\n빌드 중: ${m.image}...`);
-            execSync(buildCmd, {
-                stdio: 'inherit',
-                timeout: 600000,
-                env: { ...process.env, CONTAINER_RUNTIME: rt.bin },
-            });
-            // Ensure registry entry exists
-            if (!imageRegistry[m.key]) {
-                imageRegistry[m.key] = {
-                    image: m.image,
-                    hasAgent: true,
-                    baseImage: m.baseImage,
-                };
-                saveImageRegistry(imageRegistry);
+            catch {
+                // ignore malformed pipeline
             }
         }
-        rl.close();
+        // Check which images are missing locally
+        const missing = [];
+        for (const [key, info] of needed) {
+            try {
+                execSync(`${rt.bin} image inspect ${info.image}`, {
+                    stdio: 'pipe',
+                    timeout: 10000,
+                });
+            }
+            catch {
+                missing.push({ key, image: info.image, baseImage: info.baseImage });
+            }
+        }
+        // Prompt to build missing images
+        if (missing.length > 0) {
+            console.log(`\n빌드가 필요한 이미지 ${missing.length}개:`);
+            for (const m of missing)
+                console.log(`  - ${m.key} (${m.image})`);
+            const rl = readline.createInterface({
+                input: process.stdin,
+                output: process.stdout,
+            });
+            const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+            for (const m of missing) {
+                const answer = process.stdin.isTTY
+                    ? await ask(`\n"${m.key}" 이미지를 빌드하시겠습니까? (y/N): `)
+                    : 'y'; // auto-accept in non-interactive (CI)
+                if (answer.trim().toLowerCase() !== 'y') {
+                    console.error(`\n이 이미지를 사용하지 않는 파이프라인으로 수정하세요.`);
+                    rl.close();
+                    process.exit(1);
+                }
+                // Build the image
+                const scriptDir = path.resolve(engineRoot, 'container');
+                const buildCmd = m.key === 'default' || !m.baseImage
+                    ? `${scriptDir}/build.sh`
+                    : `${scriptDir}/build.sh ${m.key} ${m.baseImage}`;
+                console.log(`\n빌드 중: ${m.image}...`);
+                execSync(buildCmd, {
+                    stdio: 'inherit',
+                    timeout: 600000,
+                    env: { ...process.env, CONTAINER_RUNTIME: rt.bin },
+                });
+                // Ensure registry entry exists
+                if (!imageRegistry[m.key]) {
+                    imageRegistry[m.key] = {
+                        image: m.image,
+                        hasAgent: true,
+                        baseImage: m.baseImage,
+                    };
+                    saveImageRegistry(imageRegistry);
+                }
+            }
+            rl.close();
+        }
     }
     // Set credential proxy port
     setCredentialProxyPort(parseInt(process.env.CREDENTIAL_PROXY_PORT || String(credentialProxyPort), 10));
     // Register __art__/ as an external group folder
     registerExternalGroupFolder(folderName, artDir);
     // Ensure IPC and session dirs exist
-    const dataDir = path.resolve(engineRoot, 'data');
+    const dataDir = path.join(artDir, '.tmp');
     fs.mkdirSync(path.join(dataDir, 'ipc', folderName, 'messages'), {
         recursive: true,
     });

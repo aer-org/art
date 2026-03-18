@@ -23,7 +23,12 @@ export async function setupEngine(opts: {
   credentialProxyPort?: number;
   ensureImages?: boolean;
 }): Promise<EngineSetupResult> {
-  const { projectDir, artDir, credentialProxyPort = 3002, ensureImages = false } = opts;
+  const {
+    projectDir,
+    artDir,
+    credentialProxyPort = 3002,
+    ensureImages = false,
+  } = opts;
 
   // Set env vars for TUI-mode logging
   process.env.ART_TUI_MODE = 'true';
@@ -33,7 +38,7 @@ export async function setupEngine(opts: {
   process.env.ART_TUI_JID = `art://${projectDir}`;
 
   // Import engine modules (logger will see ART_TUI_LOG_DIR)
-  const { setEngineRoot, setCredentialProxyPort } =
+  const { setEngineRoot, setDataDir, setCredentialProxyPort } =
     await import('../config.js');
   const { initRuntime } = await import('../container-runtime.js');
   const { registerExternalGroupFolder } = await import('../group-folder.js');
@@ -44,6 +49,7 @@ export async function setupEngine(opts: {
 
   // Configure engine paths
   setEngineRoot(engineRoot);
+  setDataDir(path.join(artDir, '.tmp'));
 
   // Initialize container runtime (auto-detect or load saved choice)
   const rt = await initRuntime();
@@ -54,29 +60,28 @@ export async function setupEngine(opts: {
     const { CONTAINER_IMAGE } = await import('../config.js');
     const imageRegistry = loadReg();
 
-    // Collect all needed images: from registry + default if registry is empty
+    // Always need the default image (stages without explicit image use it)
     const needed = new Map<string, { image: string; baseImage?: string }>();
-    if (Object.keys(imageRegistry).length === 0) {
-      needed.set('default', { image: CONTAINER_IMAGE });
-    } else {
-      for (const [key, entry] of Object.entries(imageRegistry)) {
-        needed.set(key, { image: entry.image, baseImage: entry.baseImage });
-      }
-    }
+    const defaultEntry = imageRegistry['default'];
+    needed.set('default', {
+      image: defaultEntry?.image || CONTAINER_IMAGE,
+      baseImage: defaultEntry?.baseImage,
+    });
 
-    // Also check PIPELINE.json for stage-specific images
+    // Only add images actually referenced by pipeline stages
     const pipelinePath = path.join(artDir, 'PIPELINE.json');
     if (fs.existsSync(pipelinePath)) {
       try {
         const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
         for (const stage of pipeline.stages || []) {
-          const key = stage.image || 'default';
-          if (!needed.has(key)) {
-            const regEntry = imageRegistry[key];
-            needed.set(key, {
-              image: regEntry?.image || CONTAINER_IMAGE,
-              baseImage: regEntry?.baseImage,
-            });
+          if (stage.image && !needed.has(stage.image)) {
+            const regEntry = imageRegistry[stage.image];
+            if (regEntry) {
+              needed.set(stage.image, {
+                image: regEntry.image,
+                baseImage: regEntry.baseImage,
+              });
+            }
           }
         }
       } catch {
@@ -114,7 +119,9 @@ export async function setupEngine(opts: {
           ? await ask(`\n"${m.key}" 이미지를 빌드하시겠습니까? (y/N): `)
           : 'y'; // auto-accept in non-interactive (CI)
         if (answer.trim().toLowerCase() !== 'y') {
-          console.error(`\n이 이미지를 사용하지 않는 파이프라인으로 수정하세요.`);
+          console.error(
+            `\n이 이미지를 사용하지 않는 파이프라인으로 수정하세요.`,
+          );
           rl.close();
           process.exit(1);
         }
@@ -158,7 +165,7 @@ export async function setupEngine(opts: {
   registerExternalGroupFolder(folderName, artDir);
 
   // Ensure IPC and session dirs exist
-  const dataDir = path.resolve(engineRoot, 'data');
+  const dataDir = path.join(artDir, '.tmp');
   fs.mkdirSync(path.join(dataDir, 'ipc', folderName, 'messages'), {
     recursive: true,
   });
