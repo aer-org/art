@@ -9,7 +9,8 @@ export declare function readClaudeCliToken(): string | null;
 export declare function resolveAuthToken(): string | null;
 /**
  * Ensure authentication is available, prompting interactively if needed.
- * Sets process.env._ART_OAUTH_TOKEN when a token is found or provided.
+ * Validates the token against the Anthropic API before accepting it.
+ * Sets process.env._ART_OAUTH_TOKEN when a valid token is confirmed.
  */
 export declare function ensureAuth(): Promise<void>;
 //# sourceMappingURL=auth.d.ts.map
