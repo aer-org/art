@@ -82,6 +82,7 @@ export async function startEditorServer(
     // Dynamic imports to access engine modules (must be after setupEngine)
     const { DATA_DIR } = await import('../config.js');
     const { runContainerAgent } = await import('../container-runner.js');
+    const { getImageForStage } = await import('../image-registry.js');
 
     const folderName = `art-${path.basename(resolvedProjectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
     ipcInputDir = path.join(DATA_DIR, 'ipc', folderName, 'input');
@@ -126,6 +127,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       isMain: true,
       containerConfig: {
         workspaceDir: artDir,
+        image: getImageForStage(),
       },
     };
 

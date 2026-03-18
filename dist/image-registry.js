@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { CONTAINER_IMAGE, IMAGE_REGISTRY_PATH } from './config.js';
+import { resolveLocalImageName } from './container-runtime.js';
 export function loadImageRegistry() {
     try {
         const raw = fs.readFileSync(IMAGE_REGISTRY_PATH, 'utf-8');
@@ -23,17 +24,17 @@ export function saveImageRegistry(registry) {
 export function getImageForStage(stageImage, isCommandMode = false) {
     if (!stageImage) {
         const registry = loadImageRegistry();
-        return registry['default']?.image || CONTAINER_IMAGE;
+        return resolveLocalImageName(registry['default']?.image || CONTAINER_IMAGE);
     }
     if (isCommandMode) {
         // Command mode: use image name directly (no registry lookup required)
-        return stageImage;
+        return resolveLocalImageName(stageImage);
     }
     // Agent mode: try registry lookup first
     const registry = loadImageRegistry();
     const entry = registry[stageImage];
     if (entry)
-        return entry.image;
+        return resolveLocalImageName(entry.image);
     // Not in registry — error for agent mode
     throw new Error(`Image "${stageImage}" not registered. Run init to register custom images.`);
 }

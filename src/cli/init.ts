@@ -4,7 +4,6 @@ import path from 'path';
 import readline from 'readline';
 
 import { ART_DIR_NAME, CONTAINER_IMAGE } from '../config.js';
-import { getRuntime, resolveLocalImageName } from '../container-runtime.js';
 import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
 import { ensureAuth } from './auth.js';
@@ -135,7 +134,7 @@ export async function init(targetDir: string): Promise<void> {
   const registry = loadImageRegistry();
   if (!registry['default']) {
     registry['default'] = {
-      image: resolveLocalImageName(CONTAINER_IMAGE),
+      image: CONTAINER_IMAGE,
       hasAgent: true,
     };
     saveImageRegistry(registry);

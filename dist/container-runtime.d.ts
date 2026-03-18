@@ -38,6 +38,12 @@ export declare function getRuntime(): RuntimeConfig;
 export declare function getRuntimeCapabilities(): RuntimeCapabilities;
 /** Get the runtime binary path/name. */
 export declare function getRuntimeBin(): string;
+/**
+ * udocker can't handle slash-heavy registry names (ghcr.io/org/image).
+ * Return the short local name (last path segment) for udocker, or the
+ * original name for Docker/Podman.
+ */
+export declare function resolveLocalImageName(image: string): string;
 /** Get the hostname containers use to reach the host. */
 export declare function getHostGateway(): string;
 /**

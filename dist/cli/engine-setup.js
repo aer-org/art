@@ -7,7 +7,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { loadImageRegistry, saveImageRegistry, } from '../image-registry.js';
+import { resolveLocalImageName } from '../container-runtime.js';
+import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
 const TAR_RELEASE_URL = 'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
 /**
  * Ensure the container image exists locally. If not, pull from registry.
@@ -16,8 +17,9 @@ const TAR_RELEASE_URL = 'https://github.com/aer-org/art/releases/download/contai
  */
 function ensureContainerImage(containerImage, runtimeBin) {
     const isUdocker = runtimeBin === 'udocker';
+    const localName = resolveLocalImageName(containerImage);
     const inspectCmd = isUdocker
-        ? `${runtimeBin} inspect ${containerImage}`
+        ? `${runtimeBin} inspect ${localName}`
         : `${runtimeBin} image inspect ${containerImage}`;
     try {
         execSync(inspectCmd, { stdio: 'pipe', timeout: 10000 });
@@ -39,14 +41,13 @@ function ensureContainerImage(containerImage, runtimeBin) {
                 encoding: 'utf-8',
                 timeout: 600000,
             });
-            // udocker can't handle slash-heavy registry names. Tag with short name.
-            const shortName = 'art-agent:latest';
+            // Tag with the resolved local name (short name for udocker)
             const match = loadOutput.match(/\['([^']+)'\]/);
             if (match) {
                 const loadedName = match[1];
-                if (loadedName !== shortName) {
+                if (loadedName !== localName) {
                     try {
-                        execSync(`${runtimeBin} tag ${loadedName} ${shortName}`, {
+                        execSync(`${runtimeBin} tag ${loadedName} ${localName}`, {
                             stdio: 'pipe',
                             timeout: 10000,
                         });
@@ -56,11 +57,11 @@ function ensureContainerImage(containerImage, runtimeBin) {
                     }
                 }
             }
-            // Update image registry to use the short name
+            // Update image registry to use the local name
             const reg = loadImageRegistry();
             for (const [key, entry] of Object.entries(reg)) {
-                if (entry.image === containerImage || entry.image === shortName) {
-                    reg[key] = { ...entry, image: shortName };
+                if (entry.image === containerImage || entry.image === localName) {
+                    reg[key] = { ...entry, image: localName };
                 }
             }
             saveImageRegistry(reg);

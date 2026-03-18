@@ -8,7 +8,7 @@ import path from 'path';
 import { CONTAINER_IMAGE, CONTAINER_MAX_OUTPUT_SIZE, CONTAINER_TIMEOUT, getCredentialProxyPort, getProjectRoot, DATA_DIR, GROUPS_DIR, IDLE_TIMEOUT, TIMEZONE, } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { getRuntime, hostGatewayArgs, readonlyMountArgs, stopContainer, writableMountArgs, } from './container-runtime.js';
+import { getRuntime, hostGatewayArgs, readonlyMountArgs, resolveLocalImageName, stopContainer, writableMountArgs, } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -283,7 +283,7 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
         const rt = getRuntime();
         // udocker: create a named container with F1 (Fakechroot) mode before running
         if (rt.kind === 'udocker') {
-            udockerCreateContainer(rt.bin, image, containerName);
+            udockerCreateContainer(rt.bin, resolveLocalImageName(image), containerName);
         }
         const container = spawn(rt.bin, containerArgs, {
             stdio: ['pipe', 'pipe', 'pipe'],
