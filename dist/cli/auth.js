@@ -87,7 +87,8 @@ function maskToken(token) {
  * API keys → ANTHROPIC_API_KEY, OAuth tokens → ANTHROPIC_AUTH_TOKEN.
  */
 function setAuthEnvVars(token) {
-    if (token.startsWith('sk-ant-api') || (!token.startsWith('sk-ant-oat') && !token.startsWith('eyJ'))) {
+    if (token.startsWith('sk-ant-api') ||
+        (!token.startsWith('sk-ant-oat') && !token.startsWith('eyJ'))) {
         // Looks like an API key
         process.env.ANTHROPIC_API_KEY = token;
     }

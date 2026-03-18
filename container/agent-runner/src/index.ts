@@ -423,7 +423,7 @@ async function runQuery(
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
       mcpServers: {
-        aer-art: {
+        'aer-art': {
           command: 'node',
           args: [mcpServerPath],
           env: {

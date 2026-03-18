@@ -65,9 +65,8 @@ export async function setupEngine(opts: {
   process.env.ART_TUI_JID = `art://${projectDir}`;
 
   // Import engine modules (logger will see ART_TUI_LOG_DIR)
-  const { setEngineRoot, setCredentialProxyPort } = await import(
-    '../config.js'
-  );
+  const { setEngineRoot, setCredentialProxyPort } =
+    await import('../config.js');
   const { initRuntime } = await import('../container-runtime.js');
   const { registerExternalGroupFolder } = await import('../group-folder.js');
 
@@ -90,7 +89,10 @@ export async function setupEngine(opts: {
 
   // Set credential proxy port
   setCredentialProxyPort(
-    parseInt(process.env.CREDENTIAL_PROXY_PORT || String(credentialProxyPort), 10),
+    parseInt(
+      process.env.CREDENTIAL_PROXY_PORT || String(credentialProxyPort),
+      10,
+    ),
   );
 
   // Register __art__/ as an external group folder

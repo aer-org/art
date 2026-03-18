@@ -61,7 +61,7 @@ export function getProjectRoot(): string {
 }
 
 export const CONTAINER_IMAGE =
-  process.env.CONTAINER_IMAGE || 'ghcr.io/jellyheadandrew/aer-art-agent:latest';
+  process.env.CONTAINER_IMAGE || 'ghcr.io/aer-org/aer-art-agent:latest';
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,

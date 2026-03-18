@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 IMAGE_NAME="aer-art-agent"
-REGISTRY_IMAGE="ghcr.io/jellyheadandrew/${IMAGE_NAME}"
+REGISTRY_IMAGE="ghcr.io/aer-org/${IMAGE_NAME}"
 TAG="${1:-latest}"
 BASE_IMAGE="${2:-}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
