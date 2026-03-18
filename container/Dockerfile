@@ -11,35 +11,9 @@ RUN which node > /dev/null 2>&1 || \
      apt-get install -y nodejs && \
      rm -rf /var/lib/apt/lists/*)
 
-# Install system dependencies for Chromium + Vivado
-RUN apt-get update && apt-get install -y \
-    chromium \
-    fonts-liberation \
-    fonts-noto-cjk \
-    fonts-noto-color-emoji \
-    libgbm1 \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxshmfence1 \
-    curl \
-    git \
-    locales \
-    libtinfo5 \
-    libncurses5 \
-    libc6-dev \
-    binutils \
-    && rm -rf /var/lib/apt/lists/* \
-    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
-    && locale-gen
+# Install system dependencies (cross-distro compatible)
+COPY install-deps.sh /tmp/install-deps.sh
+RUN /tmp/install-deps.sh && rm /tmp/install-deps.sh
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
@@ -77,14 +51,6 @@ RUN printf '#!/bin/sh\nset -e\ncd /app && node node_modules/typescript/bin/tsc -
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node
-
-# Install gcc/g++ and coreutils (tail, timeout, etc.) for Vivado simulation
-# Separate layer to preserve cache of earlier layers
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    coreutils \
-    && rm -rf /var/lib/apt/lists/*
 
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node
