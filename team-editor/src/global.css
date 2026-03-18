@@ -1,0 +1,511 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #181825;
+  border-bottom: 1px solid #313244;
+  z-index: 10;
+}
+
+.toolbar-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: #cba6f7;
+  margin-right: 12px;
+}
+
+.toolbar button {
+  padding: 6px 14px;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  background: #313244;
+  color: #cdd6f4;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.toolbar button:hover {
+  background: #45475a;
+}
+
+/* Main layout */
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.canvas {
+  flex: 1;
+  height: 100%;
+  background: #11111b;
+}
+
+.empty-canvas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #6c7086;
+  font-size: 14px;
+}
+
+/* Agent list panel (left) */
+.agent-list-panel {
+  width: 200px;
+  background: #181825;
+  border-right: 1px solid #313244;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.agent-list-header {
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #a6adc8;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid #313244;
+}
+
+.agent-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.agent-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  margin: 2px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+
+.agent-card:hover {
+  background: #313244;
+}
+
+.agent-card.selected {
+  background: #313244;
+  border-color: #89b4fa;
+}
+
+.agent-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #cdd6f4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-folder {
+  font-size: 10px;
+  color: #6c7086;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.agent-card-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.agent-card:hover .agent-card-actions {
+  opacity: 1;
+}
+
+.agent-card-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.agent-card-edit input {
+  padding: 4px 6px;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.agent-card-edit input:focus {
+  outline: none;
+  border-color: #89b4fa;
+}
+
+.btn-icon {
+  padding: 2px 6px;
+  border: none;
+  background: transparent;
+  color: #a6adc8;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 4px;
+}
+
+.btn-icon:hover {
+  background: #45475a;
+}
+
+.btn-icon-danger:hover {
+  color: #f38ba8;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  background: #313244;
+  color: #cdd6f4;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-sm:hover {
+  background: #45475a;
+}
+
+.agent-add-form {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid #313244;
+}
+
+.agent-add-form input {
+  padding: 6px 8px;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.agent-add-form input:focus {
+  outline: none;
+  border-color: #89b4fa;
+}
+
+.agent-add-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-add-agent {
+  margin: 8px;
+  padding: 6px 14px;
+  border: 1px dashed #45475a;
+  border-radius: 6px;
+  background: transparent;
+  color: #a6adc8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-add-agent:hover {
+  background: #313244;
+  border-color: #89b4fa;
+  color: #cdd6f4;
+}
+
+/* Sidebar (right) */
+.sidebar {
+  width: 300px;
+  background: #181825;
+  border-left: 1px solid #313244;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Panel styles */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cba6f7;
+  margin-bottom: 4px;
+}
+
+.empty-panel {
+  color: #6c7086;
+  font-size: 12px;
+  text-align: center;
+  padding-top: 40px;
+}
+
+.panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #a6adc8;
+  font-weight: 500;
+}
+
+.panel input[type="text"],
+.panel input[type="number"],
+.panel textarea,
+.panel select {
+  padding: 6px 8px;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.panel input:focus,
+.panel textarea:focus,
+.panel select:focus {
+  outline: none;
+  border-color: #89b4fa;
+}
+
+.panel fieldset {
+  border: 1px solid #313244;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.panel fieldset legend {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a6adc8;
+  padding: 0 4px;
+}
+
+.mount-row {
+  flex-direction: row !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px !important;
+}
+
+.mount-key {
+  font-family: 'JetBrains Mono', monospace;
+  min-width: 40px;
+}
+
+.mount-row select {
+  flex: 1;
+}
+
+.checkbox-row {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px !important;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #89b4fa;
+}
+
+.btn-danger {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: 1px solid #f38ba8;
+  border-radius: 6px;
+  background: transparent;
+  color: #f38ba8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-danger:hover {
+  background: rgba(243, 139, 168, 0.15);
+}
+
+.btn-entry {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: 1px solid #22c55e;
+  border-radius: 6px;
+  background: transparent;
+  color: #22c55e;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-entry:hover {
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.entry-indicator {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #22c55e;
+  font-weight: 600;
+}
+
+/* Error policy */
+.error-policy {
+  border: 1px solid #313244;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.error-policy legend {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a6adc8;
+  padding: 0 4px;
+}
+
+.error-policy label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #a6adc8;
+  font-weight: 500;
+  margin-top: 6px;
+}
+
+.error-policy .checkbox-row {
+  flex-direction: row !important;
+  align-items: center;
+}
+
+/* Files panel */
+.files-panel {
+  border-top: 1px solid #313244;
+  padding-top: 12px;
+}
+
+.file-section {
+  margin-bottom: 8px;
+}
+
+.file-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: #a6adc8;
+  margin-bottom: 4px;
+}
+
+.file-section-header span {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.file-drop-zone {
+  border: 1px dashed #45475a;
+  border-radius: 4px;
+  padding: 8px;
+  text-align: center;
+  font-size: 10px;
+  color: #6c7086;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 6px;
+  background: #1e1e2e;
+  border-radius: 4px;
+  margin-bottom: 2px;
+}
+
+.file-name {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #cdd6f4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* React Flow overrides — edge labels */
+.react-flow__edge-textbg {
+  rx: 4;
+  ry: 4;
+}
+
+.react-flow__edge-text {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.react-flow__controls {
+  background: #313244;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+}
+
+.react-flow__controls button {
+  background: #313244;
+  border-color: #45475a;
+  fill: #cdd6f4;
+}
+
+.react-flow__controls button:hover {
+  background: #45475a;
+}

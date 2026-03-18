@@ -1,0 +1,138 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import readline from 'readline';
+
+const TOKEN_FILE = path.join(os.homedir(), '.config', 'aer-art', 'token');
+
+export function readSavedToken(): string | null {
+  try {
+    const token = fs.readFileSync(TOKEN_FILE, 'utf-8').trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveToken(token: string): void {
+  const dir = path.dirname(TOKEN_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(TOKEN_FILE, token + '\n', { mode: 0o600 });
+}
+
+export function readClaudeCliToken(): string | null {
+  try {
+    const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
+    const raw = fs.readFileSync(credPath, 'utf-8');
+    const creds = JSON.parse(raw);
+    const oauth = creds?.claudeAiOauth;
+    if (!oauth?.accessToken) return null;
+    if (oauth.expiresAt && Date.now() > oauth.expiresAt - 60_000) return null;
+    return oauth.accessToken;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve an auth token from available sources.
+ * Chain: _ART_OAUTH_TOKEN → .env ANTHROPIC_API_KEY → ~/.config/aer-art/token → ~/.claude/.credentials.json
+ * Returns null if no token found (no interactive prompt).
+ */
+export function resolveAuthToken(): string | null {
+  // 0. Token set by ensureAuth() in current process
+  if (process.env._ART_OAUTH_TOKEN) {
+    return process.env._ART_OAUTH_TOKEN;
+  }
+
+  // 1. Environment variable (direct API key)
+  if (process.env.ANTHROPIC_API_KEY) {
+    return process.env.ANTHROPIC_API_KEY;
+  }
+
+  // 2. Check .env in cwd
+  const envFile = path.join(process.cwd(), '.env');
+  try {
+    const env = fs.readFileSync(envFile, 'utf-8');
+    for (const line of env.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('ANTHROPIC_API_KEY=')) {
+        const val = trimmed.slice('ANTHROPIC_API_KEY='.length).trim();
+        if (val) return val;
+      }
+    }
+  } catch {
+    /* no .env */
+  }
+
+  // 3. Saved token from previous art setup
+  const saved = readSavedToken();
+  if (saved) return saved;
+
+  // 4. Claude CLI credentials
+  const cliToken = readClaudeCliToken();
+  if (cliToken) return cliToken;
+
+  return null;
+}
+
+/**
+ * Ensure authentication is available, prompting interactively if needed.
+ * Sets process.env._ART_OAUTH_TOKEN when a token is found or provided.
+ */
+export async function ensureAuth(): Promise<void> {
+  // 1. Check .env in project dir
+  const envFile = path.join(process.cwd(), '.env');
+  try {
+    const env = fs.readFileSync(envFile, 'utf-8');
+    if (
+      env.includes('CLAUDE_CODE_OAUTH_TOKEN=') ||
+      env.includes('ANTHROPIC_AUTH_TOKEN=')
+    ) {
+      return;
+    }
+  } catch {
+    /* no .env */
+  }
+
+  // 2. Check saved token from previous art setup
+  const saved = readSavedToken();
+  if (saved) {
+    process.env._ART_OAUTH_TOKEN = saved;
+    return;
+  }
+
+  // 3. Try Claude CLI credentials
+  const cliToken = readClaudeCliToken();
+  if (cliToken) {
+    process.env._ART_OAUTH_TOKEN = cliToken;
+    return;
+  }
+
+  // 4. No token found — ask user to provide one
+  console.log(
+    'No Claude authentication found.\n\n' +
+      'To get a token, run:\n\n' +
+      '  claude setup-token\n\n' +
+      'Then paste the token below.\n',
+  );
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const token = await new Promise<string>((resolve) =>
+    rl.question('Token: ', resolve),
+  );
+  rl.close();
+
+  const trimmed = token.trim();
+  if (!trimmed) {
+    console.error('No token provided. Exiting.');
+    process.exit(1);
+  }
+
+  saveToken(trimmed);
+  process.env._ART_OAUTH_TOKEN = trimmed;
+  console.log('Token saved to ~/.config/aer-art/token\n');
+}

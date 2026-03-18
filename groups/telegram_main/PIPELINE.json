@@ -1,0 +1,38 @@
+{
+  "stages": [
+    {
+      "name": "implementation",
+      "prompt": "/workspace/extra/plan/PLAN.md에 따라 /workspace/extra/src/fc_module/ 디렉토리의 Verilog RTL 코드를 작성하라. fc_module.v, fc_apb.v, fc_top.v만 수정하라. clk_counter.v는 수정 금지. 절대 testbench를 작성하지 마라.\n\n## RTL 설계 원칙\n- FPGA-friendly한 state register 중심 설계를 하라. 산술적으로 우아한 것보다 timing closure가 쉬운 구조를 택하라.\n- 직접 state registers로 업데이트하고 explicit rollover rules를 사용하라. 반복적인 global recomputation을 피하라.\n- Display/출력 로직은 얕고 단순하게 유지하라. 출력 경로에 복잡한 연산을 넣지 마라.\n- 핀 할당 문제를 의심하기 전에, RTL 내부의 bit ordering과 polarity를 먼저 확인하라.",
+      "mounts": { "plan": "ro", "src": "rw", "build": null, "tb": null, "sim": null },
+      "onComplete": "simulation",
+      "onCodeError": null
+    },
+    {
+      "name": "simulation",
+      "prompt": "/workspace/extra/tb/ 의 기존 testbench와 /workspace/extra/sim/ 의 시뮬레이션 환경을 사용하여 /workspace/extra/src/fc_module/ RTL 코드를 검증하라. xvlog/xelab/xsim 또는 vivado -mode batch 중 적절한 방식을 선택하라. RTL 코드를 수정하지 마라.\n\n## 시뮬레이션 원칙\n- 시뮬레이션은 짧고 목적이 명확해야 한다. 긴 시뮬레이션이 항상 최선은 아니다.\n- 검증 순서: (1) xvlog 컴파일 체크, (2) xelab elaboration 체크, (3) 짧은 targeted 시뮬레이션.\n- 시뮬레이션이 너무 오래 걸리면 중단하라. 컴파일/elaboration 체크 + 짧은 시나리오 테스트가 더 생산적이다.\n- 시뮬레이션 로그를 읽고 모든 테스트 통과 여부를 판단하라.",
+      "mounts": { "plan": "ro", "src": "ro", "build": "ro", "tb": "ro", "sim": "rw" },
+      "onComplete": "bitstream",
+      "onCodeError": "implementation"
+    },
+    {
+      "name": "bitstream",
+      "prompt": "vivado -mode batch로 /workspace/extra/src/ 의 소스를 사용하여 synthesis → implementation → bitstream 생성을 수행하라. RTL 코드를 수정하지 마라.\n\n## Vivado 빌드 원칙\n- **split flow를 사용하라**: synth → opt → place → route → post_route.dcp 저장 → checkpoint reopen → write_bitstream. 단일 monolithic flow는 불안정할 수 있다.\n- 반드시 보존할 artifact: post_synth.dcp, post_route.dcp, timing report, utilization report, bitstream. 경로를 기록하라.\n- timing report에서 WNS >= 0 확인. utilization report도 확인하라.\n- Vivado가 불안정하면 RTL만 의심하지 말고 workflow 자체를 점검하라.\n- ILA/debug-core 실패는 환경/toolchain 문제일 수 있다. RTL을 바로 다시 쓰지 마라.",
+      "mounts": { "plan": "ro", "src": "ro", "build": "rw", "tb": null, "sim": null },
+      "onComplete": "board_upload",
+      "onCodeError": "implementation"
+    },
+    {
+      "name": "board_upload",
+      "prompt": "vivado -mode batch로 hw_server에 연결하고 Nexys A7 보드에 /workspace/extra/build/ 의 bitstream을 프로그래밍하라.\n\n## 보드 프로그래밍 원칙\n- hw_server 연결 → hardware target 확인 → device 선택 → program_hw_devices 순서.\n- XDC 정합성: package pin + IOSTANDARD + signal polarity를 모두 확인하라. 핀 번호만으로는 부족하다.\n- 프로그래밍 성공 후 기본 동작 확인 (LED, 버튼 등)으로 board bring-up을 검증하라.",
+      "mounts": { "plan": "ro", "src": "ro", "build": "ro", "tb": null, "sim": null },
+      "devices": ["/dev/bus/usb"],
+      "runAsRoot": true,
+      "onComplete": null,
+      "onCodeError": "implementation"
+    }
+  ],
+  "errorPolicy": {
+    "maxConsecutive": 3,
+    "debugOnMaxErrors": true
+  }
+}
