@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
@@ -144,7 +145,45 @@ export async function init(targetDir: string): Promise<void> {
 
   // Setup engine for container agent
   const { setupEngine } = await import('./engine-setup.js');
-  await setupEngine({ projectDir, artDir });
+  const { engineRoot, runtimeBin } = await setupEngine({ projectDir, artDir });
+
+  // Ensure default agent container image exists; prompt to build if missing
+  let hasDefaultImage = false;
+  try {
+    execSync(`${runtimeBin} image inspect ${CONTAINER_IMAGE}`, {
+      stdio: 'pipe',
+      timeout: 10000,
+    });
+    hasDefaultImage = true;
+  } catch {
+    // image not found
+  }
+
+  if (!hasDefaultImage) {
+    const rl2 = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    const answer = process.stdin.isTTY
+      ? await new Promise<string>((resolve) =>
+          rl2.question(
+            `\nAgent 컨테이너 이미지를 빌드하시겠습니까? (${CONTAINER_IMAGE}) (y/N): `,
+            resolve,
+          ),
+        )
+      : 'y';
+    rl2.close();
+
+    if (answer.trim().toLowerCase() === 'y') {
+      const scriptDir = path.resolve(engineRoot, 'container');
+      console.log(`\n빌드 중: ${CONTAINER_IMAGE}...`);
+      execSync(`${scriptDir}/build.sh`, {
+        stdio: 'inherit',
+        timeout: 600000,
+        env: { ...process.env, CONTAINER_RUNTIME: runtimeBin },
+      });
+    }
+  }
 
   // Launch GUI editor with container agent onboarding
   await startEditorServer(artDir, 'init', projectDir);
