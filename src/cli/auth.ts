@@ -81,15 +81,19 @@ export function resolveAuthToken(): string | null {
  * Sets process.env._ART_OAUTH_TOKEN when a token is found or provided.
  */
 export async function ensureAuth(): Promise<void> {
-  // 1. Check .env in project dir
+  // 1. Check .env in project dir for a non-empty token
   const envFile = path.join(process.cwd(), '.env');
   try {
     const env = fs.readFileSync(envFile, 'utf-8');
-    if (
-      env.includes('CLAUDE_CODE_OAUTH_TOKEN=') ||
-      env.includes('ANTHROPIC_AUTH_TOKEN=')
-    ) {
-      return;
+    for (const line of env.split('\n')) {
+      const trimmed = line.trim();
+      if (
+        (trimmed.startsWith('CLAUDE_CODE_OAUTH_TOKEN=') ||
+          trimmed.startsWith('ANTHROPIC_AUTH_TOKEN=')) &&
+        trimmed.split('=', 2)[1]?.trim()
+      ) {
+        return;
+      }
     }
   } catch {
     /* no .env */
