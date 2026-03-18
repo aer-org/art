@@ -7,6 +7,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { loadImageRegistry, saveImageRegistry, } from '../image-registry.js';
 const TAR_RELEASE_URL = 'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
 /**
  * Ensure the container image exists locally. If not, pull from registry.
@@ -34,10 +35,35 @@ function ensureContainerImage(containerImage, runtimeBin) {
                 stdio: ['pipe', 'inherit', 'inherit'],
                 timeout: 600000,
             });
-            execSync(`${runtimeBin} load -i ${tarPath}`, {
-                stdio: 'inherit',
+            const loadOutput = execSync(`${runtimeBin} load -i ${tarPath}`, {
+                encoding: 'utf-8',
                 timeout: 600000,
             });
+            // udocker can't handle slash-heavy registry names. Tag with short name.
+            const shortName = 'art-agent:latest';
+            const match = loadOutput.match(/\['([^']+)'\]/);
+            if (match) {
+                const loadedName = match[1];
+                if (loadedName !== shortName) {
+                    try {
+                        execSync(`${runtimeBin} tag ${loadedName} ${shortName}`, {
+                            stdio: 'pipe',
+                            timeout: 10000,
+                        });
+                    }
+                    catch {
+                        // non-fatal
+                    }
+                }
+            }
+            // Update image registry to use the short name
+            const reg = loadImageRegistry();
+            for (const [key, entry] of Object.entries(reg)) {
+                if (entry.image === containerImage || entry.image === shortName) {
+                    reg[key] = { ...entry, image: shortName };
+                }
+            }
+            saveImageRegistry(reg);
             console.log('Container image loaded successfully.\n');
         }
         catch {

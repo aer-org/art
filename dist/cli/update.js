@@ -7,7 +7,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { loadImageRegistry } from '../image-registry.js';
+import { loadImageRegistry, saveImageRegistry, } from '../image-registry.js';
 import { initRuntime } from '../container-runtime.js';
 const TAR_RELEASE_URL = 'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
 function udockerLoadFromTar(runtimeBin, image) {
@@ -46,10 +46,38 @@ function udockerLoadFromTar(runtimeBin, image) {
             // image didn't exist
         }
         console.log('  loading image...');
-        execSync(`${runtimeBin} load -i ${tarPath}`, {
-            stdio: 'inherit',
+        const loadOutput = execSync(`${runtimeBin} load -i ${tarPath}`, {
+            encoding: 'utf-8',
             timeout: 600000,
         });
+        console.log(loadOutput);
+        // udocker can't handle slash-heavy registry names (ghcr.io/org/image).
+        // Tag the loaded image with a short local name.
+        const shortName = 'art-agent:latest';
+        const match = loadOutput.match(/\['([^']+)'\]/);
+        if (match) {
+            const loadedName = match[1];
+            if (loadedName !== shortName) {
+                try {
+                    execSync(`${runtimeBin} tag ${loadedName} ${shortName}`, {
+                        stdio: 'pipe',
+                        timeout: 10000,
+                    });
+                    console.log(`  tagged ${loadedName} → ${shortName}`);
+                }
+                catch {
+                    // non-fatal
+                }
+            }
+        }
+        // Update image registry to use the short name
+        const reg = loadImageRegistry();
+        for (const [key, entry] of Object.entries(reg)) {
+            if (entry.image === image || entry.image === shortName) {
+                reg[key] = { ...entry, image: shortName };
+            }
+        }
+        saveImageRegistry(reg);
         return true;
     }
     catch {
