@@ -325,6 +325,15 @@ export class PipelineRunner {
         containerPath: '/workspace/project',
         readonly: effectivePolicy === 'ro',
       });
+      // Shadow __art__/ with empty dir so agents can't see pipeline internals
+      const emptyDir = path.join(DATA_DIR, 'empty');
+      fs.mkdirSync(emptyDir, { recursive: true });
+      const artDirName = path.basename(this.groupDir);
+      internalMounts.push({
+        hostPath: emptyDir,
+        containerPath: `/workspace/project/${artDirName}`,
+        readonly: true,
+      });
     }
 
     // Resolve container image from registry (agent mode only)
@@ -346,7 +355,7 @@ export class PipelineRunner {
         additionalMounts: parentMounts,
         additionalDevices: stageConfig.devices || [],
         runAsRoot: stageConfig.runAsRoot === true,
-        workspaceDir: stageWorkspaceDir,
+        groupReadonly: true,
         internalMounts,
       },
     };
@@ -501,6 +510,15 @@ export class PipelineRunner {
         hostPath: path.dirname(this.groupDir),
         containerPath: '/workspace/project',
         readonly: effectivePolicy === 'ro',
+      });
+      // Shadow __art__/ with empty dir so commands can't see pipeline internals
+      const emptyDir = path.join(DATA_DIR, 'empty');
+      fs.mkdirSync(emptyDir, { recursive: true });
+      const artDirName = path.basename(this.groupDir);
+      internalMounts.push({
+        hostPath: emptyDir,
+        containerPath: `/workspace/project/${artDirName}`,
+        readonly: true,
       });
     }
 

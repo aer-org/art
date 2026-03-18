@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
-import { CONTAINER_IMAGE } from './config.js';
+import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
 import { buildContainerArgs, runContainerAgent, } from './container-runner.js';
 import { getRuntime } from './container-runtime.js';
 import { getImageForStage } from './image-registry.js';
@@ -190,6 +190,15 @@ export class PipelineRunner {
                 containerPath: '/workspace/project',
                 readonly: effectivePolicy === 'ro',
             });
+            // Shadow __art__/ with empty dir so agents can't see pipeline internals
+            const emptyDir = path.join(DATA_DIR, 'empty');
+            fs.mkdirSync(emptyDir, { recursive: true });
+            const artDirName = path.basename(this.groupDir);
+            internalMounts.push({
+                hostPath: emptyDir,
+                containerPath: `/workspace/project/${artDirName}`,
+                readonly: true,
+            });
         }
         // Resolve container image from registry (agent mode only)
         let resolvedImage;
@@ -208,7 +217,7 @@ export class PipelineRunner {
                 additionalMounts: parentMounts,
                 additionalDevices: stageConfig.devices || [],
                 runAsRoot: stageConfig.runAsRoot === true,
-                workspaceDir: stageWorkspaceDir,
+                groupReadonly: true,
                 internalMounts,
             },
         };
@@ -326,6 +335,15 @@ export class PipelineRunner {
                 hostPath: path.dirname(this.groupDir),
                 containerPath: '/workspace/project',
                 readonly: effectivePolicy === 'ro',
+            });
+            // Shadow __art__/ with empty dir so commands can't see pipeline internals
+            const emptyDir = path.join(DATA_DIR, 'empty');
+            fs.mkdirSync(emptyDir, { recursive: true });
+            const artDirName = path.basename(this.groupDir);
+            internalMounts.push({
+                hostPath: emptyDir,
+                containerPath: `/workspace/project/${artDirName}`,
+                readonly: true,
             });
         }
         const safeName = stageConfig.name.replace(/[^a-zA-Z0-9-]/g, '-');
