@@ -295,13 +295,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     }
   }
 
-  const port = 5173;
-  const url = `http://localhost:${port}?mode=${mode}`;
-
   const server = http.createServer(async (req, res) => {
     const method = req.method ?? 'GET';
     const reqUrl = req.url ?? '/';
-    const parsed = new URL(reqUrl, `http://localhost:${port}`);
+    const parsed = new URL(reqUrl, `http://localhost`);
 
     // CORS headers for API endpoints
     if (parsed.pathname.startsWith('/api/')) {
@@ -672,7 +669,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     }
   });
 
-  server.listen(port, () => {
+  server.listen(0, () => {
+    const addr = server.address() as import('net').AddressInfo;
+    const port = addr.port;
+    const url = `http://localhost:${port}?mode=${mode}`;
     console.log(`Opening pipeline editor for ${path.dirname(artDir)}`);
     console.log(`  ${url}\n`);
 
