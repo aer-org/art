@@ -2,14 +2,11 @@
  * Shared engine bootstrap for art init / art run / art compose.
  * Extracts common setup from run.ts so init and compose can reuse it.
  */
-import { execSync } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { resolveLocalImageName } from '../container-runtime.js';
-import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
+import { saveImageRegistry } from '../image-registry.js';
 
 export interface EngineSetupResult {
   engineRoot: string;
@@ -18,99 +15,6 @@ export interface EngineSetupResult {
   runtimeBin: string;
 }
 
-const TAR_RELEASE_URL =
-  'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
-
-/**
- * Ensure the container image exists locally. If not, pull from registry.
- * For udocker: downloads pre-built tar from GitHub Release since udocker pull
- * can't reliably merge multi-layer images.
- */
-function ensureContainerImage(
-  containerImage: string,
-  runtimeBin: string,
-): void {
-  const isUdocker = runtimeBin === 'udocker';
-  const localName = resolveLocalImageName(containerImage);
-  const inspectCmd = isUdocker
-    ? `${runtimeBin} inspect ${localName}`
-    : `${runtimeBin} image inspect ${containerImage}`;
-
-  try {
-    execSync(inspectCmd, { stdio: 'pipe', timeout: 10000 });
-    return; // image exists
-  } catch {
-    // image not found — pull it
-  }
-
-  if (isUdocker) {
-    console.log(`Downloading container image tar: ${containerImage}...`);
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-setup-'));
-    const tarPath = path.join(tmpDir, 'art-agent.tar.gz');
-    try {
-      execSync(`curl -fSL -o ${tarPath} ${TAR_RELEASE_URL}`, {
-        stdio: ['pipe', 'inherit', 'inherit'],
-        timeout: 600000,
-      });
-      const loadOutput = execSync(`${runtimeBin} load -i ${tarPath}`, {
-        encoding: 'utf-8',
-        timeout: 600000,
-      });
-
-      // Tag with the resolved local name (short name for udocker)
-      const match = loadOutput.match(/\['([^']+)'\]/);
-      if (match) {
-        const loadedName = match[1];
-        if (loadedName !== localName) {
-          try {
-            execSync(`${runtimeBin} tag ${loadedName} ${localName}`, {
-              stdio: 'pipe',
-              timeout: 10000,
-            });
-          } catch {
-            // non-fatal
-          }
-        }
-      }
-
-      // Update image registry to use the local name
-      const reg = loadImageRegistry();
-      for (const [key, entry] of Object.entries(reg)) {
-        if (entry.image === containerImage || entry.image === localName) {
-          reg[key] = { ...entry, image: localName };
-        }
-      }
-      saveImageRegistry(reg);
-      console.log('Container image loaded successfully.\n');
-    } catch {
-      console.error(
-        `Failed to download or load image tar.\n` +
-          `Download manually from: ${TAR_RELEASE_URL}\n` +
-          `Then run: ${runtimeBin} load -i art-agent.tar.gz`,
-      );
-      process.exit(1);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-    return;
-  }
-
-  console.log(`Pulling container image: ${containerImage}...`);
-  try {
-    execSync(`${runtimeBin} pull ${containerImage}`, {
-      stdio: 'inherit',
-      timeout: 600000,
-    });
-    console.log('Container image pulled successfully.\n');
-  } catch {
-    console.error(
-      `Failed to pull image '${containerImage}'.\n` +
-        `Check your network connection and that the image exists:\n` +
-        `  ${runtimeBin} pull ${containerImage}`,
-    );
-    process.exit(1);
-  }
-}
 
 export async function setupEngine(opts: {
   projectDir: string;
@@ -142,12 +46,19 @@ export async function setupEngine(opts: {
   // Initialize container runtime (auto-detect or load saved choice)
   const rt = await initRuntime();
 
-  // Pull/verify all registered container images
-  const { loadImageRegistry } = await import('../image-registry.js');
-  const imageRegistry = loadImageRegistry();
-  for (const entry of Object.values(imageRegistry)) {
-    ensureContainerImage(entry.image, rt.bin);
+  // Pull/verify all registered container images (update registry if name changed)
+  const { ensureImage } = await import('../container-runtime.js');
+  const { loadImageRegistry: loadReg } = await import('../image-registry.js');
+  const imageRegistry = loadReg();
+  let registryChanged = false;
+  for (const [key, entry] of Object.entries(imageRegistry)) {
+    const usableName = ensureImage(entry.image);
+    if (usableName !== entry.image) {
+      imageRegistry[key] = { ...entry, image: usableName };
+      registryChanged = true;
+    }
   }
+  if (registryChanged) saveImageRegistry(imageRegistry);
 
   // Set credential proxy port
   setCredentialProxyPort(

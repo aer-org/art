@@ -39,11 +39,31 @@ export declare function getRuntimeCapabilities(): RuntimeCapabilities;
 /** Get the runtime binary path/name. */
 export declare function getRuntimeBin(): string;
 /**
- * udocker can't handle slash-heavy registry names (ghcr.io/org/image).
- * Return the short local name (last path segment) for udocker, or the
- * original name for Docker/Podman.
+ * Ensure the container image exists locally. If not, pull (Docker/Podman)
+ * or download+load tar (udocker).
+ * Returns the usable image name — for udocker this is the name from
+ * `udocker load` output (full registry path), since `udocker tag` is broken.
  */
-export declare function resolveLocalImageName(image: string): string;
+export declare function ensureImage(image: string): string;
+/**
+ * Download the pre-built tar from GitHub Releases and load into udocker.
+ * Returns the loaded image name (as reported by udocker load).
+ */
+export declare function downloadAndLoadUdockerImage(bin: string): string;
+/**
+ * Remove an image from the local runtime.
+ */
+export declare function removeImage(image: string): void;
+/**
+ * Pre-run container setup. For udocker: create named container + configure
+ * Fakechroot (F1) execution mode. No-op for Docker/Podman.
+ */
+export declare function prepareContainer(image: string, name: string): void;
+/**
+ * Post-run container cleanup. For udocker: remove named container.
+ * No-op for Docker/Podman (--rm handles it).
+ */
+export declare function cleanupContainer(name: string): void;
 /** Get the hostname containers use to reach the host. */
 export declare function getHostGateway(): string;
 /**

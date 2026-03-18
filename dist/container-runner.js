@@ -2,13 +2,13 @@
  * Container Runner for AerArt
  * Spawns agent execution in containers and handles IPC
  */
-import { exec, execSync, spawn } from 'child_process';
+import { exec, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { CONTAINER_IMAGE, CONTAINER_MAX_OUTPUT_SIZE, CONTAINER_TIMEOUT, getCredentialProxyPort, getProjectRoot, DATA_DIR, GROUPS_DIR, IDLE_TIMEOUT, TIMEZONE, } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { getRuntime, hostGatewayArgs, readonlyMountArgs, resolveLocalImageName, stopContainer, writableMountArgs, } from './container-runtime.js';
+import { cleanupContainer, getRuntime, hostGatewayArgs, prepareContainer, readonlyMountArgs, stopContainer, writableMountArgs, } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -144,31 +144,6 @@ function buildVolumeMounts(group, isMain) {
     }
     return mounts;
 }
-// ---------------------------------------------------------------------------
-// udocker helpers: create → setup F1 → run → rm
-// udocker's PRoot mode can't resolve container rootfs properly.
-// Fakechroot (F1) works but requires a named container with explicit setup.
-// ---------------------------------------------------------------------------
-function udockerCreateContainer(bin, image, containerName) {
-    execSync(`${bin} create --name=${containerName} ${image}`, {
-        stdio: 'pipe',
-        timeout: 30000,
-    });
-    execSync(`${bin} setup --execmode=F1 ${containerName}`, {
-        stdio: 'pipe',
-        timeout: 30000,
-    });
-    logger.debug({ containerName }, 'udocker container created with F1 mode');
-}
-function udockerRemoveContainer(bin, containerName) {
-    try {
-        execSync(`${bin} rm ${containerName}`, { stdio: 'pipe', timeout: 10000 });
-        logger.debug({ containerName }, 'udocker container removed');
-    }
-    catch {
-        logger.warn({ containerName }, 'Failed to remove udocker container');
-    }
-}
 export function buildContainerArgs(mounts, containerName, devices = [], runAsRoot = false, image, entrypoint) {
     const rt = getRuntime();
     const args = ['run'];
@@ -282,9 +257,7 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
     return new Promise((resolve) => {
         const rt = getRuntime();
         // udocker: create a named container with F1 (Fakechroot) mode before running
-        if (rt.kind === 'udocker') {
-            udockerCreateContainer(rt.bin, resolveLocalImageName(image), containerName);
-        }
+        prepareContainer(image, containerName);
         const container = spawn(rt.bin, containerArgs, {
             stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -420,9 +393,7 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
         container.on('close', (code) => {
             clearTimeout(timeout);
             // udocker: remove the ephemeral container
-            if (rt.kind === 'udocker') {
-                udockerRemoveContainer(rt.bin, containerName);
-            }
+            cleanupContainer(containerName);
             const duration = Date.now() - startTime;
             if (logStream) {
                 logStream.write(`\n=== Stage ${group.name} exited: code=${code} duration=${duration}ms ===\n`);

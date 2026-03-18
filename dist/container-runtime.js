@@ -357,16 +357,125 @@ export function getRuntimeCapabilities() {
 export function getRuntimeBin() {
     return getRuntime().bin;
 }
+// ---------------------------------------------------------------------------
+// Runtime-specific image & container lifecycle
+// ---------------------------------------------------------------------------
+const TAR_RELEASE_URL = 'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
 /**
- * udocker can't handle slash-heavy registry names (ghcr.io/org/image).
- * Return the short local name (last path segment) for udocker, or the
- * original name for Docker/Podman.
+ * Ensure the container image exists locally. If not, pull (Docker/Podman)
+ * or download+load tar (udocker).
+ * Returns the usable image name — for udocker this is the name from
+ * `udocker load` output (full registry path), since `udocker tag` is broken.
  */
-export function resolveLocalImageName(image) {
-    if (!cachedRuntime || cachedRuntime.kind !== 'udocker')
+export function ensureImage(image) {
+    const rt = getRuntime();
+    if (rt.kind === 'udocker') {
+        try {
+            execSync(`${rt.bin} inspect ${image}`, {
+                stdio: 'pipe',
+                timeout: 10000,
+            });
+            return image;
+        }
+        catch {
+            // not found — download and load
+        }
+        return downloadAndLoadUdockerImage(rt.bin);
+    }
+    // Docker / Podman
+    try {
+        execSync(`${rt.bin} image inspect ${image}`, {
+            stdio: 'pipe',
+            timeout: 10000,
+        });
         return image;
-    const parts = image.split('/');
-    return parts[parts.length - 1];
+    }
+    catch {
+        // not found — pull
+    }
+    console.log(`Pulling container image: ${image}...`);
+    execSync(`${rt.bin} pull ${image}`, { stdio: 'inherit', timeout: 600000 });
+    console.log('Container image pulled successfully.\n');
+    return image;
+}
+/**
+ * Download the pre-built tar from GitHub Releases and load into udocker.
+ * Returns the loaded image name (as reported by udocker load).
+ */
+export function downloadAndLoadUdockerImage(bin) {
+    console.log('Downloading container image tar...');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-setup-'));
+    const tarPath = path.join(tmpDir, 'art-agent.tar.gz');
+    try {
+        execSync(`curl -fSL -o ${tarPath} ${TAR_RELEASE_URL}`, {
+            stdio: ['pipe', 'inherit', 'inherit'],
+            timeout: 600000,
+        });
+        const loadOutput = execSync(`${bin} load -i ${tarPath}`, {
+            encoding: 'utf-8',
+            timeout: 600000,
+        });
+        // Extract loaded image name from udocker output: e.g. "['ghcr.io/org/img:tag']"
+        const match = loadOutput.match(/\['([^']+)'\]/);
+        const loadedName = match?.[1] ?? 'art-agent:latest';
+        console.log(`Container image loaded: ${loadedName}\n`);
+        return loadedName;
+    }
+    catch {
+        console.error(`Failed to download or load image tar.\n` +
+            `Download manually from: ${TAR_RELEASE_URL}\n` +
+            `Then run: ${bin} load -i art-agent.tar.gz`);
+        process.exit(1);
+    }
+    finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+}
+/**
+ * Remove an image from the local runtime.
+ */
+export function removeImage(image) {
+    const rt = getRuntime();
+    try {
+        execSync(`${rt.bin} rmi ${image}`, { stdio: 'pipe', timeout: 10000 });
+    }
+    catch {
+        // image didn't exist or already removed
+    }
+}
+/**
+ * Pre-run container setup. For udocker: create named container + configure
+ * Fakechroot (F1) execution mode. No-op for Docker/Podman.
+ */
+export function prepareContainer(image, name) {
+    const rt = getRuntime();
+    if (rt.kind !== 'udocker')
+        return;
+    execSync(`${rt.bin} create --name=${name} ${image}`, {
+        stdio: 'pipe',
+        timeout: 30000,
+    });
+    execSync(`${rt.bin} setup --execmode=F1 ${name}`, {
+        stdio: 'pipe',
+        timeout: 30000,
+    });
+    logger.debug({ name }, 'udocker container created with F1 mode');
+}
+/**
+ * Post-run container cleanup. For udocker: remove named container.
+ * No-op for Docker/Podman (--rm handles it).
+ */
+export function cleanupContainer(name) {
+    const rt = getRuntime();
+    if (rt.kind !== 'udocker')
+        return;
+    try {
+        execSync(`${rt.bin} rm ${name}`, { stdio: 'pipe', timeout: 10000 });
+        logger.debug({ name }, 'udocker container removed');
+    }
+    catch {
+        logger.warn({ name }, 'Failed to remove udocker container');
+    }
 }
 /** Get the hostname containers use to reach the host. */
 export function getHostGateway() {

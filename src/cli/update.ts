@@ -4,27 +4,16 @@
  * can't reliably merge multi-layer images).
  */
 import { execSync } from 'child_process';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
 
 import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
-import { initRuntime, resolveLocalImageName } from '../container-runtime.js';
+import {
+  downloadAndLoadUdockerImage,
+  initRuntime,
+  removeImage,
+} from '../container-runtime.js';
 
-const TAR_RELEASE_URL =
-  'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
-
-function udockerLoadFromTar(runtimeBin: string, image: string): boolean {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-update-'));
-  const tarPath = path.join(tmpDir, 'art-agent.tar.gz');
-
+function udockerUpdateImage(runtimeBin: string, image: string): string | null {
   try {
-    console.log('  downloading tar from release...');
-    execSync(`curl -fSL -o ${tarPath} ${TAR_RELEASE_URL}`, {
-      stdio: ['pipe', 'inherit', 'inherit'],
-      timeout: 600000,
-    });
-
     // Remove existing containers for this image to avoid stale rootfs
     try {
       const ps = execSync(`${runtimeBin} ps`, {
@@ -44,52 +33,21 @@ function udockerLoadFromTar(runtimeBin: string, image: string): boolean {
       // no existing containers
     }
 
-    // Remove existing image
-    try {
-      execSync(`${runtimeBin} rmi ${image}`, { stdio: 'pipe' });
-    } catch {
-      // image didn't exist
-    }
+    removeImage(image);
+    const loadedName = downloadAndLoadUdockerImage(runtimeBin);
 
-    console.log('  loading image...');
-    const loadOutput = execSync(`${runtimeBin} load -i ${tarPath}`, {
-      encoding: 'utf-8',
-      timeout: 600000,
-    });
-    console.log(loadOutput);
-
-    // Tag with the resolved local name (short name for udocker)
-    const localName = resolveLocalImageName(image);
-    const match = loadOutput.match(/\['([^']+)'\]/);
-    if (match) {
-      const loadedName = match[1];
-      if (loadedName !== localName) {
-        try {
-          execSync(`${runtimeBin} tag ${loadedName} ${localName}`, {
-            stdio: 'pipe',
-            timeout: 10000,
-          });
-          console.log(`  tagged ${loadedName} → ${localName}`);
-        } catch {
-          // non-fatal
-        }
-      }
-    }
-
-    // Update image registry to use the local name
+    // Update registry with the actual loaded name
     const reg = loadImageRegistry();
     for (const [key, entry] of Object.entries(reg)) {
-      if (entry.image === image || entry.image === localName) {
-        reg[key] = { ...entry, image: localName };
+      if (entry.image === image) {
+        reg[key] = { ...entry, image: loadedName };
       }
     }
     saveImageRegistry(reg);
 
-    return true;
+    return loadedName;
   } catch {
-    return false;
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return null;
   }
 }
 
@@ -116,9 +74,9 @@ export async function update(): Promise<void> {
     console.log(`  pull  ${name} (${entry.image})...`);
 
     if (rt.kind === 'udocker') {
-      // udocker: download pre-built tar from GitHub Release
-      if (udockerLoadFromTar(rt.bin, entry.image)) {
-        console.log(`  ok    ${name} — updated`);
+      const loadedName = udockerUpdateImage(rt.bin, entry.image);
+      if (loadedName) {
+        console.log(`  ok    ${name} — updated (${loadedName})`);
         updated++;
       } else {
         console.error(`  FAIL  ${name} — could not download or load image`);
