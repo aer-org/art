@@ -143,6 +143,10 @@ export async function init(targetDir: string): Promise<void> {
   // Ensure Claude authentication before launching editor
   await ensureAuth();
 
+  // Set TUI env vars early so logger routes to file before any engine import
+  process.env.ART_TUI_MODE = 'true';
+  process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
+
   // Setup engine for container agent
   const { setupEngine } = await import('./engine-setup.js');
   const { engineRoot, runtimeBin } = await setupEngine({ projectDir, artDir });

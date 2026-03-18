@@ -7,7 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 IMAGE_NAME="art-agent"
-REGISTRY_IMAGE="ghcr.io/aer-org/${IMAGE_NAME}"
 TAG="${1:-latest}"
 BASE_IMAGE="${2:-}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
@@ -26,15 +25,7 @@ else
   echo "Building AerArt agent container image..."
   echo "Image: ${IMAGE_NAME}:${TAG}"
   ${CONTAINER_RUNTIME} build -t "${IMAGE_NAME}:${TAG}" .
-  ${CONTAINER_RUNTIME} tag "${IMAGE_NAME}:${TAG}" "${REGISTRY_IMAGE}:${TAG}"
   echo ""
   echo "Build complete!"
   echo "Image: ${IMAGE_NAME}:${TAG}"
-  echo "       ${REGISTRY_IMAGE}:${TAG}"
-  echo ""
-  echo "Test with:"
-  echo "  echo '{\"prompt\":\"What is 2+2?\",\"groupFolder\":\"test\",\"chatJid\":\"test@g.us\",\"isMain\":false}' | ${CONTAINER_RUNTIME} run -i ${IMAGE_NAME}:${TAG}"
-  echo ""
-  echo "Push with:"
-  echo "  ${CONTAINER_RUNTIME} push ${REGISTRY_IMAGE}:${TAG}"
 fi
