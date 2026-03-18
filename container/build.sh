@@ -6,7 +6,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-IMAGE_NAME="aer-art-agent"
+IMAGE_NAME="art-agent"
 REGISTRY_IMAGE="ghcr.io/aer-org/${IMAGE_NAME}"
 TAG="${1:-latest}"
 BASE_IMAGE="${2:-}"
@@ -15,7 +15,7 @@ CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 BUILD_ARGS=""
 if [ -n "$BASE_IMAGE" ]; then
   BUILD_ARGS="--build-arg BASE_IMAGE=${BASE_IMAGE}"
-  IMAGE_NAME="aer-art-agent-${TAG}"
+  IMAGE_NAME="art-agent-${TAG}"
   echo "Building custom agent image on base: ${BASE_IMAGE}"
   echo "Image: ${IMAGE_NAME}:latest"
   ${CONTAINER_RUNTIME} build ${BUILD_ARGS} -t "${IMAGE_NAME}:latest" .
