@@ -275,32 +275,21 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
   /** Kill the agent container, waiting for it to exit. */
   async function killAgent(): Promise<void> {
-    if (agentProcess) {
-      const proc = agentProcess;
-      const exited = new Promise<void>((resolve) => {
-        proc.on('close', () => resolve());
-        // Already exited
-        if (proc.exitCode !== null || proc.signalCode !== null) resolve();
-      });
-      proc.kill('SIGTERM');
-      // Wait up to 3s for graceful exit, then docker stop
-      const timeout = setTimeout(() => {
-        if (agentContainerName) {
-          spawn('docker', ['stop', '-t', '2', agentContainerName], {
-            stdio: 'ignore',
-          });
-        }
-      }, 3000);
-      await exited;
-      clearTimeout(timeout);
-    } else if (agentContainerName) {
-      // No process handle but we know the container name — stop it directly
+    if (agentContainerName) {
+      // Stop the container directly by name — this is the only reliable way.
+      // Sending SIGTERM to the docker run CLI process just disconnects it;
+      // the container itself keeps running.
+      const { getRuntimeBin } = await import('../container-runtime.js');
+      const bin = getRuntimeBin();
       await new Promise<void>((resolve) => {
-        const stop = spawn('docker', ['stop', '-t', '3', agentContainerName], {
+        const stop = spawn(bin, ['stop', '-t', '3', agentContainerName], {
           stdio: 'ignore',
         });
         stop.on('close', () => resolve());
       });
+    } else if (agentProcess) {
+      // No container name yet (still starting) — kill the process directly
+      agentProcess.kill('SIGTERM');
     }
   }
 
