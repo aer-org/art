@@ -18,16 +18,24 @@ function renderMarkdown(text: string): string {
 
 // ── Components ──
 
-function ChatHeader({ isStreaming, hasMessages, onComplete }: {
+function ChatHeader({ isStreaming, hasMessages, onComplete, onClose }: {
   isStreaming: boolean;
   hasMessages: boolean;
   onComplete: () => void;
+  onClose: () => void;
 }) {
   return (
     <div className="chat-header">
       <div className="chat-header-title">
         <span className="chat-header-icon">&#9679;</span>
         ART Agent
+        <button
+          className="chat-close-btn"
+          onClick={onClose}
+          title="Close"
+        >
+          &times;
+        </button>
       </div>
       <div className="chat-header-phase">
         <span className="chat-phase-badge">
@@ -43,12 +51,34 @@ function ChatHeader({ isStreaming, hasMessages, onComplete }: {
   );
 }
 
-function TypingIndicator() {
+const THINKING_STEPS = [
+  'Reading project structure...',
+  'Analyzing dependencies...',
+  'Reviewing architecture...',
+  'Evaluating code quality...',
+  'Writing analysis...',
+];
+
+function ThinkingState() {
+  const [stepIdx, setStepIdx] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setStepIdx((i) => (i + 1) % THINKING_STEPS.length);
+    }, 3000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
-    <div className="chat-typing">
-      <span className="chat-typing-dot" />
-      <span className="chat-typing-dot" />
-      <span className="chat-typing-dot" />
+    <div className="chat-thinking">
+      <div className="chat-thinking-orb">
+        <div className="chat-thinking-ring" />
+        <div className="chat-thinking-ring chat-thinking-ring--delay" />
+      </div>
+      <div className="chat-thinking-text">
+        <div className="chat-thinking-label">Agent is working</div>
+        <div className="chat-thinking-step">{THINKING_STEPS[stepIdx]}</div>
+      </div>
     </div>
   );
 }
@@ -109,10 +139,9 @@ export function AgentChat({ onComplete }: { onComplete: () => void }) {
     [handleSend],
   );
 
-  const handleComplete = useCallback(async () => {
-    await closeAgent();
+  const handleComplete = useCallback(() => {
     onComplete();
-  }, [closeAgent, onComplete]);
+  }, [onComplete]);
 
   return (
     <div className="chat-overlay">
@@ -121,6 +150,7 @@ export function AgentChat({ onComplete }: { onComplete: () => void }) {
           isStreaming={isStreaming}
           hasMessages={messages.length > 0}
           onComplete={handleComplete}
+          onClose={handleComplete}
         />
 
         <div className="chat-init-panels">
@@ -137,29 +167,26 @@ export function AgentChat({ onComplete }: { onComplete: () => void }) {
           {/* Right: Chat */}
           <div className="chat-init-chat-panel">
             <div className="chat-messages">
-              {messages.map((m, i) => (
-                <MessageBubble
-                  key={i}
-                  role={m.role}
-                  content={m.content}
-                  isStreaming={
-                    isStreaming &&
-                    i === messages.length - 1 &&
-                    m.role === 'assistant'
-                  }
-                />
-              ))}
-              {isStreaming &&
-                (messages.length === 0 ||
-                  messages[messages.length - 1].role === 'user') && (
-                  <div className="chat-message chat-message--assistant">
-                    <div className="chat-message-avatar">AI</div>
-                    <div className="chat-message-bubble">
-                      <span className="chat-typing-label">Writing...</span>
-                      <TypingIndicator />
-                    </div>
-                  </div>
-                )}
+              {/* Show thinking state when no real content yet */}
+              {isStreaming && messages.every((m) => !m.content) && (
+                <ThinkingState />
+              )}
+              {messages.map((m, i) => {
+                // Skip empty placeholder messages while thinking
+                if (!m.content && isStreaming) return null;
+                return (
+                  <MessageBubble
+                    key={i}
+                    role={m.role}
+                    content={m.content}
+                    isStreaming={
+                      isStreaming &&
+                      i === messages.length - 1 &&
+                      m.role === 'assistant'
+                    }
+                  />
+                );
+              })}
               {error && <div className="chat-error">{error}</div>}
               <div ref={messagesEndRef} />
             </div>

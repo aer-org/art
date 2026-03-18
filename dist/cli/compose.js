@@ -65,6 +65,9 @@ export async function startEditorServer(artDir, mode, projectDir) {
         const folderName = `art-${path.basename(resolvedProjectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
         ipcInputDir = path.join(DATA_DIR, 'ipc', folderName, 'input');
         fs.mkdirSync(ipcInputDir, { recursive: true });
+        // Empty dir used as shadow mount to hide __art__/ inside the container
+        const emptyDir = path.join(DATA_DIR, 'empty');
+        fs.mkdirSync(emptyDir, { recursive: true });
         // Build the initial prompt based on mode
         const prompt = mode === 'init'
             ? `You are an expert software architect. Explore the project at /workspace/project/ (read-only).
@@ -93,23 +96,43 @@ When the user asks for changes, update /workspace/group/plan/PLAN.md accordingly
 Continue the conversation until the user is done.
 
 Use Korean if the project contains Korean documentation, otherwise use English.`;
+        // Mount project dir as read-only, only plan/ is writable.
+        // __art__/ itself is NOT exposed to the container.
+        const planDir = path.join(artDir, 'plan');
+        fs.mkdirSync(planDir, { recursive: true });
         const group = {
             name: 'art',
             folder: folderName,
             trigger: '',
             added_at: new Date().toISOString(),
             requiresTrigger: false,
-            isMain: true,
+            isMain: false,
             containerConfig: {
-                workspaceDir: artDir,
                 image: getImageForStage(),
+                internalMounts: [
+                    {
+                        hostPath: resolvedProjectDir,
+                        containerPath: '/workspace/project',
+                        readonly: true,
+                    },
+                    {
+                        hostPath: emptyDir,
+                        containerPath: `/workspace/project/${ART_DIR_NAME}`,
+                        readonly: true,
+                    },
+                    {
+                        hostPath: planDir,
+                        containerPath: '/workspace/group/plan',
+                        readonly: false,
+                    },
+                ],
             },
         };
         const input = {
             prompt,
             groupFolder: folderName,
             chatJid: `art://${resolvedProjectDir}`,
-            isMain: true,
+            isMain: false,
             endOnFirstResult: false, // keep alive for conversation
         };
         agentRunning = true;
@@ -280,6 +303,23 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             }
             return;
         }
+        // API: list project files (parent of __art__/, excluding __art__ and dotfiles)
+        if (method === 'GET' && parsed.pathname === '/api/project-files') {
+            try {
+                const projectDir = path.dirname(artDir);
+                const entries = fs.readdirSync(projectDir, { withFileTypes: true });
+                const files = entries
+                    .filter((e) => !e.name.startsWith('.') && e.name !== path.basename(artDir))
+                    .map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(files));
+            }
+            catch {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Failed to read project files' }));
+            }
+            return;
+        }
         // API: stage descriptions (for onboarding)
         if (method === 'GET' && parsed.pathname === '/api/stage-descriptions') {
             const descriptions = Object.values(STAGE_TEMPLATES).map((t) => ({
@@ -314,6 +354,38 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 catch {
                     res.writeHead(500, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'Failed to write PLAN.md' }));
+                }
+            });
+            return;
+        }
+        // API: write file to artDir (relative path, with traversal protection)
+        if (method === 'PUT' && parsed.pathname === '/api/file') {
+            const relPath = parsed.searchParams.get('path');
+            if (!relPath) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Missing "path" query parameter' }));
+                return;
+            }
+            const resolved = path.resolve(artDir, relPath);
+            if (!resolved.startsWith(artDir + path.sep) && resolved !== artDir) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Path traversal not allowed' }));
+                return;
+            }
+            let body = '';
+            req.on('data', (chunk) => {
+                body += chunk.toString();
+            });
+            req.on('end', () => {
+                try {
+                    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+                    fs.writeFileSync(resolved, body, 'utf-8');
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true }));
+                }
+                catch {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Failed to write file' }));
                 }
             });
             return;

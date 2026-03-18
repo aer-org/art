@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react';
 import { useDocumentPoller } from '../hooks/useDocumentPoller';
 import './DocumentPanel.css';
 
@@ -19,11 +20,16 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, '<br/>');
 }
 
-// ── Simple line-by-line diff ──
+// ── Diff types and utilities ──
 
 interface DiffLine {
   type: 'added' | 'removed' | 'unchanged';
   text: string;
+}
+
+interface DiffSection {
+  kind: 'context' | 'hunk';
+  lines: DiffLine[];
 }
 
 function computeDiff(oldText: string, newText: string): DiffLine[] {
@@ -51,18 +57,184 @@ function computeDiff(oldText: string, newText: string): DiffLine[] {
   return result;
 }
 
-function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
+function groupIntoSections(lines: DiffLine[]): DiffSection[] {
+  const sections: DiffSection[] = [];
+  let current: DiffSection | null = null;
+
+  for (const line of lines) {
+    const kind = line.type === 'unchanged' ? 'context' : 'hunk';
+    if (!current || current.kind !== kind) {
+      current = { kind, lines: [] };
+      sections.push(current);
+    }
+    current.lines.push(line);
+  }
+
+  return sections;
+}
+
+// ── Diff Review Component ──
+
+function DiffReview({
+  oldText,
+  newText,
+  onResolve,
+  onDismiss,
+}: {
+  oldText: string;
+  newText: string;
+  onResolve: (finalContent: string | null) => void;
+  onDismiss: () => void;
+}) {
   const lines = computeDiff(oldText, newText);
+  const sections = groupIntoSections(lines);
+  const hunkCount = sections.filter((s) => s.kind === 'hunk').length;
+
+  const [decisions, setDecisions] = useState<Record<number, boolean>>({});
+
+  const setDecision = useCallback((idx: number, approved: boolean) => {
+    setDecisions((prev) => ({ ...prev, [idx]: approved }));
+  }, []);
+
+  const setAll = useCallback(
+    (approved: boolean) => {
+      const d: Record<number, boolean> = {};
+      let i = 0;
+      for (const s of sections) {
+        if (s.kind === 'hunk') {
+          d[i] = approved;
+          i++;
+        }
+      }
+      setDecisions(d);
+    },
+    [sections],
+  );
+
+  const allDecided = Object.keys(decisions).length === hunkCount;
+
+  const handleApply = useCallback(() => {
+    const resultLines: string[] = [];
+    let hi = 0;
+    for (const section of sections) {
+      if (section.kind === 'context') {
+        for (const line of section.lines) resultLines.push(line.text);
+      } else {
+        const approved = decisions[hi] ?? true;
+        for (const line of section.lines) {
+          if (approved) {
+            // Keep added lines, drop removed lines
+            if (line.type === 'added' || line.type === 'unchanged')
+              resultLines.push(line.text);
+          } else {
+            // Keep removed lines (revert), drop added lines
+            if (line.type === 'removed' || line.type === 'unchanged')
+              resultLines.push(line.text);
+          }
+        }
+        hi++;
+      }
+    }
+
+    const finalContent = resultLines.join('\n');
+    // If all approved, no file write needed (content already matches)
+    onResolve(finalContent === newText ? null : finalContent);
+  }, [sections, decisions, newText, onResolve]);
+
+  let hunkIdx = 0;
+
   return (
-    <div className="doc-diff">
-      {lines.map((line, i) => (
-        <div key={i} className={`doc-diff-line doc-diff-line--${line.type}`}>
-          <span className="doc-diff-prefix">
-            {line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '}
-          </span>
-          <span>{line.text || '\u00A0'}</span>
-        </div>
-      ))}
+    <div className="doc-diff-review">
+      <div className="doc-diff-toolbar">
+        <button
+          className="doc-diff-btn doc-diff-btn--approve-all"
+          onClick={() => setAll(true)}
+        >
+          Y All
+        </button>
+        <button
+          className="doc-diff-btn doc-diff-btn--discard-all"
+          onClick={() => setAll(false)}
+        >
+          N All
+        </button>
+        <button
+          className="doc-diff-btn doc-diff-btn--apply"
+          onClick={handleApply}
+          disabled={!allDecided}
+        >
+          Apply
+        </button>
+        <button
+          className="doc-diff-btn doc-diff-btn--close"
+          onClick={onDismiss}
+          title="Close diff review"
+        >
+          &times;
+        </button>
+      </div>
+      <div className="doc-diff">
+        {sections.map((section, si) => {
+          if (section.kind === 'context') {
+            return (
+              <div key={si}>
+                {section.lines.map((line, li) => (
+                  <div
+                    key={li}
+                    className="doc-diff-line doc-diff-line--unchanged"
+                  >
+                    <span className="doc-diff-prefix"> </span>
+                    <span>{line.text || '\u00A0'}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          }
+
+          const idx = hunkIdx++;
+          const decision = decisions[idx];
+          const hunkClass =
+            decision === true
+              ? 'doc-diff-hunk--approved'
+              : decision === false
+                ? 'doc-diff-hunk--discarded'
+                : '';
+
+          return (
+            <div key={si} className={`doc-diff-hunk ${hunkClass}`}>
+              <div className="doc-diff-hunk-actions">
+                <button
+                  className={`doc-diff-hunk-btn doc-diff-hunk-btn--y ${decision === true ? 'active' : ''}`}
+                  onClick={() => setDecision(idx, true)}
+                >
+                  Y
+                </button>
+                <button
+                  className={`doc-diff-hunk-btn doc-diff-hunk-btn--n ${decision === false ? 'active' : ''}`}
+                  onClick={() => setDecision(idx, false)}
+                >
+                  N
+                </button>
+              </div>
+              {section.lines.map((line, li) => (
+                <div
+                  key={li}
+                  className={`doc-diff-line doc-diff-line--${line.type}`}
+                >
+                  <span className="doc-diff-prefix">
+                    {line.type === 'added'
+                      ? '+'
+                      : line.type === 'removed'
+                        ? '-'
+                        : ' '}
+                  </span>
+                  <span>{line.text || '\u00A0'}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -76,7 +248,7 @@ export function DocumentPanel({
   title: string;
   path: string;
 }) {
-  const { content, prevContent, hasChanged, isLoading } =
+  const { content, prevContent, hasChanged, isLoading, pendingReview, resolveReview } =
     useDocumentPoller(path);
 
   return (
@@ -90,8 +262,13 @@ export function DocumentPanel({
           <div className="doc-placeholder">Loading...</div>
         ) : content === null ? (
           <div className="doc-placeholder">Waiting for agent...</div>
-        ) : hasChanged && prevContent !== null ? (
-          <DiffView oldText={prevContent} newText={content} />
+        ) : pendingReview && prevContent !== null ? (
+          <DiffReview
+            oldText={prevContent}
+            newText={content}
+            onResolve={resolveReview}
+            onDismiss={() => resolveReview(null)}
+          />
         ) : (
           <div
             className="doc-rendered"

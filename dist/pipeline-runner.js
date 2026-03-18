@@ -154,6 +154,8 @@ export class PipelineRunner {
         const groupDir = this.groupDir;
         const mounts = [];
         for (const [key, policy] of Object.entries(stageConfig.mounts)) {
+            if (key === 'project')
+                continue; // handled separately (different host path)
             if (!policy)
                 continue;
             const hostDir = path.join(groupDir, key);
@@ -179,13 +181,16 @@ export class PipelineRunner {
         fs.writeFileSync(path.join(stageWorkspaceDir, 'CLAUDE.md'), `# Pipeline Stage: ${stageConfig.name}\n\nYou are the ${stageConfig.name} agent in an automated pipeline. Follow instructions precisely and use the correct stage markers.\n`);
         // Build internal mounts (project dirs mounted under /workspace/group/)
         const internalMounts = this.buildStageMounts(stageConfig);
-        // Mount project directory (parent of __art__/) as read-only
-        const projectDir = path.dirname(this.groupDir);
-        internalMounts.push({
-            hostPath: projectDir,
-            containerPath: '/workspace/project',
-            readonly: true,
-        });
+        // Mount project directory (parent of __art__/) based on config
+        const projectPolicy = stageConfig.mounts['project'];
+        const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
+        if (effectivePolicy) {
+            internalMounts.push({
+                hostPath: path.dirname(this.groupDir),
+                containerPath: '/workspace/project',
+                readonly: effectivePolicy === 'ro',
+            });
+        }
         // Resolve container image from registry (agent mode only)
         let resolvedImage;
         if (!stageConfig.command) {
@@ -313,13 +318,16 @@ export class PipelineRunner {
     runStageCommand(stageConfig, handle, logStream) {
         const rt = getRuntime();
         const internalMounts = this.buildStageMounts(stageConfig);
-        // Mount project directory as read-only
-        const projectDir = path.dirname(this.groupDir);
-        internalMounts.push({
-            hostPath: projectDir,
-            containerPath: '/workspace/project',
-            readonly: true,
-        });
+        // Mount project directory based on config
+        const projectPolicy = stageConfig.mounts['project'];
+        const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
+        if (effectivePolicy) {
+            internalMounts.push({
+                hostPath: path.dirname(this.groupDir),
+                containerPath: '/workspace/project',
+                readonly: effectivePolicy === 'ro',
+            });
+        }
         const safeName = stageConfig.name.replace(/[^a-zA-Z0-9-]/g, '-');
         const containerName = `aer-art-cmd-${safeName}-${Date.now()}`;
         const image = stageConfig.image || CONTAINER_IMAGE;

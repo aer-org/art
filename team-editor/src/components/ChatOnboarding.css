@@ -411,6 +411,24 @@
   gap: 10px;
 }
 
+.chat-close-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #6c7086;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.chat-close-btn:hover {
+  color: #cdd6f4;
+  background: rgba(108, 112, 134, 0.2);
+}
+
 .chat-complete-header-btn {
   padding: 4px 14px;
   background: #89b4fa;
@@ -462,6 +480,68 @@
 
 .chat-init-chat-panel .chat-bottom {
   flex-shrink: 0;
+}
+
+/* ── Agent Thinking State ── */
+
+.chat-thinking {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 16px;
+  animation: chat-fade-in 0.4s ease;
+}
+
+.chat-thinking-orb {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+}
+
+.chat-thinking-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: #89b4fa;
+  border-right-color: #89b4fa;
+  animation: chat-thinking-spin 1.2s linear infinite;
+}
+
+.chat-thinking-ring--delay {
+  inset: 4px;
+  border-top-color: #cba6f7;
+  border-right-color: #cba6f7;
+  animation-duration: 1.8s;
+  animation-direction: reverse;
+}
+
+@keyframes chat-thinking-spin {
+  to { transform: rotate(360deg); }
+}
+
+.chat-thinking-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-thinking-label {
+  color: #cdd6f4;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-thinking-step {
+  color: #a6adc8;
+  font-size: 12px;
+  animation: chat-thinking-step-fade 0.4s ease;
+}
+
+@keyframes chat-thinking-step-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* ── AI Edit Button (FilesPanel) ── */

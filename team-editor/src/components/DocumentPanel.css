@@ -163,3 +163,142 @@
   user-select: none;
   opacity: 0.6;
 }
+
+/* ── Diff Review ── */
+
+.doc-diff-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.doc-diff-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 4px 0;
+  position: sticky;
+  top: 0;
+  background: #1e1e2e;
+  z-index: 1;
+}
+
+.doc-diff-btn {
+  padding: 4px 12px;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  background: #313244;
+  color: #cdd6f4;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.doc-diff-btn:hover {
+  background: #45475a;
+}
+
+.doc-diff-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.doc-diff-btn--approve-all {
+  color: #a6e3a1;
+  border-color: rgba(166, 227, 161, 0.3);
+}
+
+.doc-diff-btn--approve-all:hover {
+  background: rgba(166, 227, 161, 0.15);
+}
+
+.doc-diff-btn--discard-all {
+  color: #f38ba8;
+  border-color: rgba(243, 139, 168, 0.3);
+}
+
+.doc-diff-btn--discard-all:hover {
+  background: rgba(243, 139, 168, 0.15);
+}
+
+.doc-diff-btn--apply {
+  margin-left: auto;
+  color: #89b4fa;
+  border-color: rgba(137, 180, 250, 0.3);
+}
+
+.doc-diff-btn--apply:hover:not(:disabled) {
+  background: rgba(137, 180, 250, 0.15);
+}
+
+.doc-diff-btn--close {
+  color: #6c7086;
+  border-color: #45475a;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 8px;
+}
+
+.doc-diff-btn--close:hover {
+  color: #cdd6f4;
+  background: #45475a;
+}
+
+/* ── Hunk ── */
+
+.doc-diff-hunk {
+  border-left: 3px solid #45475a;
+  padding-left: 4px;
+  margin: 4px 0;
+  border-radius: 2px;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.doc-diff-hunk--approved {
+  border-left-color: #a6e3a1;
+  background: rgba(166, 227, 161, 0.04);
+}
+
+.doc-diff-hunk--discarded {
+  border-left-color: #f38ba8;
+  background: rgba(243, 139, 168, 0.04);
+}
+
+.doc-diff-hunk-actions {
+  display: flex;
+  gap: 4px;
+  padding: 2px 4px;
+}
+
+.doc-diff-hunk-btn {
+  padding: 1px 8px;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.doc-diff-hunk-btn--y {
+  color: #6c7086;
+}
+
+.doc-diff-hunk-btn--y:hover,
+.doc-diff-hunk-btn--y.active {
+  color: #a6e3a1;
+  border-color: #a6e3a1;
+  background: rgba(166, 227, 161, 0.15);
+}
+
+.doc-diff-hunk-btn--n {
+  color: #6c7086;
+}
+
+.doc-diff-hunk-btn--n:hover,
+.doc-diff-hunk-btn--n.active {
+  color: #f38ba8;
+  border-color: #f38ba8;
+  background: rgba(243, 139, 168, 0.15);
+}

@@ -62,6 +62,23 @@ export function useAgentChat(): UseAgentChatReturn {
           });
         } else if (data.type === 'result') {
           // Structured result from agent — marks end of a turn
+          // If result has content and no text_delta was received, show it
+          if (data.content && typeof data.content === 'string') {
+            const resultText = data.content;
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last?.role === 'assistant' && !last.content) {
+                // Replace empty placeholder with result content
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: 'assistant', content: resultText };
+                return updated;
+              }
+              if (!last || last.role === 'user') {
+                return [...prev, { role: 'assistant', content: resultText }];
+              }
+              return prev;
+            });
+          }
           setIsStreaming(false);
           streamingTextRef.current = '';
         } else if (data.type === 'agent_stopped') {

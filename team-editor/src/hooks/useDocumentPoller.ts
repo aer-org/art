@@ -5,6 +5,8 @@ interface UseDocumentPollerReturn {
   prevContent: string | null;
   hasChanged: boolean;
   isLoading: boolean;
+  pendingReview: boolean;
+  resolveReview: (finalContent: string | null) => Promise<void>;
 }
 
 export function useDocumentPoller(
@@ -15,17 +17,18 @@ export function useDocumentPoller(
   const [prevContent, setPrevContent] = useState<string | null>(null);
   const [hasChanged, setHasChanged] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingReview, setPendingReview] = useState(false);
   const lastContentRef = useRef<string | null>(null);
-  const changeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingReviewRef = useRef(false);
 
   const fetchFile = useCallback(async () => {
+    // Pause polling updates while user is reviewing a diff
+    if (pendingReviewRef.current) return;
+
     try {
       const res = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`);
       if (!res.ok) {
-        if (res.status === 404) {
-          setIsLoading(false);
-          return;
-        }
+        if (res.status === 404) setIsLoading(false);
         return;
       }
       const text = await res.text();
@@ -34,30 +37,41 @@ export function useDocumentPoller(
       if (lastContentRef.current !== null && text !== lastContentRef.current) {
         setPrevContent(lastContentRef.current);
         setHasChanged(true);
-
-        // Auto-reset hasChanged after 3s
-        if (changeTimerRef.current) clearTimeout(changeTimerRef.current);
-        changeTimerRef.current = setTimeout(() => {
-          setHasChanged(false);
-          setPrevContent(null);
-        }, 3000);
+        setPendingReview(true);
+        pendingReviewRef.current = true;
       }
 
       lastContentRef.current = text;
       setContent(text);
     } catch {
-      // Network error — ignore, will retry
+      // Network error — will retry next interval
     }
   }, [filePath]);
+
+  const resolveReview = useCallback(
+    async (finalContent: string | null) => {
+      if (finalContent !== null) {
+        // Write modified content back to file
+        await fetch(`/api/file?path=${encodeURIComponent(filePath)}`, {
+          method: 'PUT',
+          body: finalContent,
+        });
+        setContent(finalContent);
+        lastContentRef.current = finalContent;
+      }
+      setPrevContent(null);
+      setHasChanged(false);
+      setPendingReview(false);
+      pendingReviewRef.current = false;
+    },
+    [filePath],
+  );
 
   useEffect(() => {
     fetchFile();
     const id = setInterval(fetchFile, intervalMs);
-    return () => {
-      clearInterval(id);
-      if (changeTimerRef.current) clearTimeout(changeTimerRef.current);
-    };
+    return () => clearInterval(id);
   }, [fetchFile, intervalMs]);
 
-  return { content, prevContent, hasChanged, isLoading };
+  return { content, prevContent, hasChanged, isLoading, pendingReview, resolveReview };
 }

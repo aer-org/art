@@ -88,6 +88,10 @@ export async function startEditorServer(
     ipcInputDir = path.join(DATA_DIR, 'ipc', folderName, 'input');
     fs.mkdirSync(ipcInputDir, { recursive: true });
 
+    // Empty dir used as shadow mount to hide __art__/ inside the container
+    const emptyDir = path.join(DATA_DIR, 'empty');
+    fs.mkdirSync(emptyDir, { recursive: true });
+
     // Build the initial prompt based on mode
     const prompt =
       mode === 'init'
@@ -118,16 +122,37 @@ Continue the conversation until the user is done.
 
 Use Korean if the project contains Korean documentation, otherwise use English.`;
 
+    // Mount project dir as read-only, only plan/ is writable.
+    // __art__/ itself is NOT exposed to the container.
+    const planDir = path.join(artDir, 'plan');
+    fs.mkdirSync(planDir, { recursive: true });
+
     const group = {
       name: 'art',
       folder: folderName,
       trigger: '',
       added_at: new Date().toISOString(),
       requiresTrigger: false,
-      isMain: true,
+      isMain: false,
       containerConfig: {
-        workspaceDir: artDir,
         image: getImageForStage(),
+        internalMounts: [
+          {
+            hostPath: resolvedProjectDir,
+            containerPath: '/workspace/project',
+            readonly: true,
+          },
+          {
+            hostPath: emptyDir,
+            containerPath: `/workspace/project/${ART_DIR_NAME}`,
+            readonly: true,
+          },
+          {
+            hostPath: planDir,
+            containerPath: '/workspace/group/plan',
+            readonly: false,
+          },
+        ],
       },
     };
 
@@ -135,7 +160,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       prompt,
       groupFolder: folderName,
       chatJid: `art://${resolvedProjectDir}`,
-      isMain: true,
+      isMain: false,
       endOnFirstResult: false, // keep alive for conversation
     };
 
@@ -329,7 +354,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         const projectDir = path.dirname(artDir);
         const entries = fs.readdirSync(projectDir, { withFileTypes: true });
         const files = entries
-          .filter((e) => !e.name.startsWith('.') && e.name !== path.basename(artDir))
+          .filter(
+            (e) => !e.name.startsWith('.') && e.name !== path.basename(artDir),
+          )
           .map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(files));
@@ -374,6 +401,38 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         } catch {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Failed to write PLAN.md' }));
+        }
+      });
+      return;
+    }
+
+    // API: write file to artDir (relative path, with traversal protection)
+    if (method === 'PUT' && parsed.pathname === '/api/file') {
+      const relPath = parsed.searchParams.get('path');
+      if (!relPath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing "path" query parameter' }));
+        return;
+      }
+      const resolved = path.resolve(artDir, relPath);
+      if (!resolved.startsWith(artDir + path.sep) && resolved !== artDir) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Path traversal not allowed' }));
+        return;
+      }
+      let body = '';
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        try {
+          fs.mkdirSync(path.dirname(resolved), { recursive: true });
+          fs.writeFileSync(resolved, body, 'utf-8');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Failed to write file' }));
         }
       });
       return;
