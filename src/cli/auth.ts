@@ -85,6 +85,26 @@ function maskToken(token: string): string {
  * Ensure authentication is available, prompting interactively if needed.
  * Sets process.env._ART_OAUTH_TOKEN when a token is found or provided.
  */
+/**
+ * Set the appropriate env vars so the credential proxy detects auth mode.
+ * API keys → ANTHROPIC_API_KEY, OAuth tokens → ANTHROPIC_AUTH_TOKEN.
+ */
+function setAuthEnvVars(token: string): void {
+  if (token.startsWith('sk-ant-api') || (!token.startsWith('sk-ant-oat') && !token.startsWith('eyJ'))) {
+    // Looks like an API key
+    process.env.ANTHROPIC_API_KEY = token;
+  } else {
+    // OAuth token (sk-ant-oat*) or JWT
+    process.env.ANTHROPIC_AUTH_TOKEN = token;
+  }
+  process.env._ART_OAUTH_TOKEN = token;
+}
+
+/**
+ * Ensure authentication is available, prompting interactively if needed.
+ * Sets process.env._ART_OAUTH_TOKEN when a token is found or provided.
+ * Also sets ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN for the credential proxy.
+ */
 export async function ensureAuth(): Promise<void> {
   // 1. Check .env in project dir for a non-empty token
   const envFile = path.join(process.cwd(), '.env');
@@ -92,6 +112,15 @@ export async function ensureAuth(): Promise<void> {
     const env = fs.readFileSync(envFile, 'utf-8');
     for (const line of env.split('\n')) {
       const trimmed = line.trim();
+      // Check for API key in .env
+      if (trimmed.startsWith('ANTHROPIC_API_KEY=')) {
+        const val = trimmed.slice('ANTHROPIC_API_KEY='.length).trim();
+        if (val) {
+          console.log(`Using API key from .env (${maskToken(val)})`);
+          setAuthEnvVars(val);
+          return;
+        }
+      }
       if (
         (trimmed.startsWith('CLAUDE_CODE_OAUTH_TOKEN=') ||
           trimmed.startsWith('ANTHROPIC_AUTH_TOKEN=')) &&
@@ -99,6 +128,7 @@ export async function ensureAuth(): Promise<void> {
       ) {
         const val = trimmed.split('=', 2)[1]!.trim();
         console.log(`Using token from .env (${maskToken(val)})`);
+        setAuthEnvVars(val);
         return;
       }
     }
@@ -110,7 +140,7 @@ export async function ensureAuth(): Promise<void> {
   const saved = readSavedToken();
   if (saved) {
     console.log(`Using saved token (${maskToken(saved)})`);
-    process.env._ART_OAUTH_TOKEN = saved;
+    setAuthEnvVars(saved);
     return;
   }
 
@@ -118,7 +148,7 @@ export async function ensureAuth(): Promise<void> {
   const cliToken = readClaudeCliToken();
   if (cliToken) {
     console.log(`Using Claude CLI token (${maskToken(cliToken)})`);
-    process.env._ART_OAUTH_TOKEN = cliToken;
+    setAuthEnvVars(cliToken);
     return;
   }
 
@@ -146,6 +176,6 @@ export async function ensureAuth(): Promise<void> {
   }
 
   saveToken(trimmed);
-  process.env._ART_OAUTH_TOKEN = trimmed;
+  setAuthEnvVars(trimmed);
   console.log(`Token saved (${maskToken(trimmed)})\n`);
 }

@@ -256,6 +256,12 @@
   30% { transform: translateY(-4px); }
 }
 
+.chat-typing-label {
+  color: #a6adc8;
+  font-size: 12px;
+  margin-right: 6px;
+}
+
 /* ── Suggestion Chips ── */
 
 .chat-suggestions {

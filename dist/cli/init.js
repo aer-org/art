@@ -113,9 +113,12 @@ export async function init(targetDir) {
         }
     }
     rl.close();
-    // Ensure Claude authentication before launching editor (needed for LLM chat)
+    // Ensure Claude authentication before launching editor
     await ensureAuth();
-    // Launch GUI editor with onboarding tutorial
+    // Setup engine for container agent
+    const { setupEngine } = await import('./engine-setup.js');
+    await setupEngine({ projectDir, artDir });
+    // Launch GUI editor with container agent onboarding
     await startEditorServer(artDir, 'init', projectDir);
 }
 //# sourceMappingURL=init.js.map

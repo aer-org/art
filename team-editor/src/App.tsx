@@ -24,7 +24,7 @@ import { ErrorPolicyPanel } from './panels/ErrorPolicyPanel';
 import { AgentListPanel } from './panels/AgentListPanel';
 import { FilesPanel } from './panels/FilesPanel';
 import { Onboarding } from './components/Onboarding';
-import { ChatOnboarding } from './components/ChatOnboarding';
+import { AgentChat } from './components/AgentChat';
 import { deserialize } from './utils/deserialize';
 import { serialize, validate } from './utils/serialize';
 import { exportTeamZip, importTeamZip, importTeamFolder } from './utils/zip';
@@ -44,18 +44,18 @@ export default function App() {
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [artDirs, setArtDirs] = useState<{ name: string; files: string[] }[]>([]);
   const [dirsVersion, setDirsVersion] = useState(0);
-  const [chatOnboardingDone, setChatOnboardingDone] = useState(false);
-  const [chatHasAuth, setChatHasAuth] = useState<boolean | null>(null);
+  const [agentChatDone, setAgentChatDone] = useState(false);
+  const [agentRunning, setAgentRunning] = useState<boolean | null>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  // Check if chat onboarding auth is available (only in init mode)
+  // Check if agent is running (init and single/compose modes)
   useEffect(() => {
-    if (!isInitMode) return;
+    if (!isSingleMode) return;
     fetch('/api/chat/state')
       .then((r) => r.json())
-      .then((state: { hasAuth: boolean }) => setChatHasAuth(state.hasAuth))
-      .catch(() => setChatHasAuth(false));
+      .then((state: { agentRunning: boolean }) => setAgentRunning(state.agentRunning))
+      .catch(() => setAgentRunning(false));
   }, []);
 
   const nodeTypes_ = useMemo(() => nodeTypes, []);
@@ -456,13 +456,13 @@ export default function App() {
     e.target.value = '';
   }, []);
 
-  const showChatOnboarding = isInitMode && chatHasAuth === true && !chatOnboardingDone;
-  const showStaticOnboarding = isInitMode && chatHasAuth === false;
+  const showAgentChat = isSingleMode && agentRunning !== false && !agentChatDone;
+  const showStaticOnboarding = isInitMode && agentRunning === false;
 
   return (
     <div className="app">
-      {showChatOnboarding && (
-        <ChatOnboarding onComplete={() => { setChatOnboardingDone(true); refreshDirs(); }} />
+      {showAgentChat && (
+        <AgentChat onComplete={() => { setAgentChatDone(true); refreshDirs(); }} />
       )}
       {showStaticOnboarding && <Onboarding onPlanSaved={refreshDirs} />}
       <div className="toolbar">

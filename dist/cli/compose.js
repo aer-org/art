@@ -5,8 +5,8 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { ART_DIR_NAME } from '../config.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
-import { resolveAuthToken } from './auth.js';
-import { initChat, sendMessage, advancePhase, getChatState } from './llm-chat.js';
+import { ensureAuth } from './auth.js';
+import { setupEngine } from './engine-setup.js';
 const MIME_TYPES = {
     '.html': 'text/html',
     '.js': 'application/javascript',
@@ -14,12 +14,29 @@ const MIME_TYPES = {
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
 };
+// Sentinel markers (must match container agent-runner)
+const OUTPUT_START_MARKER = '---AER_ART_OUTPUT_START---';
+const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
 function readBody(req) {
     return new Promise((resolve) => {
         let body = '';
-        req.on('data', (chunk) => { body += chunk.toString(); });
+        req.on('data', (chunk) => {
+            body += chunk.toString();
+        });
         req.on('end', () => resolve(body));
     });
+}
+/** SSE helpers */
+function sseHeaders(res) {
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+}
+function sseWrite(res, event) {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 export async function startEditorServer(artDir, mode, projectDir) {
     const pipelineFile = path.join(artDir, 'PIPELINE.json');
@@ -32,12 +49,175 @@ export async function startEditorServer(artDir, mode, projectDir) {
         console.error('team-editor/dist/ not found. Ensure the package is installed correctly.');
         process.exit(1);
     }
+    // ── Agent lifecycle state ──
+    let agentProcess = null;
+    let agentRunning = false;
+    let ipcInputDir = '';
+    let parseBuffer = '';
+    // SSE clients waiting for agent output
+    const sseClients = new Set();
+    // Spawn the container agent
+    async function spawnAgent() {
+        // Dynamic imports to access engine modules (must be after setupEngine)
+        const { DATA_DIR } = await import('../config.js');
+        const { runContainerAgent } = await import('../container-runner.js');
+        const folderName = `art-${path.basename(resolvedProjectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
+        ipcInputDir = path.join(DATA_DIR, 'ipc', folderName, 'input');
+        fs.mkdirSync(ipcInputDir, { recursive: true });
+        // Build the initial prompt based on mode
+        const prompt = mode === 'init'
+            ? `You are an expert software architect. Explore the project at /workspace/project/ (read-only).
+
+Write your analysis to /workspace/group/plan/ANALYSIS.md with sections:
+1. Project purpose and type
+2. Tech stack and dependencies
+3. Architecture overview
+4. Code quality observations
+5. Areas for improvement
+
+Then write /workspace/group/plan/PLAN.md with:
+1. Recommended improvement direction
+2. Specific first tasks
+3. Success metrics
+
+After writing both files, let the user know what you found and ask if they'd like to discuss or adjust the plan. Continue the conversation — do not exit until the user is done.
+
+Use Korean if the project contains Korean documentation, otherwise use English. You can mix both naturally.`
+            : `You are an expert software architect. The project is mounted at /workspace/project/ (read-only).
+
+The current plan is at /workspace/group/plan/PLAN.md (if it exists).
+The user wants to discuss and modify the plan. Help them refine it.
+
+When the user asks for changes, update /workspace/group/plan/PLAN.md accordingly.
+Continue the conversation until the user is done.
+
+Use Korean if the project contains Korean documentation, otherwise use English.`;
+        const group = {
+            name: 'art',
+            folder: folderName,
+            trigger: '',
+            added_at: new Date().toISOString(),
+            requiresTrigger: false,
+            isMain: true,
+            containerConfig: {
+                workspaceDir: artDir,
+            },
+        };
+        const input = {
+            prompt,
+            groupFolder: folderName,
+            chatJid: `art://${resolvedProjectDir}`,
+            isMain: true,
+            endOnFirstResult: false, // keep alive for conversation
+        };
+        agentRunning = true;
+        parseBuffer = '';
+        // Start the credential proxy for container auth
+        const { startCredentialProxy } = await import('../credential-proxy.js');
+        const { getCredentialProxyPort } = await import('../config.js');
+        try {
+            await startCredentialProxy(getCredentialProxyPort(), '0.0.0.0');
+        }
+        catch {
+            // May already be running if reused
+        }
+        // Fire and forget — the container runs in the background
+        runContainerAgent(group, input, (proc) => {
+            agentProcess = proc;
+            // Parse stdout for output markers and relay to SSE clients
+            proc.stdout?.on('data', (data) => {
+                const chunk = data.toString();
+                relayAgentOutput(chunk);
+            });
+            proc.stderr?.on('data', (data) => {
+                // Log stderr for debugging
+                const lines = data.toString().trim().split('\n');
+                for (const line of lines) {
+                    if (line)
+                        console.error(`[agent] ${line}`);
+                }
+            });
+            proc.on('close', () => {
+                agentRunning = false;
+                agentProcess = null;
+                // Notify all SSE clients that agent has stopped
+                for (const client of sseClients) {
+                    sseWrite(client, { type: 'agent_stopped' });
+                    client.end();
+                }
+                sseClients.clear();
+            });
+        }, 
+        // onOutput callback for streaming results
+        async (output) => {
+            if (output.result) {
+                for (const client of sseClients) {
+                    sseWrite(client, { type: 'result', content: output.result });
+                }
+            }
+        }).catch((err) => {
+            console.error('[agent] Container agent error:', err);
+            agentRunning = false;
+        });
+    }
+    /**
+     * Parse agent stdout for text between output markers and relay as SSE.
+     * Text outside markers is treated as raw agent console output (streamed as text_delta).
+     */
+    function relayAgentOutput(chunk) {
+        parseBuffer += chunk;
+        // Stream text that appears OUTSIDE of output markers as text_delta events.
+        // Output markers contain structured JSON results (handled by onOutput callback).
+        let cursor = 0;
+        while (cursor < parseBuffer.length) {
+            const startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER, cursor);
+            if (startIdx === -1) {
+                // No more markers — everything from cursor to end is plain text
+                const text = parseBuffer.slice(cursor);
+                if (text) {
+                    for (const client of sseClients) {
+                        sseWrite(client, { type: 'text_delta', content: text });
+                    }
+                }
+                parseBuffer = '';
+                return;
+            }
+            // Text before the marker
+            if (startIdx > cursor) {
+                const text = parseBuffer.slice(cursor, startIdx);
+                for (const client of sseClients) {
+                    sseWrite(client, { type: 'text_delta', content: text });
+                }
+            }
+            // Find end marker
+            const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
+            if (endIdx === -1) {
+                // Incomplete marker pair — keep in buffer
+                parseBuffer = parseBuffer.slice(startIdx);
+                return;
+            }
+            // Skip the marker pair (structured output is handled by onOutput)
+            cursor = endIdx + OUTPUT_END_MARKER.length;
+        }
+        parseBuffer = '';
+    }
     const port = 5173;
     const url = `http://localhost:${port}?mode=${mode}`;
     const server = http.createServer(async (req, res) => {
         const method = req.method ?? 'GET';
         const reqUrl = req.url ?? '/';
         const parsed = new URL(reqUrl, `http://localhost:${port}`);
+        // CORS headers for API endpoints
+        if (parsed.pathname.startsWith('/api/')) {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+            if (method === 'OPTIONS') {
+                res.writeHead(204);
+                res.end();
+                return;
+            }
+        }
         // API: read pipeline
         if (method === 'GET' && parsed.pathname === '/api/pipeline') {
             try {
@@ -136,32 +316,18 @@ export async function startEditorServer(artDir, mode, projectDir) {
             });
             return;
         }
-        // ── Chat API endpoints ──
-        // GET /api/chat/state — check auth and current phase
+        // ── Agent Chat API endpoints ──
+        // GET /api/chat/state — check if agent is running
         if (method === 'GET' && parsed.pathname === '/api/chat/state') {
-            const token = resolveAuthToken();
-            const state = getChatState(resolvedProjectDir, !!token);
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(state));
+            res.end(JSON.stringify({ agentRunning }));
             return;
         }
-        // POST /api/chat/init — scan codebase + stream first analysis (SSE)
-        if (method === 'POST' && parsed.pathname === '/api/chat/init') {
-            const token = resolveAuthToken();
-            if (!token) {
-                res.writeHead(401, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'No API key configured' }));
-                return;
-            }
-            initChat(token, resolvedProjectDir, res).catch(() => res.end());
-            return;
-        }
-        // POST /api/chat/message — send user message + stream response (SSE)
+        // POST /api/chat/message — send user message to agent via IPC
         if (method === 'POST' && parsed.pathname === '/api/chat/message') {
-            const token = resolveAuthToken();
-            if (!token) {
-                res.writeHead(401, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'No API key configured' }));
+            if (!agentRunning || !ipcInputDir) {
+                res.writeHead(503, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Agent not running' }));
                 return;
             }
             const body = await readBody(req);
@@ -172,7 +338,11 @@ export async function startEditorServer(artDir, mode, projectDir) {
                     res.end(JSON.stringify({ error: 'Missing "message" field' }));
                     return;
                 }
-                sendMessage(token, resolvedProjectDir, message, res).catch(() => res.end());
+                // Write IPC input file for the container agent to pick up
+                const filename = `${Date.now()}-msg.json`;
+                fs.writeFileSync(path.join(ipcInputDir, filename), JSON.stringify({ type: 'message', text: message }));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
             }
             catch {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -180,11 +350,25 @@ export async function startEditorServer(artDir, mode, projectDir) {
             }
             return;
         }
-        // POST /api/chat/advance — advance phase + save files
-        if (method === 'POST' && parsed.pathname === '/api/chat/advance') {
-            const result = advancePhase(resolvedProjectDir, artDir);
-            res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(result));
+        // GET /api/chat/stream — SSE stream of agent output
+        if (method === 'GET' && parsed.pathname === '/api/chat/stream') {
+            sseHeaders(res);
+            sseClients.add(res);
+            // Send initial state
+            sseWrite(res, { type: 'connected', agentRunning });
+            req.on('close', () => {
+                sseClients.delete(res);
+            });
+            return;
+        }
+        // POST /api/chat/close — gracefully stop the agent
+        if (method === 'POST' && parsed.pathname === '/api/chat/close') {
+            if (agentRunning && ipcInputDir) {
+                // Write _close sentinel to signal the agent to exit
+                fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
             return;
         }
         // Static file serving
@@ -226,9 +410,22 @@ export async function startEditorServer(artDir, mode, projectDir) {
                 ? 'start'
                 : 'xdg-open';
         spawn(openCmd, [url], { stdio: 'ignore', detached: true }).unref();
+        // Spawn the container agent after server is listening
+        spawnAgent().catch((err) => {
+            console.error('Failed to spawn agent:', err);
+        });
     });
     // Graceful shutdown
     const cleanup = () => {
+        // Stop the agent if running
+        if (agentRunning && ipcInputDir) {
+            try {
+                fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+            }
+            catch {
+                // best effort
+            }
+        }
         server.close();
         process.exit(0);
     };
@@ -251,6 +448,9 @@ export async function compose(targetDir) {
         console.error(`No PIPELINE.json found in ${artDir}. Run 'art init .' first.`);
         process.exit(1);
     }
-    await startEditorServer(artDir, 'single');
+    // Setup auth + engine for container agent
+    await ensureAuth();
+    await setupEngine({ projectDir, artDir });
+    await startEditorServer(artDir, 'single', projectDir);
 }
 //# sourceMappingURL=compose.js.map

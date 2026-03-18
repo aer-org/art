@@ -10,6 +10,7 @@ export declare function resolveAuthToken(): string | null;
 /**
  * Ensure authentication is available, prompting interactively if needed.
  * Sets process.env._ART_OAUTH_TOKEN when a token is found or provided.
+ * Also sets ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN for the credential proxy.
  */
 export declare function ensureAuth(): Promise<void>;
 //# sourceMappingURL=auth.d.ts.map
