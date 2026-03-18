@@ -4,10 +4,14 @@
  */
 import { execSync } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+const TAR_RELEASE_URL = 'https://github.com/aer-org/art/releases/download/container-latest/art-agent.tar.gz';
 /**
  * Ensure the container image exists locally. If not, pull from registry.
+ * For udocker: downloads pre-built tar from GitHub Release since udocker pull
+ * can't reliably merge multi-layer images.
  */
 function ensureContainerImage(containerImage, runtimeBin) {
     const isUdocker = runtimeBin === 'udocker';
@@ -20,6 +24,32 @@ function ensureContainerImage(containerImage, runtimeBin) {
     }
     catch {
         // image not found — pull it
+    }
+    if (isUdocker) {
+        console.log(`Downloading container image tar: ${containerImage}...`);
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-setup-'));
+        const tarPath = path.join(tmpDir, 'art-agent.tar.gz');
+        try {
+            execSync(`curl -fSL -o ${tarPath} ${TAR_RELEASE_URL}`, {
+                stdio: ['pipe', 'inherit', 'inherit'],
+                timeout: 600000,
+            });
+            execSync(`${runtimeBin} load -i ${tarPath}`, {
+                stdio: 'inherit',
+                timeout: 600000,
+            });
+            console.log('Container image loaded successfully.\n');
+        }
+        catch {
+            console.error(`Failed to download or load image tar.\n` +
+                `Download manually from: ${TAR_RELEASE_URL}\n` +
+                `Then run: ${runtimeBin} load -i art-agent.tar.gz`);
+            process.exit(1);
+        }
+        finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+        return;
     }
     console.log(`Pulling container image: ${containerImage}...`);
     try {

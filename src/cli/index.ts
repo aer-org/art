@@ -19,13 +19,19 @@ async function main(): Promise<void> {
       await compose(args[0] || '.');
       break;
     }
+    case 'update': {
+      const { update } = await import('./update.js');
+      await update();
+      break;
+    }
     default:
       console.log(`aer-art — AI agent pipeline runner
 
 Usage:
   art init [dir]      Initialize __art__/ in a project directory
   art compose [dir]   Open visual pipeline editor in browser
-  art run [dir]       Start the agent pipeline engine`);
+  art run [dir]       Start the agent pipeline engine
+  art update          Pull latest container images from registry`);
       if (command && command !== 'help' && command !== '--help') {
         console.error(`\nUnknown command: ${command}`);
         process.exit(1);

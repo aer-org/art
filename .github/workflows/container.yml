@@ -15,7 +15,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -36,3 +36,17 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Export image as tar
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker save ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest | gzip > art-agent.tar.gz
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: container-latest
+          name: Container Image (latest)
+          body: "Auto-built container image tar for udocker. Load with: `udocker load -i art-agent.tar.gz`"
+          files: art-agent.tar.gz
+          make_latest: false
