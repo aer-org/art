@@ -654,6 +654,20 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             }
             return;
         }
+        // GET /api/pipeline-state — current pipeline execution state
+        if (method === 'GET' && parsed.pathname === '/api/pipeline-state') {
+            const statePath = path.join(artDir, 'PIPELINE_STATE.json');
+            try {
+                const data = fs.readFileSync(statePath, 'utf-8');
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(data);
+            }
+            catch {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end('null');
+            }
+            return;
+        }
         // GET /api/runs/live-log — SSE stream tailing the latest pipeline log file
         if (method === 'GET' && parsed.pathname === '/api/runs/live-log') {
             // Find the latest pipeline log

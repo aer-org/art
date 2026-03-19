@@ -2,10 +2,10 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { PipelineStage } from '../types';
 import './StageNode.css';
 
-type StageNodeType = Node<{ stage: PipelineStage; isEntry?: boolean }>;
+type StageNodeType = Node<{ stage: PipelineStage; isEntry?: boolean; runStatus?: 'running' | 'completed' }>;
 
 export function StageNode({ data, selected }: NodeProps<StageNodeType>) {
-  const { stage, isEntry } = data;
+  const { stage, isEntry, runStatus } = data;
 
   const mountBadges = Object.entries(stage.mounts)
     .filter(([, v]) => v != null)
@@ -31,7 +31,7 @@ export function StageNode({ data, selected }: NodeProps<StageNodeType>) {
   const sourceTransitions = (stage.transitions || []).filter((t) => !t.retry);
 
   return (
-    <div className={`stage-node ${selected ? 'selected' : ''} ${isEntry ? 'entry' : ''}`}>
+    <div className={`stage-node ${selected ? 'selected' : ''} ${isEntry ? 'entry' : ''} ${runStatus ? `run-${runStatus}` : ''}`}>
       <div className="stage-title-bar">
         {isEntry && <span className="entry-badge">START</span>}
         {stage.name}

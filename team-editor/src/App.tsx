@@ -52,6 +52,11 @@ export default function App() {
   const [agentChatDone, setAgentChatDone] = useState(false);
   const [agentRunning, setAgentRunning] = useState<boolean | null>(null);
   const [imageRegistry, setImageRegistry] = useState<ImageRegistry>({});
+  const [pipelineState, setPipelineState] = useState<{
+    currentStage: string | null;
+    completedStages: string[];
+    status: string;
+  } | null>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
@@ -62,6 +67,20 @@ export default function App() {
       .then((r) => r.json())
       .then((state: { agentRunning: boolean }) => setAgentRunning(state.agentRunning))
       .catch(() => setAgentRunning(false));
+  }, []);
+
+  // Poll pipeline execution state for node highlighting
+  useEffect(() => {
+    if (!isSingleMode) return;
+    const poll = () => {
+      fetch('/api/pipeline-state')
+        .then((r) => r.json())
+        .then((state) => setPipelineState(state))
+        .catch(() => {});
+    };
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   const nodeTypes_ = useMemo(() => nodeTypes, []);
@@ -534,7 +553,14 @@ export default function App() {
           {agent ? (
             <ReactFlow
               key={selectedAgentIdx}
-              nodes={nodes}
+              nodes={nodes.map((n) => {
+                if (!pipelineState || pipelineState.status !== 'running') return n;
+                let runStatus: string | undefined;
+                if (n.id === pipelineState.currentStage) runStatus = 'running';
+                else if (pipelineState.completedStages?.includes(n.id)) runStatus = 'completed';
+                if (!runStatus) return n;
+                return { ...n, data: { ...n.data, runStatus } };
+              })}
               edges={edges}
               nodeTypes={nodeTypes_}
               onNodesChange={onNodesChange}
