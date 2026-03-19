@@ -673,7 +673,8 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         // Attach output log to the run manifest
         try {
           const runsDir = path.join(artDir, 'runs');
-          const manifestFiles = fs.readdirSync(runsDir)
+          const manifestFiles = fs
+            .readdirSync(runsDir)
             .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
             .sort()
             .reverse();
@@ -683,7 +684,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             manifest.outputLogFile = `logs/output-${outputTs}.log`;
             fs.writeFileSync(latestPath, JSON.stringify(manifest, null, 2));
           }
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
 
         for (const client of runSseClients) {
           sseWrite(client, { type: 'run_stopped', code });
@@ -977,7 +980,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     }
   });
 
-  server.listen(0, () => {
+  const EDITOR_PORT = parseInt(process.env.ART_EDITOR_PORT || '4800', 10);
+
+  const onListening = () => {
     const addr = server.address() as import('net').AddressInfo;
     const port = addr.port;
     const url = `http://localhost:${port}?mode=${mode}`;
@@ -997,7 +1002,17 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     spawnAgent().catch((err) => {
       console.error('Failed to spawn agent:', err);
     });
+  };
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`Port ${EDITOR_PORT} in use, using random port`);
+      server.listen(0, onListening);
+    } else {
+      throw err;
+    }
   });
+  server.listen(EDITOR_PORT, onListening);
 
   // Graceful shutdown
   let cleaningUp = false;
