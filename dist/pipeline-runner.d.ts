@@ -12,6 +12,7 @@ export interface RunManifest {
         duration?: number;
     }>;
     logFile?: string;
+    outputLogFile?: string;
 }
 export interface CurrentRunInfo {
     runId: string;

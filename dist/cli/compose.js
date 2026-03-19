@@ -567,20 +567,44 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 detached: false,
             });
             runProcess = child;
+            // Save stdout/stderr to a log file for history replay
+            const outputLogsDir = path.join(artDir, 'logs');
+            fs.mkdirSync(outputLogsDir, { recursive: true });
+            const outputTs = new Date().toISOString().replace(/[:.]/g, '-');
+            const outputLogPath = path.join(outputLogsDir, `output-${outputTs}.log`);
+            const outputLogStream = fs.createWriteStream(outputLogPath);
             child.stdout?.on('data', (data) => {
                 const chunk = data.toString();
+                outputLogStream.write(chunk);
                 for (const client of runSseClients) {
                     sseWrite(client, { type: 'stdout', content: chunk });
                 }
             });
             child.stderr?.on('data', (data) => {
                 const chunk = data.toString();
+                outputLogStream.write(chunk);
                 for (const client of runSseClients) {
                     sseWrite(client, { type: 'stderr', content: chunk });
                 }
             });
             child.on('close', (code) => {
                 runProcess = null;
+                outputLogStream.end();
+                // Attach output log to the run manifest
+                try {
+                    const runsDir = path.join(artDir, 'runs');
+                    const manifestFiles = fs.readdirSync(runsDir)
+                        .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
+                        .sort()
+                        .reverse();
+                    if (manifestFiles.length > 0) {
+                        const latestPath = path.join(runsDir, manifestFiles[0]);
+                        const manifest = JSON.parse(fs.readFileSync(latestPath, 'utf-8'));
+                        manifest.outputLogFile = `logs/output-${outputTs}.log`;
+                        fs.writeFileSync(latestPath, JSON.stringify(manifest, null, 2));
+                    }
+                }
+                catch { /* best effort */ }
                 for (const client of runSseClients) {
                     sseWrite(client, { type: 'run_stopped', code });
                     client.end();
@@ -651,6 +675,35 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             catch {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Log file not found' }));
+            }
+            return;
+        }
+        // GET /api/runs/:id/output — read output (stdout/stderr) log for a past run
+        if (method === 'GET' &&
+            parsed.pathname.startsWith('/api/runs/') &&
+            parsed.pathname.endsWith('/output')) {
+            const parts = parsed.pathname.split('/');
+            const runId = parts[3]; // /api/runs/{runId}/output
+            if (!runId || !runId.startsWith('run-')) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid run ID' }));
+                return;
+            }
+            const manifest = readRunManifest(artDir, runId);
+            if (!manifest || !manifest.outputLogFile) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Output log not found' }));
+                return;
+            }
+            const logPath = path.join(artDir, manifest.outputLogFile);
+            try {
+                const data = fs.readFileSync(logPath, 'utf-8');
+                res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+                res.end(data);
+            }
+            catch {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Output log file not found' }));
             }
             return;
         }

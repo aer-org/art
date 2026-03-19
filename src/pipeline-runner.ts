@@ -37,6 +37,7 @@ export interface RunManifest {
   status: 'running' | 'success' | 'error' | 'cancelled';
   stages: Array<{ name: string; status: string; duration?: number }>;
   logFile?: string;
+  outputLogFile?: string;
 }
 
 export interface CurrentRunInfo {

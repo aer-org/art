@@ -11,6 +11,7 @@ export interface RunManifest {
   status: 'running' | 'success' | 'error' | 'cancelled';
   stages: Array<{ name: string; status: string; duration?: number }>;
   logFile?: string;
+  outputLogFile?: string;
 }
 
 interface CurrentRunInfo {
@@ -197,6 +198,8 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
   const [runs, setRuns] = useState<RunManifest[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [logContent, setLogContent] = useState('');
+  const [outputContent, setOutputContent] = useState('');
+  const [historyTab, setHistoryTab] = useState<'output' | 'detailed'>('output');
   const [detailedLog, setDetailedLog] = useState('');
   const [tab, setTab] = useState<'output' | 'detailed' | 'history'>('output');
   const liveLogEsRef = useRef<EventSource | null>(null);
@@ -253,13 +256,18 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
 
   const handleViewLog = useCallback(async (runId: string) => {
     setSelectedLog(runId);
-    try {
-      const resp = await fetch(`/api/runs/${runId}/log`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      setLogContent(await resp.text());
-    } catch {
-      setLogContent('Log not available.');
-    }
+    setHistoryTab('output');
+    // Fetch both logs in parallel
+    const [outputResp, detailedResp] = await Promise.all([
+      fetch(`/api/runs/${runId}/output`).catch(() => null),
+      fetch(`/api/runs/${runId}/log`).catch(() => null),
+    ]);
+    setOutputContent(
+      outputResp?.ok ? await outputResp.text() : 'Output log not available.',
+    );
+    setLogContent(
+      detailedResp?.ok ? await detailedResp.text() : 'Detailed log not available.',
+    );
   }, []);
 
   const statusIcon = (status: string) => {
@@ -372,14 +380,36 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
 
         {tab === 'history' && selectedLog && (
           <div>
-            <button
-              onClick={() => { setSelectedLog(null); setLogContent(''); }}
-              style={{ background: 'transparent', border: '1px solid #45475a', color: '#a6adc8', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', marginBottom: '8px', padding: '2px 8px' }}
-            >
-              ← Back
-            </button>
-            <pre style={{ margin: 0, color: '#cdd6f4', fontSize: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}>
-              {logContent}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
+              <button
+                onClick={() => { setSelectedLog(null); setLogContent(''); setOutputContent(''); }}
+                style={{ background: 'transparent', border: '1px solid #45475a', color: '#a6adc8', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', padding: '2px 8px' }}
+              >
+                ← Back
+              </button>
+              <button
+                onClick={() => setHistoryTab('output')}
+                style={{
+                  background: historyTab === 'output' ? '#313244' : 'transparent',
+                  color: historyTab === 'output' ? '#cdd6f4' : '#6c7086',
+                  border: 'none', padding: '2px 10px', borderRadius: '3px', cursor: 'pointer', fontSize: '11px',
+                }}
+              >
+                Output
+              </button>
+              <button
+                onClick={() => setHistoryTab('detailed')}
+                style={{
+                  background: historyTab === 'detailed' ? '#313244' : 'transparent',
+                  color: historyTab === 'detailed' ? '#cdd6f4' : '#6c7086',
+                  border: 'none', padding: '2px 10px', borderRadius: '3px', cursor: 'pointer', fontSize: '11px',
+                }}
+              >
+                Detailed
+              </button>
+            </div>
+            <pre style={{ margin: 0, color: historyTab === 'detailed' ? '#a6e3a1' : '#cdd6f4', fontSize: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}>
+              {historyTab === 'output' ? outputContent : logContent}
             </pre>
           </div>
         )}
