@@ -603,6 +603,7 @@ export class PipelineRunner {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const pipelineLogFile = path.join(logsDir, `pipeline-${ts}.log`);
         this.manifest.logFile = `logs/pipeline-${ts}.log`;
+        writeRunManifest(this.groupDir, this.manifest);
         const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
         pipelineLogStream.write(`=== Pipeline Log ===\n` +
             `Started: ${new Date().toISOString()}\n` +

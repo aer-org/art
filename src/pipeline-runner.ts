@@ -60,7 +60,10 @@ export function writeCurrentRun(groupDir: string, info: CurrentRunInfo): void {
 
 export function readCurrentRun(groupDir: string): CurrentRunInfo | null {
   try {
-    const raw = fs.readFileSync(path.join(runsDir(groupDir), '_current.json'), 'utf-8');
+    const raw = fs.readFileSync(
+      path.join(runsDir(groupDir), '_current.json'),
+      'utf-8',
+    );
     return JSON.parse(raw) as CurrentRunInfo;
   } catch {
     return null;
@@ -70,10 +73,15 @@ export function readCurrentRun(groupDir: string): CurrentRunInfo | null {
 export function removeCurrentRun(groupDir: string): void {
   try {
     fs.unlinkSync(path.join(runsDir(groupDir), '_current.json'));
-  } catch { /* file may not exist */ }
+  } catch {
+    /* file may not exist */
+  }
 }
 
-export function writeRunManifest(groupDir: string, manifest: RunManifest): void {
+export function writeRunManifest(
+  groupDir: string,
+  manifest: RunManifest,
+): void {
   const dir = runsDir(groupDir);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `${manifest.runId}.json`);
@@ -82,9 +90,15 @@ export function writeRunManifest(groupDir: string, manifest: RunManifest): void 
   fs.renameSync(tmpPath, filePath);
 }
 
-export function readRunManifest(groupDir: string, runId: string): RunManifest | null {
+export function readRunManifest(
+  groupDir: string,
+  runId: string,
+): RunManifest | null {
   try {
-    const raw = fs.readFileSync(path.join(runsDir(groupDir), `${runId}.json`), 'utf-8');
+    const raw = fs.readFileSync(
+      path.join(runsDir(groupDir), `${runId}.json`),
+      'utf-8',
+    );
     return JSON.parse(raw) as RunManifest;
   } catch {
     return null;
@@ -94,13 +108,16 @@ export function readRunManifest(groupDir: string, runId: string): RunManifest | 
 export function listRunManifests(groupDir: string): RunManifest[] {
   const dir = runsDir(groupDir);
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter(f => f.startsWith('run-') && f.endsWith('.json'))
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
     .sort()
     .reverse()
-    .map(f => {
+    .map((f) => {
       try {
-        return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8')) as RunManifest;
+        return JSON.parse(
+          fs.readFileSync(path.join(dir, f), 'utf-8'),
+        ) as RunManifest;
       } catch {
         return null;
       }
@@ -841,6 +858,7 @@ export class PipelineRunner {
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const pipelineLogFile = path.join(logsDir, `pipeline-${ts}.log`);
     this.manifest.logFile = `logs/pipeline-${ts}.log`;
+    writeRunManifest(this.groupDir, this.manifest);
     const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
     pipelineLogStream.write(
       `=== Pipeline Log ===\n` +

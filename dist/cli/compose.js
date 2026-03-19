@@ -651,7 +651,8 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             const logsDir = path.join(artDir, 'logs');
             let logPath = null;
             try {
-                const files = fs.readdirSync(logsDir)
+                const files = fs
+                    .readdirSync(logsDir)
                     .filter((f) => f.startsWith('pipeline-') && f.endsWith('.log'))
                     .sort()
                     .reverse();
@@ -659,7 +660,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                     logPath = path.join(logsDir, files[0]);
                 }
             }
-            catch { /* no logs dir */ }
+            catch {
+                /* no logs dir */
+            }
             if (!logPath) {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'No pipeline log found' }));
@@ -675,7 +678,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                     offset = existing.length;
                 }
             }
-            catch { /* file may not exist yet */ }
+            catch {
+                /* file may not exist yet */
+            }
             // Poll for new content (fs.watch is unreliable across platforms)
             const tailInterval = setInterval(() => {
                 try {
@@ -692,7 +697,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                         }
                     }
                 }
-                catch { /* file may be gone */ }
+                catch {
+                    /* file may be gone */
+                }
             }, 500);
             req.on('close', () => {
                 clearInterval(tailInterval);
