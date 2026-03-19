@@ -622,12 +622,21 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
       // Spawn art run as a child process
       const artBin = process.argv[1]; // path to the running CLI
+      const childEnv: Record<string, string | undefined> = {
+        ...process.env,
+        FORCE_COLOR: '0',
+      };
+      // WSL: credential proxy must bind 0.0.0.0 so containers on the
+      // Docker bridge can reach it (127.0.0.1 is host-only in WSL).
+      if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) {
+        childEnv.CREDENTIAL_PROXY_HOST = '0.0.0.0';
+      }
       const child = spawn(
         process.execPath,
         [artBin, 'run', resolvedProjectDir],
         {
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, FORCE_COLOR: '0' },
+          env: childEnv,
           detached: false,
         },
       );
@@ -733,14 +742,17 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       const logsDir = path.join(artDir, 'logs');
       let logPath: string | null = null;
       try {
-        const files = fs.readdirSync(logsDir)
+        const files = fs
+          .readdirSync(logsDir)
           .filter((f) => f.startsWith('pipeline-') && f.endsWith('.log'))
           .sort()
           .reverse();
         if (files.length > 0) {
           logPath = path.join(logsDir, files[0]);
         }
-      } catch { /* no logs dir */ }
+      } catch {
+        /* no logs dir */
+      }
 
       if (!logPath) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -758,7 +770,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           sseWrite(res, { type: 'log', content: existing });
           offset = existing.length;
         }
-      } catch { /* file may not exist yet */ }
+      } catch {
+        /* file may not exist yet */
+      }
 
       // Poll for new content (fs.watch is unreliable across platforms)
       const tailInterval = setInterval(() => {
@@ -775,7 +789,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
               sseWrite(res, { type: 'log', content: chunk });
             }
           }
-        } catch { /* file may be gone */ }
+        } catch {
+          /* file may be gone */
+        }
       }, 500);
 
       req.on('close', () => {

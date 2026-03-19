@@ -552,9 +552,18 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 removeCurrentRun(artDir);
             // Spawn art run as a child process
             const artBin = process.argv[1]; // path to the running CLI
+            const childEnv = {
+                ...process.env,
+                FORCE_COLOR: '0',
+            };
+            // WSL: credential proxy must bind 0.0.0.0 so containers on the
+            // Docker bridge can reach it (127.0.0.1 is host-only in WSL).
+            if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) {
+                childEnv.CREDENTIAL_PROXY_HOST = '0.0.0.0';
+            }
             const child = spawn(process.execPath, [artBin, 'run', resolvedProjectDir], {
                 stdio: ['ignore', 'pipe', 'pipe'],
-                env: { ...process.env, FORCE_COLOR: '0' },
+                env: childEnv,
                 detached: false,
             });
             runProcess = child;
