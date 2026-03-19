@@ -194,7 +194,8 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
   onOutputChunk: (fn: OutputListener) => () => void;
   clearSignal: number;
 }) {
-  const detailedRef = useRef<HTMLPreElement>(null);
+  const detailedRef = useRef<HTMLDivElement>(null);
+  const detailedAtBottomRef = useRef(true);
   const [runs, setRuns] = useState<RunManifest[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [logContent, setLogContent] = useState('');
@@ -204,12 +205,29 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
   const [tab, setTab] = useState<'output' | 'detailed' | 'history'>('output');
   const liveLogEsRef = useRef<EventSource | null>(null);
 
-  // Auto-scroll detailed
+  // Auto-scroll detailed only when user is at the bottom
   useEffect(() => {
-    if (detailedRef.current) {
+    if (detailedRef.current && detailedAtBottomRef.current) {
       detailedRef.current.scrollTop = detailedRef.current.scrollHeight;
     }
   }, [detailedLog]);
+
+  // Reset to bottom when first opening detailed tab
+  useEffect(() => {
+    if (tab === 'detailed') {
+      detailedAtBottomRef.current = true;
+      if (detailedRef.current) {
+        detailedRef.current.scrollTop = detailedRef.current.scrollHeight;
+      }
+    }
+  }, [tab]);
+
+  const handleDetailedScroll = useCallback(() => {
+    const el = detailedRef.current;
+    if (!el) return;
+    // Consider "at bottom" if within 30px of the end
+    detailedAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  }, []);
 
   // Switch to output tab when running
   useEffect(() => {
@@ -336,10 +354,13 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
       <div style={{ flex: 1, overflow: 'hidden', display: tab === 'output' ? 'block' : 'none' }}>
         <XtermOutput onOutputChunk={onOutputChunk} clearSignal={clearSignal} />
       </div>
-      <div style={{ flex: 1, overflow: 'auto', padding: '8px 12px', display: tab !== 'output' ? 'block' : 'none' }}>
+      <div
+        ref={tab === 'detailed' ? detailedRef : undefined}
+        onScroll={tab === 'detailed' ? handleDetailedScroll : undefined}
+        style={{ flex: 1, overflow: 'auto', padding: '8px 12px', display: tab !== 'output' ? 'block' : 'none' }}
+      >
         {tab === 'detailed' && (
           <pre
-            ref={detailedRef}
             style={{ margin: 0, color: '#a6e3a1', fontSize: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}
           >
             {detailedLog || (isRunning ? 'Waiting for container logs...' : 'No pipeline log available. Run a pipeline first.')}
