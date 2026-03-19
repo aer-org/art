@@ -332,11 +332,11 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'hidden', padding: tab === 'output' ? '0' : '8px 12px', ...(tab !== 'output' ? { overflow: 'auto' } : {}) }}>
-        {tab === 'output' && (
-          <XtermOutput onOutputChunk={onOutputChunk} clearSignal={clearSignal} />
-        )}
-
+      {/* xterm is always mounted but hidden when not active — prevents losing terminal state on tab switch */}
+      <div style={{ flex: 1, overflow: 'hidden', display: tab === 'output' ? 'block' : 'none' }}>
+        <XtermOutput onOutputChunk={onOutputChunk} clearSignal={clearSignal} />
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: '8px 12px', display: tab !== 'output' ? 'block' : 'none' }}>
         {tab === 'detailed' && (
           <pre
             ref={detailedRef}
