@@ -127,7 +127,13 @@ export const STAGE_TEMPLATES: Record<string, StageTemplate> = {
     prompt:
       SOUL_BUILDER +
       '\n\n---\n\nImplement the changes described in /workspace/extra/plan/PLAN.md. Write code in /workspace/extra/src/. Do not write tests. Do not modify the plan.',
-    mounts: { project: 'rw', plan: 'ro', src: 'rw', tests: null, metrics: 'ro' },
+    mounts: {
+      project: 'rw',
+      plan: 'ro',
+      src: 'rw',
+      tests: null,
+      metrics: 'ro',
+    },
     transitions: [
       { marker: '[STAGE_COMPLETE]', next: 'test', prompt: '코드 구현 완료' },
       { marker: '[STAGE_ERROR]', next: null, prompt: '환경/도구/설정 에러' },

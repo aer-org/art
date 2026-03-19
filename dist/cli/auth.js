@@ -1,4 +1,5 @@
 import fs from 'fs';
+import https from 'https';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
@@ -73,6 +74,68 @@ export function resolveAuthToken() {
         return cliToken;
     return null;
 }
+/**
+ * Validate a token by making a minimal API call to Anthropic.
+ * Sends a tiny messages request (max_tokens=1) to check auth.
+ */
+function validateToken(token) {
+    const isApiKey = token.startsWith('sk-ant-api') ||
+        (!token.startsWith('sk-ant-oat') && !token.startsWith('eyJ'));
+    const body = JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+    });
+    const headers = {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+    };
+    if (isApiKey) {
+        headers['x-api-key'] = token;
+    }
+    else {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    return new Promise((resolve) => {
+        const req = https.request({
+            hostname: 'api.anthropic.com',
+            path: '/v1/messages',
+            method: 'POST',
+            headers,
+            timeout: 15000,
+        }, (res) => {
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+                if (res.statusCode === 200) {
+                    console.log('  ✓ API 토큰 유효');
+                    resolve(true);
+                }
+                else {
+                    try {
+                        const err = JSON.parse(data);
+                        console.error(`  ✗ API 응답 ${res.statusCode}: ${err.error?.message || data.slice(0, 120)}`);
+                    }
+                    catch {
+                        console.error(`  ✗ API 응답 ${res.statusCode}`);
+                    }
+                    resolve(false);
+                }
+            });
+        });
+        req.on('error', (err) => {
+            console.error(`  ✗ API 연결 실패: ${err.message}`);
+            resolve(false);
+        });
+        req.on('timeout', () => {
+            req.destroy();
+            console.error('  ✗ API 요청 타임아웃');
+            resolve(false);
+        });
+        req.write(body);
+        req.end();
+    });
+}
 function maskToken(token) {
     if (token.length <= 12)
         return '***';
@@ -104,28 +167,28 @@ function setAuthEnvVars(token) {
  * Also sets ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN for the credential proxy.
  */
 export async function ensureAuth() {
+    let token = null;
+    let source = '';
     // 1. Check .env in project dir for a non-empty token
     const envFile = path.join(process.cwd(), '.env');
     try {
         const env = fs.readFileSync(envFile, 'utf-8');
         for (const line of env.split('\n')) {
             const trimmed = line.trim();
-            // Check for API key in .env
             if (trimmed.startsWith('ANTHROPIC_API_KEY=')) {
                 const val = trimmed.slice('ANTHROPIC_API_KEY='.length).trim();
                 if (val) {
-                    console.log(`Using API key from .env (${maskToken(val)})`);
-                    setAuthEnvVars(val);
-                    return;
+                    token = val;
+                    source = 'API key from .env';
+                    break;
                 }
             }
             if ((trimmed.startsWith('CLAUDE_CODE_OAUTH_TOKEN=') ||
                 trimmed.startsWith('ANTHROPIC_AUTH_TOKEN=')) &&
                 trimmed.split('=', 2)[1]?.trim()) {
-                const val = trimmed.split('=', 2)[1].trim();
-                console.log(`Using token from .env (${maskToken(val)})`);
-                setAuthEnvVars(val);
-                return;
+                token = trimmed.split('=', 2)[1].trim();
+                source = 'token from .env';
+                break;
             }
         }
     }
@@ -133,37 +196,50 @@ export async function ensureAuth() {
         /* no .env */
     }
     // 2. Check saved token from previous art setup
-    const saved = readSavedToken();
-    if (saved) {
-        console.log(`Using saved token (${maskToken(saved)})`);
-        setAuthEnvVars(saved);
-        return;
+    if (!token) {
+        const saved = readSavedToken();
+        if (saved) {
+            token = saved;
+            source = 'saved token';
+        }
     }
     // 3. Try Claude CLI credentials
-    const cliToken = readClaudeCliToken();
-    if (cliToken) {
-        console.log(`Using Claude CLI token (${maskToken(cliToken)})`);
-        setAuthEnvVars(cliToken);
-        return;
+    if (!token) {
+        const cliToken = readClaudeCliToken();
+        if (cliToken) {
+            token = cliToken;
+            source = 'Claude CLI token';
+        }
     }
     // 4. No token found — ask user to provide one
-    console.log('No Claude authentication found.\n\n' +
-        'To get a token, run:\n\n' +
-        '  claude setup-token\n\n' +
-        'Then paste the token below.\n');
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-    });
-    const token = await new Promise((resolve) => rl.question('Token: ', resolve));
-    rl.close();
-    const trimmed = token.trim();
-    if (!trimmed) {
-        console.error('No token provided. Exiting.');
+    if (!token) {
+        console.log('No Claude authentication found.\n\n' +
+            'To get a token, run:\n\n' +
+            '  claude setup-token\n\n' +
+            'Then paste the token below.\n');
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+        });
+        const answer = await new Promise((resolve) => rl.question('Token: ', resolve));
+        rl.close();
+        const trimmed = answer.trim();
+        if (!trimmed) {
+            console.error('No token provided. Exiting.');
+            process.exit(1);
+        }
+        saveToken(trimmed);
+        token = trimmed;
+        source = 'manual input';
+    }
+    console.log(`Using ${source} (${maskToken(token)})`);
+    // Validate token with a live API call
+    console.log('토큰 검증 중...');
+    if (!(await validateToken(token))) {
+        console.error('  ✗ 토큰이 유효하지 않거나 만료되었습니다.\n' +
+            '  `claude setup-token` 으로 새 토큰을 발급받으세요.');
         process.exit(1);
     }
-    saveToken(trimmed);
-    setAuthEnvVars(trimmed);
-    console.log(`Token saved (${maskToken(trimmed)})\n`);
+    setAuthEnvVars(token);
 }
 //# sourceMappingURL=auth.js.map

@@ -46,7 +46,7 @@ export declare class PipelineRunner {
      * Build internal mounts for a stage based on its mount policy.
      * Returns absolute container paths under /workspace/group/ for direct overlay.
      */
-    private buildStageMounts;
+    private pipelineStageMounts;
     /**
      * Spawn a stage container as a virtual sub-group.
      * The container starts with an initial prompt and enters the IPC wait loop.
