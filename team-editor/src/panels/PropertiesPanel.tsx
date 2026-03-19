@@ -71,32 +71,26 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
 
       <label>
         Prompt
-        <div style={{ position: 'relative' }}>
-          <textarea
-            rows={4}
-            value={stage.prompt}
-            onChange={(e) => update({ prompt: e.target.value })}
-            style={{ paddingRight: '60px' }}
-          />
-          {onEditPrompt && (
-            <button
-              onClick={() => onEditPrompt(node.id, stage.prompt, (p) => update({ prompt: p }))}
-              style={{
-                position: 'absolute',
-                top: '4px',
-                right: '4px',
-                fontSize: '11px',
-                padding: '2px 8px',
-                background: '#313244',
-                color: '#cdd6f4',
-                border: '1px solid #45475a',
-                borderRadius: '4px',
-                cursor: 'pointer',
-              }}
-            >
-              Expand
-            </button>
-          )}
+        <div
+          onClick={() => onEditPrompt?.(node.id, stage.prompt, (p) => update({ prompt: p }))}
+          style={{
+            background: '#11111b',
+            border: '1px solid #45475a',
+            borderRadius: '4px',
+            padding: '8px 10px',
+            fontSize: '12px',
+            color: stage.prompt ? '#cdd6f4' : '#6c7086',
+            cursor: 'pointer',
+            whiteSpace: 'pre-wrap',
+            maxHeight: '80px',
+            overflow: 'hidden',
+            fontFamily: "'JetBrains Mono', monospace",
+            lineHeight: '1.4',
+          }}
+        >
+          {stage.prompt
+            ? (stage.prompt.length > 120 ? stage.prompt.slice(0, 120) + '...' : stage.prompt)
+            : 'Click to edit prompt...'}
         </div>
       </label>
 
