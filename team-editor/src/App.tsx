@@ -526,12 +526,9 @@ export default function App() {
           <>
             <button onClick={handleSave}>Save</button>
             {saveStatus && <span className="save-status">{saveStatus}</span>}
-            <button onClick={() => { runControls.setShowPanel(true); runControls.setInitialTab('history'); }} style={{ background: '#313244', color: '#cdd6f4' }}>History</button>
+            <button onClick={() => { runControls.setShowPanel((v) => !v); runControls.setInitialTab(null); }} style={{ background: '#313244', color: '#cdd6f4' }}>Terminal</button>
             {runControls.isRunning ? (
-              <>
-                <button onClick={() => runControls.setShowPanel((v) => !v)} style={{ background: '#313244', color: '#cdd6f4' }}>Output</button>
-                <button onClick={runControls.stop} style={{ background: '#ef4444', color: '#fff' }}>Stop</button>
-              </>
+              <button onClick={runControls.stop} style={{ background: '#ef4444', color: '#fff' }}>Stop</button>
             ) : (
               <button onClick={async () => { await handleSave(); runControls.start(); }} style={{ background: '#22c55e', color: '#fff' }}>Run</button>
             )}
