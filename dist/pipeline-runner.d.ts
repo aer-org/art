@@ -1,4 +1,33 @@
 import { RegisteredGroup } from './types.js';
+export declare function generateRunId(): string;
+export interface RunManifest {
+    runId: string;
+    pid: number;
+    startTime: string;
+    endTime?: string;
+    status: 'running' | 'success' | 'error' | 'cancelled';
+    stages: Array<{
+        name: string;
+        status: string;
+        duration?: number;
+    }>;
+    logFile?: string;
+}
+export interface CurrentRunInfo {
+    runId: string;
+    pid: number;
+    startTime: string;
+}
+export declare function writeCurrentRun(groupDir: string, info: CurrentRunInfo): void;
+export declare function readCurrentRun(groupDir: string): CurrentRunInfo | null;
+export declare function removeCurrentRun(groupDir: string): void;
+export declare function writeRunManifest(groupDir: string, manifest: RunManifest): void;
+export declare function readRunManifest(groupDir: string, runId: string): RunManifest | null;
+export declare function listRunManifests(groupDir: string): RunManifest[];
+/**
+ * Check if a PID is alive.
+ */
+export declare function isPidAlive(pid: number): boolean;
 export interface PipelineTransition {
     marker: string;
     next?: string | null;
@@ -39,7 +68,10 @@ export declare class PipelineRunner {
     private notify;
     private onProcess;
     private groupDir;
-    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string);
+    private runId;
+    private manifest;
+    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string);
+    getRunId(): string;
     /** Send a visually prominent banner to TUI for stage transitions */
     private notifyBanner;
     /**

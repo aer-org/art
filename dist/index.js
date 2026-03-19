@@ -23,6 +23,7 @@ let sessions = {};
 let registeredGroups = {};
 let lastAgentTimestamp = {};
 let messageLoopRunning = false;
+let currentRunId;
 const channels = [];
 const queue = new GroupQueue();
 function loadState() {
@@ -190,7 +191,7 @@ async function processGroupMessages(chatJid) {
                     name: `team-${agent.name}`,
                     folder: `${group.folder}__team_${agent.folder}`,
                 };
-                const runner = new PipelineRunner(virtualGroup, chatJid, pipelineConfig, async (text) => channel.sendMessage(chatJid, `[${agent.name}] ${text}`), (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder), agentGroupDir);
+                const runner = new PipelineRunner(virtualGroup, chatJid, pipelineConfig, async (text) => channel.sendMessage(chatJid, `[${agent.name}] ${text}`), (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder), agentGroupDir, currentRunId);
                 return runner.run();
             }));
             const allSuccess = results.every((r) => r === 'success');
@@ -206,7 +207,7 @@ async function processGroupMessages(chatJid) {
             logger.info({ group: group.name, stageCount: pipelineConfig.stages.length }, 'Pipeline mode detected');
             const runner = new PipelineRunner(group, chatJid, pipelineConfig, async (text) => {
                 await channel.sendMessage(chatJid, text);
-            }, (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder));
+            }, (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder), undefined, currentRunId);
             const result = await runner.run();
             // In art CLI mode, exit after pipeline completes
             if (process.env.ART_TUI_MODE) {
@@ -411,6 +412,8 @@ export async function startEngine(opts) {
     logger.info('Database initialized');
     loadState();
     restoreRemoteControl();
+    // Store run ID for pipeline execution
+    currentRunId = opts?.runId;
     // Auto-register group if provided (art CLI mode)
     if (opts?.autoRegisterGroup) {
         const { jid, group } = opts.autoRegisterGroup;

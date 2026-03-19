@@ -30,6 +30,7 @@ import {
 } from './pipeline-runner.js';
 import {
   cleanupOrphans,
+  cleanupRunContainers,
   ensureContainerRuntimeRunning,
   getProxyBindHost,
   initRuntime,
@@ -77,6 +78,7 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+let currentRunId: string | undefined;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -318,6 +320,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             (proc, containerName) =>
               queue.registerProcess(chatJid, proc, containerName, group.folder),
             agentGroupDir,
+            currentRunId,
           );
           return runner.run();
         }),
@@ -349,6 +352,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         },
         (proc, containerName) =>
           queue.registerProcess(chatJid, proc, containerName, group.folder),
+        undefined,
+        currentRunId,
       );
       const result = await runner.run();
 
@@ -625,6 +630,8 @@ async function ensureContainerSystemRunning(): Promise<void> {
 export interface StartEngineOpts {
   /** Pre-register a group before the message loop starts (art CLI mode) */
   autoRegisterGroup?: { jid: string; group: RegisteredGroup };
+  /** Run ID for pipeline execution tracking */
+  runId?: string;
 }
 
 export async function startEngine(opts?: StartEngineOpts): Promise<void> {
@@ -633,6 +640,9 @@ export async function startEngine(opts?: StartEngineOpts): Promise<void> {
   logger.info('Database initialized');
   loadState();
   restoreRemoteControl();
+
+  // Store run ID for pipeline execution
+  currentRunId = opts?.runId;
 
   // Auto-register group if provided (art CLI mode)
   if (opts?.autoRegisterGroup) {

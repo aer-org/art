@@ -15,6 +15,83 @@ import { getRuntime } from './container-runtime.js';
 import { getImageForStage } from './image-registry.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+// --- Run ID + Manifest ---
+export function generateRunId() {
+    return `run-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+}
+function runsDir(groupDir) {
+    return path.join(groupDir, 'runs');
+}
+export function writeCurrentRun(groupDir, info) {
+    const dir = runsDir(groupDir);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = path.join(dir, '_current.json.tmp');
+    const filePath = path.join(dir, '_current.json');
+    fs.writeFileSync(tmpPath, JSON.stringify(info, null, 2));
+    fs.renameSync(tmpPath, filePath);
+}
+export function readCurrentRun(groupDir) {
+    try {
+        const raw = fs.readFileSync(path.join(runsDir(groupDir), '_current.json'), 'utf-8');
+        return JSON.parse(raw);
+    }
+    catch {
+        return null;
+    }
+}
+export function removeCurrentRun(groupDir) {
+    try {
+        fs.unlinkSync(path.join(runsDir(groupDir), '_current.json'));
+    }
+    catch { /* file may not exist */ }
+}
+export function writeRunManifest(groupDir, manifest) {
+    const dir = runsDir(groupDir);
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `${manifest.runId}.json`);
+    const tmpPath = `${filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(manifest, null, 2));
+    fs.renameSync(tmpPath, filePath);
+}
+export function readRunManifest(groupDir, runId) {
+    try {
+        const raw = fs.readFileSync(path.join(runsDir(groupDir), `${runId}.json`), 'utf-8');
+        return JSON.parse(raw);
+    }
+    catch {
+        return null;
+    }
+}
+export function listRunManifests(groupDir) {
+    const dir = runsDir(groupDir);
+    if (!fs.existsSync(dir))
+        return [];
+    return fs.readdirSync(dir)
+        .filter(f => f.startsWith('run-') && f.endsWith('.json'))
+        .sort()
+        .reverse()
+        .map(f => {
+        try {
+            return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+        }
+        catch {
+            return null;
+        }
+    })
+        .filter((m) => m !== null);
+}
+/**
+ * Check if a PID is alive.
+ */
+export function isPidAlive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 // --- Exclusive stage lock ---
 // Stages with the same `exclusive` key share a mutex.
 // Only one container runs at a time per key (e.g. "vivado" for bitstream + board_upload).
@@ -128,13 +205,26 @@ export class PipelineRunner {
     notify;
     onProcess;
     groupDir;
-    constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir) {
+    runId;
+    manifest;
+    constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId) {
         this.group = group;
         this.chatJid = chatJid;
         this.config = pipelineConfig;
         this.notify = notify;
         this.onProcess = onProcess;
         this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
+        this.runId = runId ?? generateRunId();
+        this.manifest = {
+            runId: this.runId,
+            pid: process.pid,
+            startTime: new Date().toISOString(),
+            status: 'running',
+            stages: [],
+        };
+    }
+    getRunId() {
+        return this.runId;
     }
     /** Send a visually prominent banner to TUI for stage transitions */
     async notifyBanner(text) {
@@ -281,6 +371,7 @@ export class PipelineRunner {
                 chatJid: this.chatJid,
                 isMain: false,
                 assistantName: `pipeline-${stageConfig.name}`,
+                runId: this.runId,
             }, (proc, containerName) => this.onProcess(proc, containerName), onOutput, logStream);
         }
         // Handle container exit
@@ -350,7 +441,7 @@ export class PipelineRunner {
         const image = stageConfig.image || CONTAINER_IMAGE;
         const devices = stageConfig.devices || [];
         const runAsRoot = stageConfig.runAsRoot === true;
-        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, runAsRoot, image, 'sh');
+        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, runAsRoot, image, 'sh', this.runId);
         containerArgs.push('-c', stageConfig.command);
         logger.info({ stage: stageConfig.name, image, command: stageConfig.command }, 'Running command-mode stage');
         if (logStream) {
@@ -487,9 +578,17 @@ export class PipelineRunner {
             await this.notify('⚠️ PLAN.md가 없습니다. 먼저 구현 계획을 작성해주세요.');
             return 'error';
         }
+        // Write _current.json and initial manifest
+        writeCurrentRun(this.groupDir, {
+            runId: this.runId,
+            pid: process.pid,
+            startTime: this.manifest.startTime,
+        });
+        writeRunManifest(this.groupDir, this.manifest);
         const planContent = fs.readFileSync(planPath, 'utf-8');
         logger.info({
             group: this.group.name,
+            runId: this.runId,
             planLen: planContent.length,
             stageCount: this.config.stages.length,
         }, 'Pipeline starting');
@@ -500,6 +599,7 @@ export class PipelineRunner {
         fs.mkdirSync(logsDir, { recursive: true });
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const pipelineLogFile = path.join(logsDir, `pipeline-${ts}.log`);
+        this.manifest.logFile = `logs/pipeline-${ts}.log`;
         const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
         pipelineLogStream.write(`=== Pipeline Log ===\n` +
             `Started: ${new Date().toISOString()}\n` +
@@ -609,6 +709,7 @@ ${markerLines.join('\n')}`;
                 const initialPrompt = nextInitialPrompt ||
                     `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
                 nextInitialPrompt = null;
+                const stageStartTime = Date.now();
                 const handle = this.spawnStageContainer(stageConfig, initialPrompt, pipelineLogStream);
                 handle.pendingResult = createDeferred();
                 logger.info({ stage: currentStageName }, 'Stage container spawned (on-demand)');
@@ -676,6 +777,11 @@ ${markerLines.join('\n')}`;
                             this.config.errorPolicy.maxConsecutive &&
                             tracker.debugAttempted) {
                             await this.notify(`❌ ${currentStageName} 실패: 디버그 후에도 동일 에러 반복`);
+                            this.manifest.stages.push({
+                                name: currentStageName,
+                                status: 'error',
+                                duration: Date.now() - stageStartTime,
+                            });
                             await this.closeAndWait(handle);
                             currentStageName = null;
                             lastResult = 'error';
@@ -702,6 +808,12 @@ ${markerLines.join('\n')}`;
                         }
                         // Track completed stage
                         completedStages.push(currentStageName);
+                        this.manifest.stages.push({
+                            name: currentStageName,
+                            status: isErrorTransition ? 'error' : 'success',
+                            duration: Date.now() - stageStartTime,
+                        });
+                        writeRunManifest(this.groupDir, this.manifest);
                         savePipelineState(this.groupDir, {
                             currentStage: targetName,
                             completedStages,
@@ -742,6 +854,11 @@ ${markerLines.join('\n')}`;
             lastUpdated: new Date().toISOString(),
             status: lastResult,
         });
+        // Finalize run manifest and remove _current.json
+        this.manifest.endTime = new Date().toISOString();
+        this.manifest.status = lastResult;
+        writeRunManifest(this.groupDir, this.manifest);
+        removeCurrentRun(this.groupDir);
         pipelineLogStream.write(`\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`);
         pipelineLogStream.end();
         await this.notifyBanner(lastResult === 'success'
@@ -793,6 +910,7 @@ Be concise and specific. Your advice will be injected into the implementation ag
                 isMain: false,
                 assistantName: 'pipeline-debug',
                 endOnFirstResult: true,
+                runId: this.runId,
             }, (proc, containerName) => this.onProcess(proc, containerName), async (o) => {
                 if (o.result) {
                     debugResult = o.result;

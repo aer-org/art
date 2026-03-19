@@ -16,6 +16,8 @@ vi.mock('./config.js', () => ({
   GROUPS_DIR: '/tmp/aer-art-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
   TIMEZONE: 'America/Los_Angeles',
+  getProjectRoot: () => '/tmp/aer-art-test-root',
+  getCredentialProxyPort: () => 3001,
 }));
 
 // Mock logger
@@ -51,6 +53,17 @@ vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
 }));
 
+// Mock credential-proxy
+vi.mock('./credential-proxy.js', () => ({
+  detectAuthMode: () => 'api-key',
+}));
+
+// Mock group-folder
+vi.mock('./group-folder.js', () => ({
+  resolveGroupFolderPath: (folder: string) => `/tmp/aer-art-test-groups/${folder}`,
+  resolveGroupIpcPath: (folder: string) => `/tmp/aer-art-test-data/ipc/${folder}`,
+}));
+
 // Mock container-runtime with a docker config
 vi.mock('./container-runtime.js', () => ({
   getRuntime: () => ({
@@ -65,6 +78,7 @@ vi.mock('./container-runtime.js', () => ({
       supportsDeviceCgroupRule: true,
       supportsPsFilter: true,
       supportsUser: true,
+      supportsStdin: true,
     },
     hostGateway: 'host.docker.internal',
     bridgeInterface: 'docker0',
@@ -81,6 +95,8 @@ vi.mock('./container-runtime.js', () => ({
     `${host}:${container}`,
   ],
   stopContainer: (name: string) => `docker stop ${name}`,
+  prepareContainer: vi.fn(),
+  cleanupContainer: vi.fn(),
 }));
 
 // Create a controllable fake ChildProcess

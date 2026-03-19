@@ -606,6 +606,28 @@ export function cleanupOrphans() {
         logger.warn({ err }, 'Failed to clean up orphaned containers');
     }
 }
+/** Clean up containers for a specific run ID (label-based). */
+export function cleanupRunContainers(runId) {
+    const rt = getRuntime();
+    if (!rt.capabilities.supportsPsFilter)
+        return;
+    try {
+        const output = execSync(`${rt.bin} ps --filter label=art-run-id=${runId} --format '{{.Names}}'`, { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+        const containers = output.trim().split('\n').filter(Boolean);
+        for (const name of containers) {
+            try {
+                execSync(stopContainer(name), { stdio: 'pipe' });
+            }
+            catch { /* already stopped */ }
+        }
+        if (containers.length > 0) {
+            logger.info({ count: containers.length, runId }, 'Cleaned up orphaned run containers');
+        }
+    }
+    catch (err) {
+        logger.warn({ err, runId }, 'Failed to clean up run containers');
+    }
+}
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------

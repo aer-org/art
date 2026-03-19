@@ -91,6 +91,8 @@ export declare function stopContainer(name: string): string;
 export declare function ensureContainerRuntimeRunning(): void;
 /** Kill orphaned AerArt containers from previous runs. */
 export declare function cleanupOrphans(): void;
+/** Clean up containers for a specific run ID (label-based). */
+export declare function cleanupRunContainers(runId: string): void;
 /** Reset cached runtime (for tests only). */
 export declare function _resetRuntime(): void;
 /** Set cached runtime directly (for tests only). */

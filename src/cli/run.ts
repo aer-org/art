@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
@@ -53,6 +54,20 @@ function preflight(): void {
   }
 }
 
+async function askConfirmation(prompt: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return true;
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const answer = await new Promise<string>((resolve) =>
+    rl.question(prompt, resolve),
+  );
+  rl.close();
+  const trimmed = answer.trim().toLowerCase();
+  return trimmed === '' || trimmed === 'y' || trimmed === 'yes';
+}
+
 export async function run(targetDir: string): Promise<void> {
   preflight();
 
@@ -67,6 +82,44 @@ export async function run(targetDir: string): Promise<void> {
     process.exit(1);
   }
 
+  // Check for existing run (_current.json)
+  const {
+    readCurrentRun,
+    removeCurrentRun,
+    isPidAlive,
+    generateRunId,
+  } = await import('../pipeline-runner.js');
+  const { cleanupRunContainers } = await import('../container-runtime.js');
+
+  const currentRun = readCurrentRun(artDir);
+  if (currentRun) {
+    if (isPidAlive(currentRun.pid)) {
+      const confirmed = await askConfirmation(
+        `이미 실행 중인 run이 있습니다 (${currentRun.runId}, PID ${currentRun.pid}).\n중지하고 새로 시작하시겠습니까? [Y/n] `,
+      );
+      if (!confirmed) {
+        console.log('종료합니다.');
+        process.exit(0);
+      }
+      // Stop the existing run
+      try {
+        process.kill(currentRun.pid, 'SIGTERM');
+      } catch { /* already dead */ }
+      cleanupRunContainers(currentRun.runId);
+      removeCurrentRun(artDir);
+    } else {
+      // PID is dead — orphan cleanup
+      console.log(
+        `이전 run이 비정상 종료됨 (${currentRun.runId}, PID ${currentRun.pid}). 정리 중...`,
+      );
+      cleanupRunContainers(currentRun.runId);
+      removeCurrentRun(artDir);
+    }
+  }
+
+  // Generate run ID for this execution
+  const runId = generateRunId();
+
   // Ensure Claude authentication is available (before any engine imports)
   await ensureAuth();
 
@@ -76,6 +129,26 @@ export async function run(targetDir: string): Promise<void> {
     artDir,
     ensureImages: true,
   });
+
+  // Import manifest functions ahead of signal handler registration
+  const { readRunManifest, writeRunManifest } = await import(
+    '../pipeline-runner.js'
+  );
+
+  // Register SIGINT/SIGTERM handlers to clean up _current.json
+  const cleanupOnSignal = () => {
+    try {
+      const manifest = readRunManifest(artDir, runId);
+      if (manifest) {
+        manifest.endTime = new Date().toISOString();
+        manifest.status = 'cancelled';
+        writeRunManifest(artDir, manifest);
+      }
+    } catch { /* best effort */ }
+    removeCurrentRun(artDir);
+  };
+  process.on('SIGINT', cleanupOnSignal);
+  process.on('SIGTERM', cleanupOnSignal);
 
   const artGroup = {
     name: 'art',
@@ -93,5 +166,6 @@ export async function run(targetDir: string): Promise<void> {
   const { startEngine } = await import('../index.js');
   await startEngine({
     autoRegisterGroup: { jid: process.env.ART_TUI_JID!, group: artGroup },
+    runId,
   });
 }

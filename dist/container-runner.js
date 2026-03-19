@@ -158,7 +158,7 @@ function buildVolumeMounts(group, isMain) {
     }
     return mounts;
 }
-export function buildContainerArgs(mounts, containerName, devices = [], runAsRoot = false, image, entrypoint) {
+export function buildContainerArgs(mounts, containerName, devices = [], runAsRoot = false, image, entrypoint, runId) {
     const rt = getRuntime();
     const args = ['run'];
     if (rt.capabilities.supportsStdin)
@@ -167,6 +167,10 @@ export function buildContainerArgs(mounts, containerName, devices = [], runAsRoo
         args.push('--rm');
     if (rt.capabilities.supportsNaming)
         args.push('--name', containerName);
+    // Label for run-ID-based cleanup
+    if (runId && rt.capabilities.supportsPsFilter) {
+        args.push('--label', `art-run-id=${runId}`);
+    }
     // Pass host timezone so container's local time matches the user's
     args.push('-e', `TZ=${TIMEZONE}`);
     // Route API traffic through the credential proxy (containers never see real secrets)
@@ -251,7 +255,7 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
     const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
     const containerName = `aer-art-${safeName}-${Date.now()}`;
     const image = group.containerConfig?.image || CONTAINER_IMAGE;
-    const containerArgs = buildContainerArgs(mounts, containerName, devices, runAsRoot, image);
+    const containerArgs = buildContainerArgs(mounts, containerName, devices, runAsRoot, image, undefined, input.runId);
     logger.debug({
         group: group.name,
         containerName,

@@ -14,6 +14,8 @@ export interface StartEngineOpts {
         jid: string;
         group: RegisteredGroup;
     };
+    /** Run ID for pipeline execution tracking */
+    runId?: string;
 }
 export declare function startEngine(opts?: StartEngineOpts): Promise<void>;
 //# sourceMappingURL=index.d.ts.map

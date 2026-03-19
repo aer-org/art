@@ -25,6 +25,7 @@ import { AgentListPanel } from './panels/AgentListPanel';
 import { FilesPanel } from './panels/FilesPanel';
 import { ProjectsPanel, type ProjectFile } from './panels/ProjectsPanel';
 import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
+import { RunPanel } from './panels/RunPanel';
 import { Onboarding } from './components/Onboarding';
 import { AgentChat } from './components/AgentChat';
 import { deserialize } from './utils/deserialize';
@@ -36,8 +37,9 @@ import { DEFAULT_STAGE, DEFAULT_PIPELINE, DEFAULT_AGENT_FILES } from './types';
 const nodeTypes = { stageNode: StageNode };
 
 const params = new URLSearchParams(window.location.search);
-const isSingleMode = params.get('mode') === 'single' || params.get('mode') === 'init';
-const isInitMode = params.get('mode') === 'init';
+const mode = params.get('mode') || 'single';
+const isSingleMode = mode === 'single' || mode === 'init';
+const isInitMode = mode === 'init';
 
 export default function App() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -569,6 +571,7 @@ export default function App() {
                 onChange={handleUpdateErrorPolicy}
               />
               <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} onOpenChat={handleOpenChat} />
+              {isSingleMode && <RunPanel />}
               {isSingleMode && <ProjectsPanel files={projectFiles} />}
               {isSingleMode && <ImagesPanel registry={imageRegistry} onRefresh={refreshDirs} />}
             </>

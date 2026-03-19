@@ -52,6 +52,7 @@ import {
   hostGatewayArgs,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
+  cleanupRunContainers,
   getRuntime,
   getRuntimeBin,
   getHostGateway,
@@ -418,6 +419,50 @@ describe('cleanupOrphans', () => {
       { count: 2, names: ['aer-art-a-1', 'aer-art-b-2'] },
       'Stopped orphaned containers',
     );
+  });
+});
+
+// --- cleanupRunContainers ---
+
+describe('cleanupRunContainers', () => {
+  it('stops containers matching the run ID label', () => {
+    _setRuntime(makeRuntime('docker'));
+    mockExecSync.mockReturnValueOnce('aer-art-build-111\naer-art-test-222\n');
+    mockExecSync.mockReturnValue('');
+
+    cleanupRunContainers('run-123-abc');
+
+    expect(mockExecSync).toHaveBeenCalledTimes(3);
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      1,
+      "docker ps --filter label=art-run-id=run-123-abc --format '{{.Names}}'",
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+    );
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      2,
+      'docker stop aer-art-build-111',
+      { stdio: 'pipe' },
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      { count: 2, runId: 'run-123-abc' },
+      'Cleaned up orphaned run containers',
+    );
+  });
+
+  it('does nothing for udocker (no ps --filter)', () => {
+    _setRuntime(makeRuntime('udocker'));
+    cleanupRunContainers('run-123-abc');
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when no containers match', () => {
+    _setRuntime(makeRuntime('docker'));
+    mockExecSync.mockReturnValueOnce('');
+
+    cleanupRunContainers('run-123-abc');
+
+    expect(mockExecSync).toHaveBeenCalledTimes(1);
+    expect(logger.info).not.toHaveBeenCalled();
   });
 });
 

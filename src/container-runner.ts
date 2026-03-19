@@ -45,6 +45,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   endOnFirstResult?: boolean;
+  runId?: string;
 }
 
 export interface ContainerOutput {
@@ -260,6 +261,7 @@ export function buildContainerArgs(
   runAsRoot = false,
   image?: string,
   entrypoint?: string,
+  runId?: string,
 ): string[] {
   const rt = getRuntime();
   const args: string[] = ['run'];
@@ -267,6 +269,11 @@ export function buildContainerArgs(
 
   if (rt.capabilities.supportsAutoRemove) args.push('--rm');
   if (rt.capabilities.supportsNaming) args.push('--name', containerName);
+
+  // Label for run-ID-based cleanup
+  if (runId && rt.capabilities.supportsPsFilter) {
+    args.push('--label', `art-run-id=${runId}`);
+  }
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
@@ -382,6 +389,8 @@ export async function runContainerAgent(
     devices,
     runAsRoot,
     image,
+    undefined,
+    input.runId,
   );
 
   logger.debug(

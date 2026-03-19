@@ -14,6 +14,7 @@ export interface ContainerInput {
     isScheduledTask?: boolean;
     assistantName?: string;
     endOnFirstResult?: boolean;
+    runId?: string;
 }
 export interface ContainerOutput {
     status: 'success' | 'error';
@@ -26,7 +27,7 @@ interface VolumeMount {
     containerPath: string;
     readonly: boolean;
 }
-export declare function buildContainerArgs(mounts: VolumeMount[], containerName: string, devices?: string[], runAsRoot?: boolean, image?: string, entrypoint?: string): string[];
+export declare function buildContainerArgs(mounts: VolumeMount[], containerName: string, devices?: string[], runAsRoot?: boolean, image?: string, entrypoint?: string, runId?: string): string[];
 export declare function runContainerAgent(group: RegisteredGroup, input: ContainerInput, onProcess: (proc: ChildProcess, containerName: string) => void, onOutput?: (output: ContainerOutput) => Promise<void>, logStream?: fs.WriteStream): Promise<ContainerOutput>;
 /**
  * Spawn a sub-agent in a separate container.

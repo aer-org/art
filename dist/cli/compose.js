@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { ART_DIR_NAME } from '../config.js';
 import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
+import { readCurrentRun, removeCurrentRun, listRunManifests, readRunManifest, isPidAlive, } from '../pipeline-runner.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
@@ -58,6 +59,9 @@ export async function startEditorServer(artDir, mode, projectDir) {
     let parseBuffer = '';
     // SSE clients waiting for agent output
     const sseClients = new Set();
+    // ── Run lifecycle state ──
+    let runProcess = null;
+    const runSseClients = new Set();
     // Spawn the container agent
     async function spawnAgent() {
         // Dynamic imports to access engine modules (must be after setupEngine)
@@ -500,6 +504,136 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             }
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
+            return;
+        }
+        // ── Run API endpoints ──
+        // GET /api/runs — list run history
+        if (method === 'GET' && parsed.pathname === '/api/runs') {
+            try {
+                const runs = listRunManifests(artDir);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(runs));
+            }
+            catch {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Failed to list runs' }));
+            }
+            return;
+        }
+        // GET /api/runs/current — check currently running pipeline
+        if (method === 'GET' && parsed.pathname === '/api/runs/current') {
+            const current = readCurrentRun(artDir);
+            if (current && isPidAlive(current.pid)) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(current));
+            }
+            else {
+                // If PID is dead, clean up stale _current.json
+                if (current)
+                    removeCurrentRun(artDir);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end('null');
+            }
+            return;
+        }
+        // POST /api/runs/start — spawn `art run .` as a child process
+        if (method === 'POST' && parsed.pathname === '/api/runs/start') {
+            const current = readCurrentRun(artDir);
+            if (current && isPidAlive(current.pid)) {
+                res.writeHead(409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Run already in progress', runId: current.runId }));
+                return;
+            }
+            // Clean up stale _current.json if PID is dead
+            if (current)
+                removeCurrentRun(artDir);
+            // Spawn art run as a child process
+            const artBin = process.argv[1]; // path to the running CLI
+            const child = spawn(process.execPath, [artBin, 'run', resolvedProjectDir], {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                env: { ...process.env, FORCE_COLOR: '0' },
+                detached: false,
+            });
+            runProcess = child;
+            child.stdout?.on('data', (data) => {
+                const chunk = data.toString();
+                for (const client of runSseClients) {
+                    sseWrite(client, { type: 'stdout', content: chunk });
+                }
+            });
+            child.stderr?.on('data', (data) => {
+                const chunk = data.toString();
+                for (const client of runSseClients) {
+                    sseWrite(client, { type: 'stderr', content: chunk });
+                }
+            });
+            child.on('close', (code) => {
+                runProcess = null;
+                for (const client of runSseClients) {
+                    sseWrite(client, { type: 'run_stopped', code });
+                    client.end();
+                }
+                runSseClients.clear();
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, pid: child.pid }));
+            return;
+        }
+        // POST /api/runs/stop — stop currently running pipeline
+        if (method === 'POST' && parsed.pathname === '/api/runs/stop') {
+            const current = readCurrentRun(artDir);
+            if (current && isPidAlive(current.pid)) {
+                try {
+                    process.kill(current.pid, 'SIGTERM');
+                }
+                catch { /* already dead */ }
+            }
+            if (runProcess) {
+                try {
+                    runProcess.kill('SIGTERM');
+                }
+                catch { /* already dead */ }
+                runProcess = null;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+            return;
+        }
+        // GET /api/runs/stream — SSE stream of run output
+        if (method === 'GET' && parsed.pathname === '/api/runs/stream') {
+            sseHeaders(res);
+            runSseClients.add(res);
+            sseWrite(res, { type: 'connected', running: !!runProcess });
+            req.on('close', () => {
+                runSseClients.delete(res);
+            });
+            return;
+        }
+        // GET /api/runs/:id/log — read log file for a past run
+        if (method === 'GET' && parsed.pathname.startsWith('/api/runs/') && parsed.pathname.endsWith('/log')) {
+            const parts = parsed.pathname.split('/');
+            const runId = parts[3]; // /api/runs/{runId}/log
+            if (!runId || !runId.startsWith('run-')) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid run ID' }));
+                return;
+            }
+            const manifest = readRunManifest(artDir, runId);
+            if (!manifest || !manifest.logFile) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Run or log not found' }));
+                return;
+            }
+            const logPath = path.join(artDir, manifest.logFile);
+            try {
+                const data = fs.readFileSync(logPath, 'utf-8');
+                res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+                res.end(data);
+            }
+            catch {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Log file not found' }));
+            }
             return;
         }
         // ── Image Registry API endpoints ──
