@@ -43,7 +43,9 @@ export function removeCurrentRun(groupDir) {
     try {
         fs.unlinkSync(path.join(runsDir(groupDir), '_current.json'));
     }
-    catch { /* file may not exist */ }
+    catch {
+        /* file may not exist */
+    }
 }
 export function writeRunManifest(groupDir, manifest) {
     const dir = runsDir(groupDir);
@@ -66,11 +68,12 @@ export function listRunManifests(groupDir) {
     const dir = runsDir(groupDir);
     if (!fs.existsSync(dir))
         return [];
-    return fs.readdirSync(dir)
-        .filter(f => f.startsWith('run-') && f.endsWith('.json'))
+    return fs
+        .readdirSync(dir)
+        .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
         .sort()
         .reverse()
-        .map(f => {
+        .map((f) => {
         try {
             return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
         }

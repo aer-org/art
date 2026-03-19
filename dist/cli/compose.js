@@ -541,7 +541,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             const current = readCurrentRun(artDir);
             if (current && isPidAlive(current.pid)) {
                 res.writeHead(409, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Run already in progress', runId: current.runId }));
+                res.end(JSON.stringify({
+                    error: 'Run already in progress',
+                    runId: current.runId,
+                }));
                 return;
             }
             // Clean up stale _current.json if PID is dead
@@ -586,13 +589,17 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 try {
                     process.kill(current.pid, 'SIGTERM');
                 }
-                catch { /* already dead */ }
+                catch {
+                    /* already dead */
+                }
             }
             if (runProcess) {
                 try {
                     runProcess.kill('SIGTERM');
                 }
-                catch { /* already dead */ }
+                catch {
+                    /* already dead */
+                }
                 runProcess = null;
             }
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -610,7 +617,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             return;
         }
         // GET /api/runs/:id/log — read log file for a past run
-        if (method === 'GET' && parsed.pathname.startsWith('/api/runs/') && parsed.pathname.endsWith('/log')) {
+        if (method === 'GET' &&
+            parsed.pathname.startsWith('/api/runs/') &&
+            parsed.pathname.endsWith('/log')) {
             const parts = parsed.pathname.split('/');
             const runId = parts[3]; // /api/runs/{runId}/log
             if (!runId || !runId.startsWith('run-')) {

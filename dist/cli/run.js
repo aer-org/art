@@ -65,7 +65,7 @@ export async function run(targetDir) {
         process.exit(1);
     }
     // Check for existing run (_current.json)
-    const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId, } = await import('../pipeline-runner.js');
+    const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } = await import('../pipeline-runner.js');
     const { cleanupRunContainers } = await import('../container-runtime.js');
     const currentRun = readCurrentRun(artDir);
     if (currentRun) {
@@ -79,7 +79,9 @@ export async function run(targetDir) {
             try {
                 process.kill(currentRun.pid, 'SIGTERM');
             }
-            catch { /* already dead */ }
+            catch {
+                /* already dead */
+            }
             cleanupRunContainers(currentRun.runId);
             removeCurrentRun(artDir);
         }
@@ -112,7 +114,9 @@ export async function run(targetDir) {
                 writeRunManifest(artDir, manifest);
             }
         }
-        catch { /* best effort */ }
+        catch {
+            /* best effort */
+        }
         removeCurrentRun(artDir);
     };
     process.on('SIGINT', cleanupOnSignal);

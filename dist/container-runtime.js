@@ -618,7 +618,9 @@ export function cleanupRunContainers(runId) {
             try {
                 execSync(stopContainer(name), { stdio: 'pipe' });
             }
-            catch { /* already stopped */ }
+            catch {
+                /* already stopped */
+            }
         }
         if (containers.length > 0) {
             logger.info({ count: containers.length, runId }, 'Cleaned up orphaned run containers');

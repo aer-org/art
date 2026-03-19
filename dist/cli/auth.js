@@ -75,33 +75,81 @@ export function resolveAuthToken() {
     return null;
 }
 /**
+ * Exchange an OAuth token for a temporary API key via Anthropic's OAuth endpoint.
+ */
+function exchangeOAuthToken(token) {
+    return new Promise((resolve) => {
+        const req = https.request({
+            hostname: 'api.anthropic.com',
+            path: '/api/oauth/claude_cli/create_api_key',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            timeout: 15000,
+        }, (res) => {
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+                if (res.statusCode === 200) {
+                    try {
+                        const parsed = JSON.parse(data);
+                        resolve(parsed.api_key || parsed.key || null);
+                    }
+                    catch {
+                        resolve(null);
+                    }
+                }
+                else {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => {
+            req.destroy();
+            resolve(null);
+        });
+        req.end();
+    });
+}
+/**
  * Validate a token by making a minimal API call to Anthropic.
- * Sends a tiny messages request (max_tokens=1) to check auth.
+ * API keys hit /v1/messages directly.
+ * OAuth tokens are first exchanged for a temp API key, then validated.
  */
 function validateToken(token) {
     const isApiKey = token.startsWith('sk-ant-api') ||
         (!token.startsWith('sk-ant-oat') && !token.startsWith('eyJ'));
+    if (isApiKey) {
+        return validateWithApiKey(token);
+    }
+    // OAuth flow: exchange first, then validate the temp key
+    return exchangeOAuthToken(token).then((tempKey) => {
+        if (!tempKey) {
+            console.error('  ✗ OAuth 토큰 교환 실패 (만료되었거나 유효하지 않음)');
+            return false;
+        }
+        return validateWithApiKey(tempKey);
+    });
+}
+function validateWithApiKey(apiKey) {
     const body = JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 1,
         messages: [{ role: 'user', content: 'hi' }],
     });
-    const headers = {
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
-    };
-    if (isApiKey) {
-        headers['x-api-key'] = token;
-    }
-    else {
-        headers['Authorization'] = `Bearer ${token}`;
-    }
     return new Promise((resolve) => {
         const req = https.request({
             hostname: 'api.anthropic.com',
             path: '/v1/messages',
             method: 'POST',
-            headers,
+            headers: {
+                'Content-Type': 'application/json',
+                'anthropic-version': '2023-06-01',
+                'x-api-key': apiKey,
+            },
             timeout: 15000,
         }, (res) => {
             let data = '';
