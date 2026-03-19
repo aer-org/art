@@ -108,22 +108,63 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
   onClose: () => void;
 }) {
   const outputRef = useRef<HTMLPreElement>(null);
+  const detailedRef = useRef<HTMLPreElement>(null);
   const [runs, setRuns] = useState<RunManifest[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [logContent, setLogContent] = useState('');
-  const [tab, setTab] = useState<'output' | 'history'>('output');
+  const [detailedLog, setDetailedLog] = useState('');
+  const [tab, setTab] = useState<'output' | 'detailed' | 'history'>('output');
+  const liveLogEsRef = useRef<EventSource | null>(null);
 
-  // Auto-scroll
+  // Auto-scroll output
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [output]);
 
+  // Auto-scroll detailed
+  useEffect(() => {
+    if (detailedRef.current) {
+      detailedRef.current.scrollTop = detailedRef.current.scrollHeight;
+    }
+  }, [detailedLog]);
+
   // Switch to output tab when running
   useEffect(() => {
     if (isRunning) setTab('output');
   }, [isRunning]);
+
+  // Connect/disconnect live-log SSE when detailed tab is active
+  useEffect(() => {
+    if (tab !== 'detailed') {
+      if (liveLogEsRef.current) {
+        liveLogEsRef.current.close();
+        liveLogEsRef.current = null;
+      }
+      return;
+    }
+    setDetailedLog('');
+    const es = new EventSource('/api/runs/live-log');
+    liveLogEsRef.current = es;
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'log' && data.content) {
+          setDetailedLog((prev) => prev + data.content);
+        }
+      } catch { /* ignore */ }
+    };
+    es.onerror = () => {
+      // Reconnect after a short delay
+      es.close();
+      liveLogEsRef.current = null;
+    };
+    return () => {
+      es.close();
+      liveLogEsRef.current = null;
+    };
+  }, [tab]);
 
   // Fetch history
   useEffect(() => {
@@ -131,7 +172,7 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
       .then((r) => r.json())
       .then((data: RunManifest[]) => setRuns(data))
       .catch(() => {});
-  }, [isRunning]); // refresh when run finishes
+  }, [isRunning]);
 
   const handleViewLog = useCallback(async (runId: string) => {
     setSelectedLog(runId);
@@ -166,6 +207,12 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
     return new Date(iso).toLocaleTimeString();
   };
 
+  const tabStyle = (t: string) => ({
+    background: tab === t ? '#313244' : 'transparent',
+    color: tab === t ? '#cdd6f4' : '#6c7086',
+    border: 'none', padding: '4px 12px', borderRadius: '4px', cursor: 'pointer' as const, fontSize: '12px',
+  });
+
   return (
     <div style={{
       position: 'fixed',
@@ -180,25 +227,14 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
       zIndex: 100,
     }}>
       {/* Tab bar */}
-      <div style={{ display: 'flex', alignItems: 'center', padding: '4px 12px', gap: '8px', borderBottom: '1px solid #313244' }}>
-        <button
-          onClick={() => setTab('output')}
-          style={{
-            background: tab === 'output' ? '#313244' : 'transparent',
-            color: tab === 'output' ? '#cdd6f4' : '#6c7086',
-            border: 'none', padding: '4px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px',
-          }}
-        >
+      <div style={{ display: 'flex', alignItems: 'center', padding: '4px 12px', gap: '4px', borderBottom: '1px solid #313244' }}>
+        <button onClick={() => setTab('output')} style={tabStyle('output')}>
           Output {isRunning && '●'}
         </button>
-        <button
-          onClick={() => setTab('history')}
-          style={{
-            background: tab === 'history' ? '#313244' : 'transparent',
-            color: tab === 'history' ? '#cdd6f4' : '#6c7086',
-            border: 'none', padding: '4px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px',
-          }}
-        >
+        <button onClick={() => setTab('detailed')} style={tabStyle('detailed')}>
+          Detailed
+        </button>
+        <button onClick={() => setTab('history')} style={tabStyle('history')}>
           History ({runs.length})
         </button>
         <div style={{ flex: 1 }} />
@@ -215,16 +251,18 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
         {tab === 'output' && (
           <pre
             ref={outputRef}
-            style={{
-              margin: 0,
-              color: '#cdd6f4',
-              fontSize: '11px',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-              fontFamily: 'monospace',
-            }}
+            style={{ margin: 0, color: '#cdd6f4', fontSize: '11px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}
           >
             {output || (isRunning ? 'Starting...' : 'No output yet. Click Run to start.')}
+          </pre>
+        )}
+
+        {tab === 'detailed' && (
+          <pre
+            ref={detailedRef}
+            style={{ margin: 0, color: '#a6e3a1', fontSize: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}
+          >
+            {detailedLog || (isRunning ? 'Waiting for container logs...' : 'No pipeline log available. Run a pipeline first.')}
           </pre>
         )}
 

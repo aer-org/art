@@ -609,7 +609,12 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       const current = readCurrentRun(artDir);
       if (current && isPidAlive(current.pid)) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Run already in progress', runId: current.runId }));
+        res.end(
+          JSON.stringify({
+            error: 'Run already in progress',
+            runId: current.runId,
+          }),
+        );
         return;
       }
       // Clean up stale _current.json if PID is dead
@@ -617,11 +622,15 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
       // Spawn art run as a child process
       const artBin = process.argv[1]; // path to the running CLI
-      const child = spawn(process.execPath, [artBin, 'run', resolvedProjectDir], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, FORCE_COLOR: '0' },
-        detached: false,
-      });
+      const child = spawn(
+        process.execPath,
+        [artBin, 'run', resolvedProjectDir],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, FORCE_COLOR: '0' },
+          detached: false,
+        },
+      );
 
       runProcess = child;
 
@@ -659,12 +668,16 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       if (current && isPidAlive(current.pid)) {
         try {
           process.kill(current.pid, 'SIGTERM');
-        } catch { /* already dead */ }
+        } catch {
+          /* already dead */
+        }
       }
       if (runProcess) {
         try {
           runProcess.kill('SIGTERM');
-        } catch { /* already dead */ }
+        } catch {
+          /* already dead */
+        }
         runProcess = null;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -684,7 +697,11 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     }
 
     // GET /api/runs/:id/log — read log file for a past run
-    if (method === 'GET' && parsed.pathname.startsWith('/api/runs/') && parsed.pathname.endsWith('/log')) {
+    if (
+      method === 'GET' &&
+      parsed.pathname.startsWith('/api/runs/') &&
+      parsed.pathname.endsWith('/log')
+    ) {
       const parts = parsed.pathname.split('/');
       const runId = parts[3]; // /api/runs/{runId}/log
       if (!runId || !runId.startsWith('run-')) {
@@ -707,6 +724,63 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Log file not found' }));
       }
+      return;
+    }
+
+    // GET /api/runs/live-log — SSE stream tailing the latest pipeline log file
+    if (method === 'GET' && parsed.pathname === '/api/runs/live-log') {
+      // Find the latest pipeline log
+      const logsDir = path.join(artDir, 'logs');
+      let logPath: string | null = null;
+      try {
+        const files = fs.readdirSync(logsDir)
+          .filter((f) => f.startsWith('pipeline-') && f.endsWith('.log'))
+          .sort()
+          .reverse();
+        if (files.length > 0) {
+          logPath = path.join(logsDir, files[0]);
+        }
+      } catch { /* no logs dir */ }
+
+      if (!logPath) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No pipeline log found' }));
+        return;
+      }
+
+      sseHeaders(res);
+
+      // Send existing content
+      let offset = 0;
+      try {
+        const existing = fs.readFileSync(logPath, 'utf-8');
+        if (existing) {
+          sseWrite(res, { type: 'log', content: existing });
+          offset = existing.length;
+        }
+      } catch { /* file may not exist yet */ }
+
+      // Poll for new content (fs.watch is unreliable across platforms)
+      const tailInterval = setInterval(() => {
+        try {
+          const stat = fs.statSync(logPath!);
+          if (stat.size > offset) {
+            const fd = fs.openSync(logPath!, 'r');
+            const buf = Buffer.alloc(stat.size - offset);
+            fs.readSync(fd, buf, 0, buf.length, offset);
+            fs.closeSync(fd);
+            offset = stat.size;
+            const chunk = buf.toString('utf-8');
+            if (chunk) {
+              sseWrite(res, { type: 'log', content: chunk });
+            }
+          }
+        } catch { /* file may be gone */ }
+      }, 500);
+
+      req.on('close', () => {
+        clearInterval(tailInterval);
+      });
       return;
     }
 

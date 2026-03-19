@@ -645,6 +645,60 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             }
             return;
         }
+        // GET /api/runs/live-log — SSE stream tailing the latest pipeline log file
+        if (method === 'GET' && parsed.pathname === '/api/runs/live-log') {
+            // Find the latest pipeline log
+            const logsDir = path.join(artDir, 'logs');
+            let logPath = null;
+            try {
+                const files = fs.readdirSync(logsDir)
+                    .filter((f) => f.startsWith('pipeline-') && f.endsWith('.log'))
+                    .sort()
+                    .reverse();
+                if (files.length > 0) {
+                    logPath = path.join(logsDir, files[0]);
+                }
+            }
+            catch { /* no logs dir */ }
+            if (!logPath) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'No pipeline log found' }));
+                return;
+            }
+            sseHeaders(res);
+            // Send existing content
+            let offset = 0;
+            try {
+                const existing = fs.readFileSync(logPath, 'utf-8');
+                if (existing) {
+                    sseWrite(res, { type: 'log', content: existing });
+                    offset = existing.length;
+                }
+            }
+            catch { /* file may not exist yet */ }
+            // Poll for new content (fs.watch is unreliable across platforms)
+            const tailInterval = setInterval(() => {
+                try {
+                    const stat = fs.statSync(logPath);
+                    if (stat.size > offset) {
+                        const fd = fs.openSync(logPath, 'r');
+                        const buf = Buffer.alloc(stat.size - offset);
+                        fs.readSync(fd, buf, 0, buf.length, offset);
+                        fs.closeSync(fd);
+                        offset = stat.size;
+                        const chunk = buf.toString('utf-8');
+                        if (chunk) {
+                            sseWrite(res, { type: 'log', content: chunk });
+                        }
+                    }
+                }
+                catch { /* file may be gone */ }
+            }, 500);
+            req.on('close', () => {
+                clearInterval(tailInterval);
+            });
+            return;
+        }
         // ── Image Registry API endpoints ──
         // GET /api/images — list registered images
         if (method === 'GET' && parsed.pathname === '/api/images') {
