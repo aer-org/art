@@ -29,8 +29,6 @@ import {
   PipelineRunner,
 } from './pipeline-runner.js';
 import {
-  cleanupOrphans,
-  cleanupRunContainers,
   ensureContainerRuntimeRunning,
   getProxyBindHost,
   initRuntime,
@@ -624,7 +622,9 @@ function recoverPendingMessages(): void {
 async function ensureContainerSystemRunning(): Promise<void> {
   await initRuntime();
   ensureContainerRuntimeRunning();
-  cleanupOrphans();
+  // Note: blanket cleanupOrphans() removed — run-ID-based cleanup in
+  // src/cli/run.ts handles orphans without killing unrelated containers
+  // (e.g. plan containers from compose).
 }
 
 export interface StartEngineOpts {

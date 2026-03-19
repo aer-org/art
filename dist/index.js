@@ -6,7 +6,7 @@ import './channels/index.js';
 import { getChannelFactory, getRegisteredChannelNames, } from './channels/registry.js';
 import { runContainerAgent, spawnSubAgentContainer, writeGroupsSnapshot, writeTasksSnapshot, } from './container-runner.js';
 import { loadAgentTeamConfig, loadPipelineConfig, PipelineRunner, } from './pipeline-runner.js';
-import { cleanupOrphans, ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
+import { ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
 import { getAllChats, getAllRegisteredGroups, getAllSessions, getAllTasks, getMessagesSince, getNewMessages, getRouterState, initDatabase, setRegisteredGroup, setRouterState, setSession, storeChatMetadata, storeMessage, } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -404,7 +404,9 @@ function recoverPendingMessages() {
 async function ensureContainerSystemRunning() {
     await initRuntime();
     ensureContainerRuntimeRunning();
-    cleanupOrphans();
+    // Note: blanket cleanupOrphans() removed — run-ID-based cleanup in
+    // src/cli/run.ts handles orphans without killing unrelated containers
+    // (e.g. plan containers from compose).
 }
 export async function startEngine(opts) {
     await ensureContainerSystemRunning();

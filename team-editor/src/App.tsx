@@ -25,7 +25,7 @@ import { AgentListPanel } from './panels/AgentListPanel';
 import { FilesPanel } from './panels/FilesPanel';
 import { ProjectsPanel, type ProjectFile } from './panels/ProjectsPanel';
 import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
-import { useRunControls } from './panels/RunPanel';
+import { useRunControls, RunOutputPanel } from './panels/RunPanel';
 import { Onboarding } from './components/Onboarding';
 import { AgentChat } from './components/AgentChat';
 import { deserialize } from './utils/deserialize';
@@ -485,7 +485,10 @@ export default function App() {
             <button onClick={handleSave}>Save</button>
             {saveStatus && <span className="save-status">{saveStatus}</span>}
             {runControls.isRunning ? (
-              <button onClick={runControls.stop} style={{ background: '#ef4444', color: '#fff' }}>Stop</button>
+              <>
+                <button onClick={() => runControls.setShowPanel((v) => !v)} style={{ background: '#313244', color: '#cdd6f4' }}>Output</button>
+                <button onClick={runControls.stop} style={{ background: '#ef4444', color: '#fff' }}>Stop</button>
+              </>
             ) : (
               <button onClick={async () => { await handleSave(); runControls.start(); }} style={{ background: '#22c55e', color: '#fff' }}>Run</button>
             )}
@@ -583,6 +586,13 @@ export default function App() {
           )}
         </div>
       </div>
+      {isSingleMode && runControls.showPanel && (
+        <RunOutputPanel
+          output={runControls.output}
+          isRunning={runControls.isRunning}
+          onClose={() => runControls.setShowPanel(false)}
+        />
+      )}
     </div>
   );
 }
