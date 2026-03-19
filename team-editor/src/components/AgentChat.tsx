@@ -98,6 +98,58 @@ function ToolCard({ tool }: { tool: ToolActivity }) {
   );
 }
 
+function ToolGroup({ tools }: { tools: ToolActivity[] }) {
+  return (
+    <div className="chat-tool-group">
+      {tools.map((t) =>
+        t.status === 'running' ? (
+          <ToolCard key={t.id} tool={t} />
+        ) : (
+          <div key={t.id} className="chat-tool-done">
+            <span className="chat-tool-icon">{TOOL_ICONS[t.name] || '\u2699\ufe0f'}</span>
+            <span className="chat-tool-name">{t.name}</span>
+            <span className="chat-tool-preview">{t.input_preview}</span>
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+type RenderItem =
+  | { kind: 'user'; content: string }
+  | { kind: 'text'; content: string; isLast: boolean }
+  | { kind: 'tools'; tools: ToolActivity[] };
+
+function groupSegments(segments: ChatSegment[], isStreaming: boolean): RenderItem[] {
+  const items: RenderItem[] = [];
+  let toolBuf: ToolActivity[] = [];
+
+  const flushTools = () => {
+    if (toolBuf.length > 0) {
+      items.push({ kind: 'tools', tools: toolBuf });
+      toolBuf = [];
+    }
+  };
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.type === 'tool') {
+      toolBuf.push(seg.tool);
+    } else {
+      flushTools();
+      if (seg.type === 'user') {
+        items.push({ kind: 'user', content: seg.content });
+      } else if (seg.type === 'text') {
+        const isLast = i === segments.length - 1;
+        items.push({ kind: 'text', content: seg.content, isLast: isLast && isStreaming });
+      }
+    }
+  }
+  flushTools();
+  return items;
+}
+
 function UserBubble({ content }: { content: string }) {
   return (
     <div className="chat-message chat-message--user">
@@ -197,26 +249,21 @@ export function AgentChat({ onComplete, chat }: AgentChatProps) {
               {isStreaming && !hasRealContent && (
                 <ThinkingState />
               )}
-              {segments.map((seg, i) => {
-                if (seg.type === 'user') {
-                  return <UserBubble key={i} content={seg.content} />;
+              {groupSegments(segments, isStreaming).map((item, i) => {
+                if (item.kind === 'user') {
+                  return <UserBubble key={i} content={item.content} />;
                 }
-                if (seg.type === 'text') {
-                  const isLast = i === segments.length - 1;
+                if (item.kind === 'text') {
                   return (
                     <TextBubble
                       key={i}
-                      content={seg.content}
-                      isStreaming={isStreaming && isLast}
+                      content={item.content}
+                      isStreaming={item.isLast}
                     />
                   );
                 }
-                if (seg.type === 'tool') {
-                  return (
-                    <div key={i} className="chat-segment-tool">
-                      <ToolCard tool={seg.tool} />
-                    </div>
-                  );
+                if (item.kind === 'tools') {
+                  return <ToolGroup key={i} tools={item.tools} />;
                 }
                 return null;
               })}

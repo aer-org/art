@@ -570,11 +570,35 @@
   border-color: rgba(137, 180, 250, 0.45);
 }
 
-/* ── Tool Segment (standalone card outside bubble) ── */
+/* ── Tool Group (consecutive tools collapsed) ── */
 
-.chat-segment-tool {
+.chat-tool-group {
   padding-left: 42px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   animation: chat-fade-in 0.2s ease;
+}
+
+.chat-tool-done {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 0;
+  font-size: 11px;
+  color: #6c7086;
+  overflow: hidden;
+}
+
+.chat-tool-done .chat-tool-name {
+  color: #a6adc8;
+  font-weight: 500;
+}
+
+.chat-tool-done .chat-tool-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Tool Activity Cards ── */
