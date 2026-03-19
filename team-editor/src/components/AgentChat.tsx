@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useAgentChat } from '../hooks/useAgentChat.ts';
+import type { Message, ToolActivity, UseAgentChatReturn } from '../hooks/useAgentChat.ts';
 import { DocumentPanel } from './DocumentPanel.tsx';
 import './ChatOnboarding.css';
 
@@ -15,6 +15,17 @@ function renderMarkdown(text: string): string {
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br/>');
 }
+
+// ── Tool icon mapping ──
+
+const TOOL_ICONS: Record<string, string> = {
+  Bash: '\u25b6',     // ▶
+  Read: '\ud83d\udcc4', // 📄
+  Write: '\u270f\ufe0f', // ✏️
+  Edit: '\u270f\ufe0f',  // ✏️
+  Grep: '\ud83d\udd0d', // 🔍
+  Glob: '\ud83d\udcc2', // 📂
+};
 
 // ── Components ──
 
@@ -83,13 +94,27 @@ function ThinkingState() {
   );
 }
 
+function ToolCard({ tool }: { tool: ToolActivity }) {
+  const icon = TOOL_ICONS[tool.name] || '\u2699\ufe0f'; // ⚙️ default
+  return (
+    <div className={`chat-tool-card ${tool.status === 'running' ? 'chat-tool-card--running' : ''}`}>
+      <span className="chat-tool-icon">{icon}</span>
+      <span className="chat-tool-name">{tool.name}</span>
+      <span className="chat-tool-preview">{tool.input_preview}</span>
+      {tool.status === 'running' && <span className="chat-tool-spinner" />}
+    </div>
+  );
+}
+
 function MessageBubble({
   role,
   content,
+  tools,
   isStreaming,
 }: {
   role: 'user' | 'assistant';
   content: string;
+  tools?: ToolActivity[];
   isStreaming?: boolean;
 }) {
   return (
@@ -98,10 +123,19 @@ function MessageBubble({
         {role === 'assistant' ? 'AI' : 'You'}
       </div>
       <div className="chat-message-bubble">
-        <div
-          className="chat-message-text"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
-        />
+        {tools && tools.length > 0 && (
+          <div className="chat-tool-list">
+            {tools.map((t) => (
+              <ToolCard key={t.id} tool={t} />
+            ))}
+          </div>
+        )}
+        {content && (
+          <div
+            className="chat-message-text"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+          />
+        )}
         {isStreaming && <span className="chat-cursor" />}
       </div>
     </div>
@@ -110,9 +144,13 @@ function MessageBubble({
 
 // ── Main Component ──
 
-export function AgentChat({ onComplete }: { onComplete: () => void }) {
-  const { messages, isStreaming, error, agentRunning, sendMessage } =
-    useAgentChat();
+interface AgentChatProps {
+  onComplete: () => void;
+  chat: UseAgentChatReturn;
+}
+
+export function AgentChat({ onComplete, chat }: AgentChatProps) {
+  const { messages, isStreaming, error, agentRunning, sendMessage, closeAgent } = chat;
 
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -139,9 +177,18 @@ export function AgentChat({ onComplete }: { onComplete: () => void }) {
     [handleSend],
   );
 
-  const handleComplete = useCallback(() => {
+  const handleClose = useCallback(async () => {
+    await closeAgent();
     onComplete();
-  }, [onComplete]);
+  }, [closeAgent, onComplete]);
+
+  const handleComplete = useCallback(async () => {
+    await closeAgent();
+    onComplete();
+  }, [closeAgent, onComplete]);
+
+  // Determine if we should show the thinking state (no real content and no tools yet)
+  const hasRealContent = messages.some((m) => m.content || (m.tools && m.tools.length > 0));
 
   return (
     <div className="chat-overlay">
@@ -150,7 +197,7 @@ export function AgentChat({ onComplete }: { onComplete: () => void }) {
           isStreaming={isStreaming}
           hasMessages={messages.length > 0}
           onComplete={handleComplete}
-          onClose={handleComplete}
+          onClose={handleClose}
         />
 
         <div className="chat-init-panels">
@@ -168,17 +215,18 @@ export function AgentChat({ onComplete }: { onComplete: () => void }) {
           <div className="chat-init-chat-panel">
             <div className="chat-messages">
               {/* Show thinking state when no real content yet */}
-              {isStreaming && messages.every((m) => !m.content) && (
+              {isStreaming && !hasRealContent && (
                 <ThinkingState />
               )}
               {messages.map((m, i) => {
-                // Skip empty placeholder messages while thinking
-                if (!m.content && isStreaming) return null;
+                // Skip empty placeholder messages while thinking (only if no tools either)
+                if (!m.content && (!m.tools || m.tools.length === 0) && isStreaming) return null;
                 return (
                   <MessageBubble
                     key={i}
                     role={m.role}
                     content={m.content}
+                    tools={m.tools}
                     isStreaming={
                       isStreaming &&
                       i === messages.length - 1 &&

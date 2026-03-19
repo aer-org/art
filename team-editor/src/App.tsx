@@ -28,6 +28,7 @@ import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
 import { useRunControls, RunOutputPanel } from './panels/RunPanel';
 import { Onboarding } from './components/Onboarding';
 import { AgentChat } from './components/AgentChat';
+import { useAgentChat } from './hooks/useAgentChat';
 import { FileEditor } from './components/FileEditor';
 import { TextEditor } from './components/TextEditor';
 import { deserialize } from './utils/deserialize';
@@ -52,7 +53,9 @@ export default function App() {
   const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
   const [dirsVersion, setDirsVersion] = useState(0);
   const [agentChatDone, setAgentChatDone] = useState(false);
-  const [agentRunning, setAgentRunning] = useState<boolean | null>(null);
+  // Hook is always called (React rules) but only connects SSE in single mode
+  const agentChatHook = useAgentChat();
+  const agentChat = isSingleMode ? agentChatHook : null;
   const [imageRegistry, setImageRegistry] = useState<ImageRegistry>({});
   const [pipelineState, setPipelineState] = useState<{
     currentStage: string | null;
@@ -68,14 +71,7 @@ export default function App() {
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  // Check if agent is running (init and single/compose modes)
-  useEffect(() => {
-    if (!isSingleMode) return;
-    fetch('/api/chat/state')
-      .then((r) => r.json())
-      .then((state: { agentRunning: boolean }) => setAgentRunning(state.agentRunning))
-      .catch(() => setAgentRunning(false));
-  }, []);
+  const agentRunning = agentChat?.agentRunning ?? false;
 
   // Poll pipeline execution state for node highlighting
   useEffect(() => {
@@ -492,16 +488,23 @@ export default function App() {
     e.target.value = '';
   }, []);
 
-  const handleOpenChat = useCallback(() => setAgentChatDone(false), []);
+  const handleOpenChat = useCallback(() => {
+    setAgentChatDone(false);
+    // If agent is not running but we have a session, restart it
+    if (agentChat && !agentChat.agentRunning) {
+      agentChat.startAgent();
+    }
+  }, [agentChat]);
   const runControls = useRunControls();
 
-  const showAgentChat = isSingleMode && agentRunning !== false && !agentChatDone;
-  const showStaticOnboarding = isInitMode && agentRunning === false;
+  const hasHistory = agentChat ? agentChat.messages.length > 0 : false;
+  const showAgentChat = isSingleMode && (agentRunning || hasHistory) && !agentChatDone;
+  const showStaticOnboarding = isInitMode && !agentRunning && !hasHistory;
 
   return (
     <div className="app">
-      {showAgentChat && (
-        <AgentChat onComplete={() => { setAgentChatDone(true); refreshDirs(); }} />
+      {showAgentChat && agentChat && (
+        <AgentChat onComplete={() => { setAgentChatDone(true); refreshDirs(); }} chat={agentChat} />
       )}
       {showStaticOnboarding && <Onboarding onPlanSaved={refreshDirs} />}
       {promptEditor && (

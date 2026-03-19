@@ -108,6 +108,26 @@ async function readStdin(): Promise<string> {
 
 const OUTPUT_START_MARKER = '---AER_ART_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
+const TOOL_START_MARKER = '---AER_ART_TOOL_START---';
+const TOOL_END_MARKER = '---AER_ART_TOOL_END---';
+
+function summarizeToolInput(name: string, input: any): string {
+  if (!input) return name;
+  switch (name) {
+    case 'Bash':
+      return typeof input.command === 'string' ? input.command.slice(0, 80) : name;
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+      return typeof input.file_path === 'string' ? input.file_path : name;
+    case 'Grep':
+      return typeof input.pattern === 'string' ? input.pattern : name;
+    case 'Glob':
+      return typeof input.pattern === 'string' ? input.pattern : name;
+    default:
+      return name;
+  }
+}
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
@@ -476,8 +496,7 @@ async function runQuery(
     }
     log(`[msg #${messageCount}] type=${msgType}${detail}`);
 
-    // Stream assistant text to stdout so compose.ts relays it as text_delta SSE.
-    // Only text blocks are streamed — tool_use blocks are logged to stderr only.
+    // Stream assistant text and tool_use info to stdout so compose.ts relays as SSE.
     if (message.type === 'assistant' && 'message' in message) {
       const msg = (message as any).message;
       if (msg?.content) {
@@ -485,6 +504,9 @@ async function runQuery(
         for (const p of parts) {
           if (p.type === 'text' && p.text) {
             process.stdout.write(p.text);
+          } else if (p.type === 'tool_use') {
+            const info = { id: p.id, name: p.name, input_preview: summarizeToolInput(p.name, p.input) };
+            process.stdout.write(TOOL_START_MARKER + '\n' + JSON.stringify(info) + '\n' + TOOL_END_MARKER + '\n');
           }
         }
       }

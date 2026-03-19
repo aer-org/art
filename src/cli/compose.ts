@@ -29,6 +29,21 @@ const MIME_TYPES: Record<string, string> = {
 // Sentinel markers (must match container agent-runner)
 const OUTPUT_START_MARKER = '---AER_ART_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
+const TOOL_START_MARKER = '---AER_ART_TOOL_START---';
+const TOOL_END_MARKER = '---AER_ART_TOOL_END---';
+
+interface ToolActivity {
+  id: string;
+  name: string;
+  input_preview: string;
+  status: 'running' | 'done';
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  tools?: ToolActivity[];
+}
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
@@ -85,6 +100,26 @@ export async function startEditorServer(
   let parseBuffer = '';
   // SSE clients waiting for agent output
   const sseClients: Set<http.ServerResponse> = new Set();
+
+  // ── Session & chat history state ──
+  let savedSessionId: string | undefined;
+  const chatHistory: ChatMessage[] = [];
+  let pendingAssistantText = '';
+  let pendingTools: ToolActivity[] = [];
+
+  function finalizePendingAssistant(): void {
+    if (pendingAssistantText || pendingTools.length > 0) {
+      // Mark all pending tools as done
+      for (const t of pendingTools) t.status = 'done';
+      chatHistory.push({
+        role: 'assistant',
+        content: pendingAssistantText,
+        tools: pendingTools.length > 0 ? [...pendingTools] : undefined,
+      });
+      pendingAssistantText = '';
+      pendingTools = [];
+    }
+  }
 
   // ── Run lifecycle state ──
   let runProcess: ChildProcess | null = null;
@@ -176,10 +211,13 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       chatJid: `art://${resolvedProjectDir}`,
       isMain: false,
       endOnFirstResult: false, // keep alive for conversation
+      sessionId: savedSessionId,
     };
 
     agentRunning = true;
     parseBuffer = '';
+    pendingAssistantText = '';
+    pendingTools = [];
 
     // Start the credential proxy for container auth
     const { startCredentialProxy } = await import('../credential-proxy.js');
@@ -217,17 +255,21 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           agentRunning = false;
           agentProcess = null;
           agentContainerName = '';
+          finalizePendingAssistant();
           // Notify all SSE clients that agent has stopped
           for (const client of sseClients) {
             sseWrite(client, { type: 'agent_stopped' });
-            client.end();
           }
-          sseClients.clear();
+          // Don't close/clear SSE clients — they may reconnect for history
         });
       },
       // onOutput callback for streaming results
       async (output) => {
+        if (output.newSessionId) {
+          savedSessionId = output.newSessionId;
+        }
         if (output.result) {
+          finalizePendingAssistant();
           for (const client of sseClients) {
             sseWrite(client, { type: 'result', content: output.result });
           }
@@ -240,21 +282,35 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
   }
 
   /**
-   * Parse agent stdout for text between output markers and relay as SSE.
+   * Parse agent stdout for text between output/tool markers and relay as SSE.
    * Text outside markers is treated as raw agent console output (streamed as text_delta).
    */
   function relayAgentOutput(chunk: string): void {
     parseBuffer += chunk;
 
-    // Stream text that appears OUTSIDE of output markers as text_delta events.
-    // Output markers contain structured JSON results (handled by onOutput callback).
+    // Process all marker types: OUTPUT and TOOL
     let cursor = 0;
     while (cursor < parseBuffer.length) {
-      const startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER, cursor);
-      if (startIdx === -1) {
+      // Find the nearest marker of any type
+      const outputIdx = parseBuffer.indexOf(OUTPUT_START_MARKER, cursor);
+      const toolIdx = parseBuffer.indexOf(TOOL_START_MARKER, cursor);
+
+      // Determine which marker comes first
+      let nearestIdx = -1;
+      let markerType: 'output' | 'tool' = 'output';
+      if (outputIdx !== -1 && (toolIdx === -1 || outputIdx <= toolIdx)) {
+        nearestIdx = outputIdx;
+        markerType = 'output';
+      } else if (toolIdx !== -1) {
+        nearestIdx = toolIdx;
+        markerType = 'tool';
+      }
+
+      if (nearestIdx === -1) {
         // No more markers — everything from cursor to end is plain text
         const text = parseBuffer.slice(cursor);
         if (text) {
+          pendingAssistantText += text;
           for (const client of sseClients) {
             sseWrite(client, { type: 'text_delta', content: text });
           }
@@ -264,23 +320,51 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       }
 
       // Text before the marker
-      if (startIdx > cursor) {
-        const text = parseBuffer.slice(cursor, startIdx);
+      if (nearestIdx > cursor) {
+        const text = parseBuffer.slice(cursor, nearestIdx);
+        pendingAssistantText += text;
         for (const client of sseClients) {
           sseWrite(client, { type: 'text_delta', content: text });
         }
       }
 
-      // Find end marker
-      const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-      if (endIdx === -1) {
-        // Incomplete marker pair — keep in buffer
-        parseBuffer = parseBuffer.slice(startIdx);
-        return;
+      if (markerType === 'output') {
+        const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, nearestIdx);
+        if (endIdx === -1) {
+          parseBuffer = parseBuffer.slice(nearestIdx);
+          return;
+        }
+        cursor = endIdx + OUTPUT_END_MARKER.length;
+      } else {
+        // Tool marker
+        const endIdx = parseBuffer.indexOf(TOOL_END_MARKER, nearestIdx);
+        if (endIdx === -1) {
+          parseBuffer = parseBuffer.slice(nearestIdx);
+          return;
+        }
+        // Parse tool info
+        const jsonStr = parseBuffer.slice(nearestIdx + TOOL_START_MARKER.length, endIdx).trim();
+        try {
+          const info = JSON.parse(jsonStr);
+          // Mark previous running tools as done
+          for (const t of pendingTools) {
+            if (t.status === 'running') t.status = 'done';
+          }
+          const tool: ToolActivity = {
+            id: info.id,
+            name: info.name,
+            input_preview: info.input_preview,
+            status: 'running',
+          };
+          pendingTools.push(tool);
+          for (const client of sseClients) {
+            sseWrite(client, { type: 'tool_start', id: info.id, name: info.name, input_preview: info.input_preview });
+          }
+        } catch {
+          // Malformed tool info, skip
+        }
+        cursor = endIdx + TOOL_END_MARKER.length;
       }
-
-      // Skip the marker pair (structured output is handled by onOutput)
-      cursor = endIdx + OUTPUT_END_MARKER.length;
     }
 
     parseBuffer = '';
@@ -505,7 +589,11 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     // GET /api/chat/state — check if agent is running
     if (method === 'GET' && parsed.pathname === '/api/chat/state') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ agentRunning }));
+      res.end(JSON.stringify({
+        agentRunning,
+        hasSession: !!savedSessionId,
+        hasHistory: chatHistory.length > 0,
+      }));
       return;
     }
 
@@ -525,6 +613,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           res.end(JSON.stringify({ error: 'Missing "message" field' }));
           return;
         }
+
+        // Finalize any pending assistant message before recording user message
+        finalizePendingAssistant();
+        chatHistory.push({ role: 'user', content: message });
 
         // Write IPC input file for the container agent to pick up
         const filename = `${Date.now()}-msg.json`;
@@ -550,6 +642,16 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       // Send initial state
       sseWrite(res, { type: 'connected', agentRunning });
 
+      // Replay chat history
+      for (const msg of chatHistory) {
+        sseWrite(res, { type: 'history_message', role: msg.role, content: msg.content, tools: msg.tools });
+      }
+      // Send any in-progress assistant content
+      if (pendingAssistantText || pendingTools.length > 0) {
+        sseWrite(res, { type: 'history_partial', content: pendingAssistantText, tools: pendingTools });
+      }
+      sseWrite(res, { type: 'history_end' });
+
       req.on('close', () => {
         sseClients.delete(res);
       });
@@ -569,6 +671,21 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         }
         killAgent().catch(() => {});
       }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // POST /api/chat/start — re-spawn agent (resume session if available)
+    if (method === 'POST' && parsed.pathname === '/api/chat/start') {
+      if (agentRunning) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Agent already running' }));
+        return;
+      }
+      spawnAgent().catch((err) => {
+        console.error('Failed to spawn agent:', err);
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
