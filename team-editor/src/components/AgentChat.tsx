@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Message, ToolActivity, UseAgentChatReturn } from '../hooks/useAgentChat.ts';
+import type { ChatSegment, ToolActivity, UseAgentChatReturn } from '../hooks/useAgentChat.ts';
 import { DocumentPanel } from './DocumentPanel.tsx';
 import './ChatOnboarding.css';
 
@@ -29,30 +29,22 @@ const TOOL_ICONS: Record<string, string> = {
 
 // ── Components ──
 
-function ChatHeader({ isStreaming, hasMessages, onComplete, onClose }: {
+function ChatHeader({ isStreaming, hasContent, onComplete }: {
   isStreaming: boolean;
-  hasMessages: boolean;
+  hasContent: boolean;
   onComplete: () => void;
-  onClose: () => void;
 }) {
   return (
     <div className="chat-header">
       <div className="chat-header-title">
         <span className="chat-header-icon">&#9679;</span>
         ART Agent
-        <button
-          className="chat-close-btn"
-          onClick={onClose}
-          title="Close"
-        >
-          &times;
-        </button>
       </div>
       <div className="chat-header-phase">
         <span className="chat-phase-badge">
           {isStreaming ? 'Analyzing...' : 'Ready'}
         </span>
-        {!isStreaming && hasMessages && (
+        {!isStreaming && hasContent && (
           <button className="chat-complete-header-btn" onClick={onComplete}>
             Complete &rarr;
           </button>
@@ -106,22 +98,24 @@ function ToolCard({ tool }: { tool: ToolActivity }) {
   );
 }
 
-function MessageBubble({
-  role,
-  content,
-  tools,
-  isStreaming,
-}: {
-  role: 'user' | 'assistant';
-  content: string;
-  tools?: ToolActivity[];
-  isStreaming?: boolean;
-}) {
+function UserBubble({ content }: { content: string }) {
   return (
-    <div className={`chat-message chat-message--${role}`}>
-      <div className="chat-message-avatar">
-        {role === 'assistant' ? 'AI' : 'You'}
+    <div className="chat-message chat-message--user">
+      <div className="chat-message-avatar">You</div>
+      <div className="chat-message-bubble">
+        <div
+          className="chat-message-text"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+        />
       </div>
+    </div>
+  );
+}
+
+function TextBubble({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  return (
+    <div className="chat-message chat-message--assistant">
+      <div className="chat-message-avatar">AI</div>
       <div className="chat-message-bubble">
         {content && (
           <div
@@ -129,20 +123,6 @@ function MessageBubble({
             dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
           />
         )}
-        {(() => {
-          // Only show the currently running tool (right before cursor)
-          const runningTool = tools?.filter((t) => t.status === 'running');
-          if (runningTool && runningTool.length > 0) {
-            return (
-              <div className="chat-tool-list">
-                {runningTool.map((t) => (
-                  <ToolCard key={t.id} tool={t} />
-                ))}
-              </div>
-            );
-          }
-          return null;
-        })()}
         {isStreaming && <span className="chat-cursor" />}
       </div>
     </div>
@@ -157,7 +137,7 @@ interface AgentChatProps {
 }
 
 export function AgentChat({ onComplete, chat }: AgentChatProps) {
-  const { messages, isStreaming, error, agentRunning, sendMessage, closeAgent } = chat;
+  const { segments, isStreaming, error, agentRunning, sendMessage, closeAgent } = chat;
 
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -165,7 +145,7 @@ export function AgentChat({ onComplete, chat }: AgentChatProps) {
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreaming]);
+  }, [segments, isStreaming]);
 
   const handleSend = useCallback(() => {
     const text = input.trim();
@@ -184,27 +164,20 @@ export function AgentChat({ onComplete, chat }: AgentChatProps) {
     [handleSend],
   );
 
-  const handleClose = useCallback(async () => {
-    await closeAgent();
-    onComplete();
-  }, [closeAgent, onComplete]);
-
   const handleComplete = useCallback(async () => {
     await closeAgent();
     onComplete();
   }, [closeAgent, onComplete]);
 
-  // Determine if we should show the thinking state (no real content and no tools yet)
-  const hasRealContent = messages.some((m) => m.content || (m.tools && m.tools.length > 0));
+  const hasRealContent = segments.some((s) => s.type === 'text' || s.type === 'tool');
 
   return (
     <div className="chat-overlay">
       <div className="chat-init-layout">
         <ChatHeader
           isStreaming={isStreaming}
-          hasMessages={messages.length > 0}
+          hasContent={segments.length > 0}
           onComplete={handleComplete}
-          onClose={handleClose}
         />
 
         <div className="chat-init-panels">
@@ -221,26 +194,31 @@ export function AgentChat({ onComplete, chat }: AgentChatProps) {
           {/* Right: Chat */}
           <div className="chat-init-chat-panel">
             <div className="chat-messages">
-              {/* Show thinking state when no real content yet */}
               {isStreaming && !hasRealContent && (
                 <ThinkingState />
               )}
-              {messages.map((m, i) => {
-                // Skip empty placeholder messages while thinking (only if no tools either)
-                if (!m.content && (!m.tools || m.tools.length === 0) && isStreaming) return null;
-                return (
-                  <MessageBubble
-                    key={i}
-                    role={m.role}
-                    content={m.content}
-                    tools={m.tools}
-                    isStreaming={
-                      isStreaming &&
-                      i === messages.length - 1 &&
-                      m.role === 'assistant'
-                    }
-                  />
-                );
+              {segments.map((seg, i) => {
+                if (seg.type === 'user') {
+                  return <UserBubble key={i} content={seg.content} />;
+                }
+                if (seg.type === 'text') {
+                  const isLast = i === segments.length - 1;
+                  return (
+                    <TextBubble
+                      key={i}
+                      content={seg.content}
+                      isStreaming={isStreaming && isLast}
+                    />
+                  );
+                }
+                if (seg.type === 'tool') {
+                  return (
+                    <div key={i} className="chat-segment-tool">
+                      <ToolCard tool={seg.tool} />
+                    </div>
+                  );
+                }
+                return null;
               })}
               {error && <div className="chat-error">{error}</div>}
               <div ref={messagesEndRef} />

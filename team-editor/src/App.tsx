@@ -497,7 +497,7 @@ export default function App() {
   }, [agentChat]);
   const runControls = useRunControls();
 
-  const hasHistory = agentChat ? agentChat.messages.length > 0 : false;
+  const hasHistory = agentChat ? agentChat.segments.length > 0 : false;
   const showAgentChat = isSingleMode && (agentRunning || hasHistory) && !agentChatDone;
   const showStaticOnboarding = isInitMode && !agentRunning && !hasHistory;
 

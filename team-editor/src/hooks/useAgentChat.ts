@@ -7,14 +7,13 @@ export interface ToolActivity {
   status: 'running' | 'done';
 }
 
-export interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-  tools?: ToolActivity[];
-}
+export type ChatSegment =
+  | { type: 'user'; content: string }
+  | { type: 'text'; content: string }
+  | { type: 'tool'; tool: ToolActivity };
 
 export interface UseAgentChatReturn {
-  messages: Message[];
+  segments: ChatSegment[];
   isStreaming: boolean;
   error: string | null;
   agentRunning: boolean;
@@ -24,12 +23,10 @@ export interface UseAgentChatReturn {
 }
 
 export function useAgentChat(): UseAgentChatReturn {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isStreaming, setIsStreaming] = useState(true); // starts streaming immediately
+  const [segments, setSegments] = useState<ChatSegment[]>([]);
+  const [isStreaming, setIsStreaming] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
-  const streamingTextRef = useRef('');
-  const streamingToolsRef = useRef<ToolActivity[]>([]);
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryDelayRef = useRef(1000);
   const mountedRef = useRef(true);
@@ -48,103 +45,81 @@ export function useAgentChat(): UseAgentChatReturn {
         const data = JSON.parse(event.data);
 
         if (data.type === 'connected') {
-          retryDelayRef.current = 1000; // reset backoff on successful connect
+          retryDelayRef.current = 1000;
           setAgentRunning(data.agentRunning);
           if (data.agentRunning) {
             setIsStreaming(true);
           }
-        } else if (data.type === 'history_message') {
-          // Replay saved history
-          setMessages((prev) => [...prev, {
-            role: data.role,
-            content: data.content,
-            tools: data.tools,
-          }]);
-        } else if (data.type === 'history_partial') {
-          // In-progress assistant content from before reconnect
-          streamingTextRef.current = data.content || '';
-          streamingToolsRef.current = data.tools || [];
-          const text = streamingTextRef.current;
-          const tools = [...streamingToolsRef.current];
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.role === 'assistant') {
-              const updated = [...prev];
-              updated[updated.length - 1] = { role: 'assistant', content: text, tools };
-              return updated;
-            }
-            return [...prev, { role: 'assistant', content: text, tools }];
-          });
+        } else if (data.type === 'history_segment') {
+          // Replay saved segment from server
+          if (data.segmentType === 'user') {
+            setSegments((prev) => [...prev, { type: 'user', content: data.content }]);
+          } else if (data.segmentType === 'text') {
+            setSegments((prev) => [...prev, { type: 'text', content: data.content }]);
+          } else if (data.segmentType === 'tool') {
+            setSegments((prev) => [...prev, { type: 'tool', tool: data.tool }]);
+          }
+        } else if (data.type === 'history_streaming') {
+          // Last text segment is still being streamed
           setIsStreaming(true);
         } else if (data.type === 'history_end') {
-          // History replay complete, now in live mode
+          // History replay complete
         } else if (data.type === 'text_delta') {
-          streamingTextRef.current += data.content;
-          const text = streamingTextRef.current;
-          const tools = [...streamingToolsRef.current];
           setIsStreaming(true);
-          setMessages((prev) => {
-            if (prev.length === 0) {
-              return [{ role: 'assistant', content: text, tools: tools.length > 0 ? tools : undefined }];
-            }
+          setSegments((prev) => {
             const last = prev[prev.length - 1];
-            if (last.role === 'assistant') {
+            if (last && last.type === 'text') {
               const updated = [...prev];
-              updated[updated.length - 1] = { role: 'assistant', content: text, tools: tools.length > 0 ? tools : undefined };
+              updated[updated.length - 1] = { type: 'text', content: last.content + data.content };
               return updated;
             }
-            return [...prev, { role: 'assistant', content: text, tools: tools.length > 0 ? tools : undefined }];
+            return [...prev, { type: 'text', content: data.content }];
           });
         } else if (data.type === 'tool_start') {
-          // Mark previous running tools as done
-          for (const t of streamingToolsRef.current) {
-            if (t.status === 'running') t.status = 'done';
-          }
-          streamingToolsRef.current.push({
-            id: data.id,
-            name: data.name,
-            input_preview: data.input_preview,
-            status: 'running',
-          });
-          const tools = [...streamingToolsRef.current];
-          const text = streamingTextRef.current;
-          setMessages((prev) => {
-            if (prev.length === 0) {
-              return [{ role: 'assistant', content: text, tools }];
+          setSegments((prev) => {
+            const updated = [...prev];
+            // Mark previous running tools as done
+            for (let i = updated.length - 1; i >= 0; i--) {
+              const seg = updated[i];
+              if (seg.type === 'tool' && seg.tool.status === 'running') {
+                updated[i] = { type: 'tool', tool: { ...seg.tool, status: 'done' } };
+              }
             }
-            const last = prev[prev.length - 1];
-            if (last.role === 'assistant') {
-              const updated = [...prev];
-              updated[updated.length - 1] = { role: 'assistant', content: text, tools };
-              return updated;
-            }
-            return [...prev, { role: 'assistant', content: text, tools }];
+            // Push new tool segment
+            updated.push({
+              type: 'tool',
+              tool: {
+                id: data.id,
+                name: data.name,
+                input_preview: data.input_preview,
+                status: 'running',
+              },
+            });
+            return updated;
           });
         } else if (data.type === 'result') {
-          // Structured result from agent — marks end of a turn
-          if (data.content && typeof data.content === 'string') {
-            const resultText = data.content;
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant' && !last.content) {
-                const updated = [...prev];
-                updated[updated.length - 1] = { role: 'assistant', content: resultText };
-                return updated;
+          // End of turn — mark running tools done
+          setSegments((prev) => {
+            const updated = [...prev];
+            for (let i = updated.length - 1; i >= 0; i--) {
+              const seg = updated[i];
+              if (seg.type === 'tool' && seg.tool.status === 'running') {
+                updated[i] = { type: 'tool', tool: { ...seg.tool, status: 'done' } };
               }
-              if (!last || last.role === 'user') {
-                return [...prev, { role: 'assistant', content: resultText }];
+            }
+            // If there's result text and no text segment captured it, add one
+            if (data.content && typeof data.content === 'string') {
+              const last = updated[updated.length - 1];
+              if (!last || last.type !== 'text' || !last.content) {
+                updated.push({ type: 'text', content: data.content });
               }
-              return prev;
-            });
-          }
+            }
+            return updated;
+          });
           setIsStreaming(false);
-          streamingTextRef.current = '';
-          streamingToolsRef.current = [];
         } else if (data.type === 'agent_stopped') {
           setAgentRunning(false);
           setIsStreaming(false);
-          streamingTextRef.current = '';
-          streamingToolsRef.current = [];
         }
       } catch {
         // ignore malformed events
@@ -155,15 +130,11 @@ export function useAgentChat(): UseAgentChatReturn {
       es.close();
       eventSourceRef.current = null;
       if (!mountedRef.current) return;
-      // Exponential backoff reconnect
       const delay = retryDelayRef.current;
       retryDelayRef.current = Math.min(delay * 2, 10000);
       setTimeout(() => {
         if (mountedRef.current) {
-          // Clear messages before reconnect — server will replay history
-          setMessages([]);
-          streamingTextRef.current = '';
-          streamingToolsRef.current = [];
+          setSegments([]);
           connectSSE();
         }
       }, delay);
@@ -181,11 +152,9 @@ export function useAgentChat(): UseAgentChatReturn {
   }, [connectSSE]);
 
   const sendMessage = useCallback((text: string) => {
-    setMessages((prev) => [...prev, { role: 'user', content: text }]);
+    setSegments((prev) => [...prev, { type: 'user', content: text }]);
     setIsStreaming(true);
     setError(null);
-    streamingTextRef.current = '';
-    streamingToolsRef.current = [];
 
     fetch('/api/chat/message', {
       method: 'POST',
@@ -205,6 +174,8 @@ export function useAgentChat(): UseAgentChatReturn {
     }
     setAgentRunning(false);
     setIsStreaming(false);
+    setSegments([]);
+    setError(null);
   }, []);
 
   const startAgent = useCallback(async () => {
@@ -212,7 +183,6 @@ export function useAgentChat(): UseAgentChatReturn {
       const resp = await fetch('/api/chat/start', { method: 'POST' });
       if (resp.ok) {
         setAgentRunning(true);
-        setIsStreaming(true);
       }
     } catch {
       // best effort
@@ -220,7 +190,7 @@ export function useAgentChat(): UseAgentChatReturn {
   }, []);
 
   return {
-    messages,
+    segments,
     isStreaming,
     error,
     agentRunning,

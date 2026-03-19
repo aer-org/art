@@ -570,6 +570,13 @@
   border-color: rgba(137, 180, 250, 0.45);
 }
 
+/* ── Tool Segment (standalone card outside bubble) ── */
+
+.chat-segment-tool {
+  padding-left: 42px;
+  animation: chat-fade-in 0.2s ease;
+}
+
 /* ── Tool Activity Cards ── */
 
 .chat-tool-list {
