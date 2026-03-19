@@ -12,7 +12,7 @@ function renderMarkdown(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*\*([\s\S]+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br/>');
 }
 
@@ -123,19 +123,26 @@ function MessageBubble({
         {role === 'assistant' ? 'AI' : 'You'}
       </div>
       <div className="chat-message-bubble">
-        {tools && tools.length > 0 && (
-          <div className="chat-tool-list">
-            {tools.map((t) => (
-              <ToolCard key={t.id} tool={t} />
-            ))}
-          </div>
-        )}
         {content && (
           <div
             className="chat-message-text"
             dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
           />
         )}
+        {(() => {
+          // Only show the currently running tool (right before cursor)
+          const runningTool = tools?.filter((t) => t.status === 'running');
+          if (runningTool && runningTool.length > 0) {
+            return (
+              <div className="chat-tool-list">
+                {runningTool.map((t) => (
+                  <ToolCard key={t.id} tool={t} />
+                ))}
+              </div>
+            );
+          }
+          return null;
+        })()}
         {isStreaming && <span className="chat-cursor" />}
       </div>
     </div>
