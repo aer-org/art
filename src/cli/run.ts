@@ -83,12 +83,8 @@ export async function run(targetDir: string): Promise<void> {
   }
 
   // Check for existing run (_current.json)
-  const {
-    readCurrentRun,
-    removeCurrentRun,
-    isPidAlive,
-    generateRunId,
-  } = await import('../pipeline-runner.js');
+  const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } =
+    await import('../pipeline-runner.js');
   const { cleanupRunContainers } = await import('../container-runtime.js');
 
   const currentRun = readCurrentRun(artDir);
@@ -104,7 +100,9 @@ export async function run(targetDir: string): Promise<void> {
       // Stop the existing run
       try {
         process.kill(currentRun.pid, 'SIGTERM');
-      } catch { /* already dead */ }
+      } catch {
+        /* already dead */
+      }
       cleanupRunContainers(currentRun.runId);
       removeCurrentRun(artDir);
     } else {
@@ -131,9 +129,8 @@ export async function run(targetDir: string): Promise<void> {
   });
 
   // Import manifest functions ahead of signal handler registration
-  const { readRunManifest, writeRunManifest } = await import(
-    '../pipeline-runner.js'
-  );
+  const { readRunManifest, writeRunManifest } =
+    await import('../pipeline-runner.js');
 
   // Register SIGINT/SIGTERM handlers to clean up _current.json
   const cleanupOnSignal = () => {
@@ -144,7 +141,9 @@ export async function run(targetDir: string): Promise<void> {
         manifest.status = 'cancelled';
         writeRunManifest(artDir, manifest);
       }
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
     removeCurrentRun(artDir);
   };
   process.on('SIGINT', cleanupOnSignal);

@@ -60,8 +60,10 @@ vi.mock('./credential-proxy.js', () => ({
 
 // Mock group-folder
 vi.mock('./group-folder.js', () => ({
-  resolveGroupFolderPath: (folder: string) => `/tmp/aer-art-test-groups/${folder}`,
-  resolveGroupIpcPath: (folder: string) => `/tmp/aer-art-test-data/ipc/${folder}`,
+  resolveGroupFolderPath: (folder: string) =>
+    `/tmp/aer-art-test-groups/${folder}`,
+  resolveGroupIpcPath: (folder: string) =>
+    `/tmp/aer-art-test-data/ipc/${folder}`,
 }));
 
 // Mock container-runtime with a docker config

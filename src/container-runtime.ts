@@ -801,7 +801,9 @@ export function cleanupRunContainers(runId: string): void {
     for (const name of containers) {
       try {
         execSync(stopContainer(name), { stdio: 'pipe' });
-      } catch { /* already stopped */ }
+      } catch {
+        /* already stopped */
+      }
     }
     if (containers.length > 0) {
       logger.info(

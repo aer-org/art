@@ -81,6 +81,26 @@ Real API credentials **never enter containers**. Instead, the host runs an HTTP 
 - Any credentials matching blocked patterns
 - `.env` is shadowed with `/dev/null` in the project root mount
 
+### 6. Pipeline Stage Isolation
+
+Each pipeline stage runs in its own ephemeral container with independent mount configuration:
+
+- **Per-stage mounts**: Each stage declares which `__art__/` subdirectories are rw, ro, or hidden
+- **Adversarial separation**: Build agents cannot see test scripts; test agents cannot see plans
+- **Stage templates** enforce mount policies by default (overridable in `PIPELINE.json`)
+- **Command mode** stages (`sh -c`) get the same mount isolation as agent-mode stages
+
+### 7. Run ID Container Cleanup
+
+Each container spawned during a pipeline run is labeled with `art-run-id={runId}`:
+- On normal completion, containers are auto-removed (`--rm`)
+- On abnormal termination (SIGKILL, crash), orphan containers are bulk-cleaned by label via `cleanupRunContainers()`
+- `_current.json` tracks the active run's PID; stale PIDs are detected and cleaned up automatically
+
+### 8. Dynamic Port Allocation
+
+The credential proxy and editor server use dynamic port allocation (binding to port 0) to avoid `EADDRINUSE` conflicts. The actual port is read back after binding and passed to containers via environment variables.
+
 ## Privilege Comparison
 
 | Capability | Main Group | Non-Main Group |
