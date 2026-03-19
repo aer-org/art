@@ -10,6 +10,7 @@ interface Props {
   onChange: (files: AgentFiles) => void;
   artDirs?: DirInfo[];
   onOpenChat?: () => void;
+  onOpenFile?: (relativePath: string) => void;
 }
 
 const DIR_DESCRIPTIONS: Record<string, string> = {
@@ -23,7 +24,7 @@ const DIR_DESCRIPTIONS: Record<string, string> = {
   logs: 'Debug logs',
 };
 
-export function FilesPanel({ artDirs, onOpenChat }: Props) {
+export function FilesPanel({ artDirs, onOpenChat, onOpenFile }: Props) {
   const dirs = artDirs && artDirs.length > 0 ? artDirs : [];
 
   if (dirs.length === 0) {
@@ -54,7 +55,12 @@ export function FilesPanel({ artDirs, onOpenChat }: Props) {
           {dir.files.length > 0 ? (
             <div className="file-list">
               {dir.files.map((f) => (
-                <div key={f} className="file-item">
+                <div
+                  key={f}
+                  className="file-item"
+                  onClick={() => onOpenFile?.(`${dir.name}/${f}`)}
+                  style={{ cursor: onOpenFile ? 'pointer' : 'default' }}
+                >
                   <span className="file-name">{f}</span>
                 </div>
               ))}

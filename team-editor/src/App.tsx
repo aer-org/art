@@ -28,6 +28,7 @@ import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
 import { useRunControls, RunOutputPanel } from './panels/RunPanel';
 import { Onboarding } from './components/Onboarding';
 import { AgentChat } from './components/AgentChat';
+import { FileEditor } from './components/FileEditor';
 import { deserialize } from './utils/deserialize';
 import { serialize, validate } from './utils/serialize';
 import { exportTeamZip, importTeamZip, importTeamFolder } from './utils/zip';
@@ -57,6 +58,7 @@ export default function App() {
     completedStages: string[];
     status: string;
   } | null>(null);
+  const [editingFile, setEditingFile] = useState<string | null>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
@@ -496,6 +498,13 @@ export default function App() {
         <AgentChat onComplete={() => { setAgentChatDone(true); refreshDirs(); }} />
       )}
       {showStaticOnboarding && <Onboarding onPlanSaved={refreshDirs} />}
+      {editingFile && (
+        <FileEditor
+          filePath={editingFile}
+          onClose={() => setEditingFile(null)}
+          onSaved={refreshDirs}
+        />
+      )}
       <div className="toolbar">
         <span className="toolbar-title">{isSingleMode ? 'Pipeline Editor' : 'Team Editor'}</span>
         {agent && <button onClick={handleAddStage}>+ Stage</button>}
@@ -605,7 +614,7 @@ export default function App() {
                 policy={agent.pipeline.errorPolicy}
                 onChange={handleUpdateErrorPolicy}
               />
-              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} onOpenChat={handleOpenChat} />
+              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} onOpenChat={handleOpenChat} onOpenFile={isSingleMode ? setEditingFile : undefined} />
               {isSingleMode && <ProjectsPanel files={projectFiles} />}
               {isSingleMode && <ImagesPanel registry={imageRegistry} onRefresh={refreshDirs} />}
             </>
