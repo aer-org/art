@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 
 export interface RunManifest {
   runId: string;
@@ -16,16 +19,24 @@ interface CurrentRunInfo {
   startTime: string;
 }
 
+type OutputListener = (chunk: string) => void;
+
 export function useRunControls() {
   const [isRunning, setIsRunning] = useState(false);
-  const [output, setOutput] = useState('');
   const [showPanel, setShowPanel] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
-  // Grace period: skip polling right after start (Docker takes time to spin up)
   const graceUntilRef = useRef(0);
+  // Listeners for raw output chunks (xterm subscribes here)
+  const outputListenersRef = useRef<Set<OutputListener>>(new Set());
+  const onOutputChunk = useCallback((fn: OutputListener) => {
+    outputListenersRef.current.add(fn);
+    return () => { outputListenersRef.current.delete(fn); };
+  }, []);
+  // Signal to clear terminal on new run
+  const [clearSignal, setClearSignal] = useState(0);
 
   const fetchState = useCallback(() => {
-    if (Date.now() < graceUntilRef.current) return; // skip during grace
+    if (Date.now() < graceUntilRef.current) return;
     fetch('/api/runs/current')
       .then((r) => r.json())
       .then((data: CurrentRunInfo | null) => {
@@ -50,7 +61,7 @@ export function useRunControls() {
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'stdout' || data.type === 'stderr') {
-          setOutput((prev) => prev + data.content);
+          for (const fn of outputListenersRef.current) fn(data.content);
         } else if (data.type === 'run_stopped') {
           graceUntilRef.current = 0;
           setIsRunning(false);
@@ -67,10 +78,10 @@ export function useRunControls() {
   }, [fetchState]);
 
   const start = useCallback(async () => {
-    setOutput('');
+    setClearSignal((n) => n + 1);
     setShowPanel(true);
     setIsRunning(true);
-    graceUntilRef.current = Date.now() + 60_000; // 60s grace for Docker startup
+    graceUntilRef.current = Date.now() + 60_000;
     try {
       const resp = await fetch('/api/runs/start', { method: 'POST' });
       if (resp.status === 409) {
@@ -98,16 +109,90 @@ export function useRunControls() {
     } catch { /* best effort */ }
   }, []);
 
-  return { isRunning, output, showPanel, setShowPanel, start, stop };
+  return { isRunning, showPanel, setShowPanel, start, stop, onOutputChunk, clearSignal };
+}
+
+/** xterm.js terminal component */
+function XtermOutput({ onOutputChunk, clearSignal }: {
+  onOutputChunk: (fn: OutputListener) => () => void;
+  clearSignal: number;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const term = new Terminal({
+      fontSize: 12,
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      theme: {
+        background: '#11111b',
+        foreground: '#cdd6f4',
+        cursor: '#f5e0dc',
+        selectionBackground: '#45475a',
+        black: '#45475a',
+        red: '#f38ba8',
+        green: '#a6e3a1',
+        yellow: '#f9e2af',
+        blue: '#89b4fa',
+        magenta: '#cba6f7',
+        cyan: '#94e2d5',
+        white: '#bac2de',
+        brightBlack: '#585b70',
+        brightRed: '#f38ba8',
+        brightGreen: '#a6e3a1',
+        brightYellow: '#f9e2af',
+        brightBlue: '#89b4fa',
+        brightMagenta: '#cba6f7',
+        brightCyan: '#94e2d5',
+        brightWhite: '#a6adc8',
+      },
+      convertEol: true,
+      scrollback: 10000,
+      disableStdin: true,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(containerRef.current);
+    fit.fit();
+    termRef.current = term;
+    fitRef.current = fit;
+
+    const unsub = onOutputChunk((chunk) => {
+      term.write(chunk);
+    });
+
+    const observer = new ResizeObserver(() => fit.fit());
+    observer.observe(containerRef.current);
+
+    return () => {
+      unsub();
+      observer.disconnect();
+      term.dispose();
+      termRef.current = null;
+      fitRef.current = null;
+    };
+  }, [onOutputChunk]);
+
+  // Clear terminal on new run
+  useEffect(() => {
+    if (clearSignal > 0 && termRef.current) {
+      termRef.current.clear();
+      termRef.current.reset();
+    }
+  }, [clearSignal]);
+
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
 }
 
 /** Bottom panel showing live run output and history */
-export function RunOutputPanel({ output, isRunning, onClose }: {
-  output: string;
+export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal }: {
   isRunning: boolean;
   onClose: () => void;
+  onOutputChunk: (fn: OutputListener) => () => void;
+  clearSignal: number;
 }) {
-  const outputRef = useRef<HTMLPreElement>(null);
   const detailedRef = useRef<HTMLPreElement>(null);
   const [runs, setRuns] = useState<RunManifest[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
@@ -115,13 +200,6 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
   const [detailedLog, setDetailedLog] = useState('');
   const [tab, setTab] = useState<'output' | 'detailed' | 'history'>('output');
   const liveLogEsRef = useRef<EventSource | null>(null);
-
-  // Auto-scroll output
-  useEffect(() => {
-    if (outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight;
-    }
-  }, [output]);
 
   // Auto-scroll detailed
   useEffect(() => {
@@ -156,7 +234,6 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
       } catch { /* ignore */ }
     };
     es.onerror = () => {
-      // Reconnect after a short delay
       es.close();
       liveLogEsRef.current = null;
     };
@@ -247,14 +324,9 @@ export function RunOutputPanel({ output, isRunning, onClose }: {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '8px 12px' }}>
+      <div style={{ flex: 1, overflow: 'hidden', padding: tab === 'output' ? '0' : '8px 12px', ...(tab !== 'output' ? { overflow: 'auto' } : {}) }}>
         {tab === 'output' && (
-          <pre
-            ref={outputRef}
-            style={{ margin: 0, color: '#cdd6f4', fontSize: '11px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}
-          >
-            {output || (isRunning ? 'Starting...' : 'No output yet. Click Run to start.')}
-          </pre>
+          <XtermOutput onOutputChunk={onOutputChunk} clearSignal={clearSignal} />
         )}
 
         {tab === 'detailed' && (

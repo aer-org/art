@@ -614,9 +614,10 @@ export default function App() {
       </div>
       {isSingleMode && runControls.showPanel && (
         <RunOutputPanel
-          output={runControls.output}
           isRunning={runControls.isRunning}
           onClose={() => runControls.setShowPanel(false)}
+          onOutputChunk={runControls.onOutputChunk}
+          clearSignal={runControls.clearSignal}
         />
       )}
     </div>

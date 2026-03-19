@@ -624,7 +624,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       const artBin = process.argv[1]; // path to the running CLI
       const childEnv: Record<string, string | undefined> = {
         ...process.env,
-        FORCE_COLOR: '0',
+        FORCE_COLOR: '1',
       };
       // WSL: credential proxy must bind 0.0.0.0 so containers on the
       // Docker bridge can reach it (127.0.0.1 is host-only in WSL).
