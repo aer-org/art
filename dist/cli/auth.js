@@ -1,5 +1,4 @@
 import fs from 'fs';
-import https from 'https';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
@@ -73,116 +72,6 @@ export function resolveAuthToken() {
     if (cliToken)
         return cliToken;
     return null;
-}
-/**
- * Exchange an OAuth token for a temporary API key via Anthropic's OAuth endpoint.
- */
-function exchangeOAuthToken(token) {
-    return new Promise((resolve) => {
-        const req = https.request({
-            hostname: 'api.anthropic.com',
-            path: '/api/oauth/claude_cli/create_api_key',
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
-            },
-            timeout: 15000,
-        }, (res) => {
-            let data = '';
-            res.on('data', (chunk) => (data += chunk));
-            res.on('end', () => {
-                if (res.statusCode === 200) {
-                    try {
-                        const parsed = JSON.parse(data);
-                        resolve(parsed.api_key || parsed.key || null);
-                    }
-                    catch {
-                        resolve(null);
-                    }
-                }
-                else {
-                    resolve(null);
-                }
-            });
-        });
-        req.on('error', () => resolve(null));
-        req.on('timeout', () => {
-            req.destroy();
-            resolve(null);
-        });
-        req.end();
-    });
-}
-/**
- * Validate a token by making a minimal API call to Anthropic.
- * API keys hit /v1/messages directly.
- * OAuth tokens are first exchanged for a temp API key, then validated.
- */
-function validateToken(token) {
-    const isApiKey = token.startsWith('sk-ant-api') ||
-        (!token.startsWith('sk-ant-oat') && !token.startsWith('eyJ'));
-    if (isApiKey) {
-        return validateWithApiKey(token);
-    }
-    // OAuth flow: exchange first, then validate the temp key
-    return exchangeOAuthToken(token).then((tempKey) => {
-        if (!tempKey) {
-            console.error('  ✗ OAuth 토큰 교환 실패 (만료되었거나 유효하지 않음)');
-            return false;
-        }
-        return validateWithApiKey(tempKey);
-    });
-}
-function validateWithApiKey(apiKey) {
-    const body = JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'hi' }],
-    });
-    return new Promise((resolve) => {
-        const req = https.request({
-            hostname: 'api.anthropic.com',
-            path: '/v1/messages',
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'anthropic-version': '2023-06-01',
-                'x-api-key': apiKey,
-            },
-            timeout: 15000,
-        }, (res) => {
-            let data = '';
-            res.on('data', (chunk) => (data += chunk));
-            res.on('end', () => {
-                if (res.statusCode === 200) {
-                    console.log('  ✓ API 토큰 유효');
-                    resolve(true);
-                }
-                else {
-                    try {
-                        const err = JSON.parse(data);
-                        console.error(`  ✗ API 응답 ${res.statusCode}: ${err.error?.message || data.slice(0, 120)}`);
-                    }
-                    catch {
-                        console.error(`  ✗ API 응답 ${res.statusCode}`);
-                    }
-                    resolve(false);
-                }
-            });
-        });
-        req.on('error', (err) => {
-            console.error(`  ✗ API 연결 실패: ${err.message}`);
-            resolve(false);
-        });
-        req.on('timeout', () => {
-            req.destroy();
-            console.error('  ✗ API 요청 타임아웃');
-            resolve(false);
-        });
-        req.write(body);
-        req.end();
-    });
 }
 function maskToken(token) {
     if (token.length <= 12)
@@ -281,13 +170,6 @@ export async function ensureAuth() {
         source = 'manual input';
     }
     console.log(`Using ${source} (${maskToken(token)})`);
-    // Validate token with a live API call
-    console.log('토큰 검증 중...');
-    if (!(await validateToken(token))) {
-        console.error('  ✗ 토큰이 유효하지 않거나 만료되었습니다.\n' +
-            '  `claude setup-token` 으로 새 토큰을 발급받으세요.');
-        process.exit(1);
-    }
     setAuthEnvVars(token);
 }
 //# sourceMappingURL=auth.js.map
