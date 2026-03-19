@@ -22,9 +22,12 @@ interface CurrentRunInfo {
 
 type OutputListener = (chunk: string) => void;
 
+export type TabName = 'output' | 'detailed' | 'history';
+
 export function useRunControls() {
   const [isRunning, setIsRunning] = useState(false);
   const [showPanel, setShowPanel] = useState(false);
+  const [initialTab, setInitialTab] = useState<TabName | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const graceUntilRef = useRef(0);
   // Listeners for raw output chunks (xterm subscribes here)
@@ -110,10 +113,33 @@ export function useRunControls() {
     } catch { /* best effort */ }
   }, []);
 
-  return { isRunning, showPanel, setShowPanel, start, stop, onOutputChunk, clearSignal };
+  return { isRunning, showPanel, setShowPanel, start, stop, onOutputChunk, clearSignal, initialTab, setInitialTab };
 }
 
-/** xterm.js terminal component */
+const XTERM_THEME = {
+  background: '#11111b',
+  foreground: '#cdd6f4',
+  cursor: '#f5e0dc',
+  selectionBackground: '#45475a',
+  black: '#45475a',
+  red: '#f38ba8',
+  green: '#a6e3a1',
+  yellow: '#f9e2af',
+  blue: '#89b4fa',
+  magenta: '#cba6f7',
+  cyan: '#94e2d5',
+  white: '#bac2de',
+  brightBlack: '#585b70',
+  brightRed: '#f38ba8',
+  brightGreen: '#a6e3a1',
+  brightYellow: '#f9e2af',
+  brightBlue: '#89b4fa',
+  brightMagenta: '#cba6f7',
+  brightCyan: '#94e2d5',
+  brightWhite: '#a6adc8',
+};
+
+/** xterm.js terminal for live streaming output */
 function XtermOutput({ onOutputChunk, clearSignal }: {
   onOutputChunk: (fn: OutputListener) => () => void;
   clearSignal: number;
@@ -127,28 +153,7 @@ function XtermOutput({ onOutputChunk, clearSignal }: {
     const term = new Terminal({
       fontSize: 12,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
-      theme: {
-        background: '#11111b',
-        foreground: '#cdd6f4',
-        cursor: '#f5e0dc',
-        selectionBackground: '#45475a',
-        black: '#45475a',
-        red: '#f38ba8',
-        green: '#a6e3a1',
-        yellow: '#f9e2af',
-        blue: '#89b4fa',
-        magenta: '#cba6f7',
-        cyan: '#94e2d5',
-        white: '#bac2de',
-        brightBlack: '#585b70',
-        brightRed: '#f38ba8',
-        brightGreen: '#a6e3a1',
-        brightYellow: '#f9e2af',
-        brightBlue: '#89b4fa',
-        brightMagenta: '#cba6f7',
-        brightCyan: '#94e2d5',
-        brightWhite: '#a6adc8',
-      },
+      theme: XTERM_THEME,
       convertEol: true,
       scrollback: 10000,
       disableStdin: true,
@@ -187,12 +192,48 @@ function XtermOutput({ onOutputChunk, clearSignal }: {
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
 }
 
+/** xterm.js terminal for rendering static ANSI content */
+function XtermStatic({ content }: { content: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!containerRef.current || !content) return;
+    const term = new Terminal({
+      fontSize: 12,
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      theme: XTERM_THEME,
+      convertEol: true,
+      scrollback: 50000,
+      disableStdin: true,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(containerRef.current);
+    fit.fit();
+    term.write(content);
+
+    const observer = new ResizeObserver(() => fit.fit());
+    observer.observe(containerRef.current);
+
+    return () => {
+      observer.disconnect();
+      term.dispose();
+    };
+  }, [content]);
+
+  if (!content) {
+    return <div style={{ color: '#6c7086', padding: '16px', textAlign: 'center' }}>No output log available.</div>;
+  }
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
+}
+
 /** Bottom panel showing live run output and history */
-export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal }: {
+export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal, initialTab: initialTabProp }: {
   isRunning: boolean;
   onClose: () => void;
   onOutputChunk: (fn: OutputListener) => () => void;
   clearSignal: number;
+  initialTab?: TabName | null;
 }) {
   const detailedRef = useRef<HTMLDivElement>(null);
   const detailedAtBottomRef = useRef(true);
@@ -202,8 +243,13 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
   const [outputContent, setOutputContent] = useState('');
   const [historyTab, setHistoryTab] = useState<'output' | 'detailed'>('output');
   const [detailedLog, setDetailedLog] = useState('');
-  const [tab, setTab] = useState<'output' | 'detailed' | 'history'>('output');
+  const [tab, setTab] = useState<TabName>(initialTabProp || 'output');
   const liveLogEsRef = useRef<EventSource | null>(null);
+
+  // Respond to external initialTab changes
+  useEffect(() => {
+    if (initialTabProp) setTab(initialTabProp);
+  }, [initialTabProp]);
 
   // Auto-scroll detailed only when user is at the bottom
   useEffect(() => {
@@ -400,8 +446,8 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
         )}
 
         {tab === 'history' && selectedLog && (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px', flexShrink: 0 }}>
               <button
                 onClick={() => { setSelectedLog(null); setLogContent(''); setOutputContent(''); }}
                 style={{ background: 'transparent', border: '1px solid #45475a', color: '#a6adc8', borderRadius: '3px', cursor: 'pointer', fontSize: '11px', padding: '2px 8px' }}
@@ -429,9 +475,15 @@ export function RunOutputPanel({ isRunning, onClose, onOutputChunk, clearSignal 
                 Detailed
               </button>
             </div>
-            <pre style={{ margin: 0, color: historyTab === 'detailed' ? '#a6e3a1' : '#cdd6f4', fontSize: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}>
-              {historyTab === 'output' ? outputContent : logContent}
-            </pre>
+            <div style={{ flex: 1, overflow: historyTab === 'output' ? 'hidden' : 'auto' }}>
+              {historyTab === 'output' ? (
+                <XtermStatic content={outputContent} />
+              ) : (
+                <pre style={{ margin: 0, color: '#a6e3a1', fontSize: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                  {logContent}
+                </pre>
+              )}
+            </div>
           </div>
         )}
       </div>

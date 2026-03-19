@@ -526,6 +526,7 @@ export default function App() {
           <>
             <button onClick={handleSave}>Save</button>
             {saveStatus && <span className="save-status">{saveStatus}</span>}
+            <button onClick={() => { runControls.setShowPanel(true); runControls.setInitialTab('history'); }} style={{ background: '#313244', color: '#cdd6f4' }}>History</button>
             {runControls.isRunning ? (
               <>
                 <button onClick={() => runControls.setShowPanel((v) => !v)} style={{ background: '#313244', color: '#cdd6f4' }}>Output</button>
@@ -641,9 +642,10 @@ export default function App() {
       {isSingleMode && runControls.showPanel && (
         <RunOutputPanel
           isRunning={runControls.isRunning}
-          onClose={() => runControls.setShowPanel(false)}
+          onClose={() => { runControls.setShowPanel(false); runControls.setInitialTab(null); }}
           onOutputChunk={runControls.onOutputChunk}
           clearSignal={runControls.clearSignal}
+          initialTab={runControls.initialTab}
         />
       )}
     </div>
