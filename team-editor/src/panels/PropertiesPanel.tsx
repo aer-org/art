@@ -9,9 +9,10 @@ interface Props {
   onSetEntry: (id: string) => void;
   artDirs?: string[];
   imageKeys?: string[];
+  onEditPrompt?: (stageId: string, prompt: string, onChange: (prompt: string) => void) => void;
 }
 
-export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs, imageKeys }: Props) {
+export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs, imageKeys, onEditPrompt }: Props) {
   if (!node) {
     return <div className="panel empty-panel">Select a stage to edit</div>;
   }
@@ -70,11 +71,33 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
 
       <label>
         Prompt
-        <textarea
-          rows={8}
-          value={stage.prompt}
-          onChange={(e) => update({ prompt: e.target.value })}
-        />
+        <div style={{ position: 'relative' }}>
+          <textarea
+            rows={4}
+            value={stage.prompt}
+            onChange={(e) => update({ prompt: e.target.value })}
+            style={{ paddingRight: '60px' }}
+          />
+          {onEditPrompt && (
+            <button
+              onClick={() => onEditPrompt(node.id, stage.prompt, (p) => update({ prompt: p }))}
+              style={{
+                position: 'absolute',
+                top: '4px',
+                right: '4px',
+                fontSize: '11px',
+                padding: '2px 8px',
+                background: '#313244',
+                color: '#cdd6f4',
+                border: '1px solid #45475a',
+                borderRadius: '4px',
+                cursor: 'pointer',
+              }}
+            >
+              Expand
+            </button>
+          )}
+        </div>
       </label>
 
       <fieldset>

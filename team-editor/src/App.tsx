@@ -29,6 +29,7 @@ import { useRunControls, RunOutputPanel } from './panels/RunPanel';
 import { Onboarding } from './components/Onboarding';
 import { AgentChat } from './components/AgentChat';
 import { FileEditor } from './components/FileEditor';
+import { TextEditor } from './components/TextEditor';
 import { deserialize } from './utils/deserialize';
 import { serialize, validate } from './utils/serialize';
 import { exportTeamZip, importTeamZip, importTeamFolder } from './utils/zip';
@@ -59,6 +60,11 @@ export default function App() {
     status: string;
   } | null>(null);
   const [editingFile, setEditingFile] = useState<string | null>(null);
+  const [promptEditor, setPromptEditor] = useState<{
+    title: string;
+    value: string;
+    onChange: (value: string) => void;
+  } | null>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
@@ -498,6 +504,14 @@ export default function App() {
         <AgentChat onComplete={() => { setAgentChatDone(true); refreshDirs(); }} />
       )}
       {showStaticOnboarding && <Onboarding onPlanSaved={refreshDirs} />}
+      {promptEditor && (
+        <TextEditor
+          title={promptEditor.title}
+          initialValue={promptEditor.value}
+          onSave={promptEditor.onChange}
+          onClose={() => setPromptEditor(null)}
+        />
+      )}
       {editingFile && (
         <FileEditor
           filePath={editingFile}
@@ -607,6 +621,9 @@ export default function App() {
             onSetEntry={handleSetEntry}
             artDirs={artDirs.map((d) => d.name)}
             imageKeys={Object.keys(imageRegistry)}
+            onEditPrompt={(stageId, prompt, onChange) =>
+              setPromptEditor({ title: `Prompt: ${stageId}`, value: prompt, onChange })
+            }
           />
           {agent && (
             <>
