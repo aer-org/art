@@ -1,4 +1,10 @@
-# Automated Research Team (ART)
+# ART — Agent Runtime
+
+Run agent workflows against real projects with **stage boundaries**, **isolated mounts**, and **resumable execution**.
+
+Design a plan collaboratively with an AI agent via `art compose`, then execute it with `art run` — a pipeline runtime where **the plan is read-only by default** (unless you explicitly grant write access). Each stage runs in its own container with file-level mount permissions on your project.
+
+> Adaptive planning (stages that can revise the plan mid-run) is coming soon.
 
 ```bash
 npm install -g @aer-org/art
@@ -6,28 +12,58 @@ npm install -g @aer-org/art
 
 ```bash
 cd my-project
-art compose .                 # Initialize (if needed) and open pipeline editor
-art run .                     # Execute pipeline in Docker-isolated containers
+art compose .       # Open visual pipeline editor (creates __art__/ if needed)
+art run .           # Execute pipeline in isolated containers
 ```
 
-Requires **Node.js ≥ 20**, **Docker** (or Podman/udocker), and **Git**.
+Requires **Node.js ≥ 20** and **Docker** (or Podman).
 
 ---
 
-## What is ART?
+## When to use ART
 
-A TypeScript CLI **pipeline engine** that runs multi-stage agent workflows on existing project directories. ART reads a `PIPELINE.json` defining stages, transitions, mounts, and execution order, then orchestrates those stages in container-isolated environments.
-
-The **default pipeline template** ships a 4-stage loop (build → test → review → history), but ART has no hardcoded knowledge of specific stages — it knows stages, transitions, mounts, and markers. Any pipeline can be designed via `art compose`.
-
-> **Agent philosophy**:
-> Agents are not tools but delegated operators with identity, memory, and doctrine. Each stage has a SOUL-based system prompt defining its personality and principles.
-> "상태 보고는 가치가 없다" — status reports are worthless, only artifacts count.
-> "실행 증거 없는 약속은 0점" — promises without execution evidence score zero.
+- You want **repeatable agent workflows**, not one-off chat sessions
+- You want **strict stage boundaries** — each stage sees only what it needs (rw/ro/hidden)
+- You want agents to write into a **controlled artifact space**, not directly into your repo
+- You want **resumable runs** and per-stage logs you can inspect after the fact
 
 ---
 
-## Default Pipeline — 4-Stage Loop
+## 30-Second Walkthrough
+
+```bash
+cd my-project
+art compose .
+```
+
+This creates `__art__/` in your project and opens a browser-based pipeline editor with an agent chat. Use the chat to collaboratively write your plan — once finalized, the plan becomes the contract that stages execute against.
+
+The default template has 4 stages (plan → build → test → review), but you can design any pipeline. When the plan is ready:
+
+```bash
+art run .
+```
+
+Each stage runs a Claude agent in a Docker container with file-level mount permissions — your project is read-only by default, but specific files or directories can be granted write access per stage. Artifacts go into `__art__/src/`, `__art__/outputs/`, etc.
+
+```
+my-project/                         # Your project (mount permissions per stage)
+├── src/, data/, ...
+│
+└── __art__/                        # All ART artifacts live here
+    ├── PIPELINE.json               # Pipeline definition
+    ├── PLAN.md                     # What you want built
+    ├── src/                        # Agent-written code
+    ├── outputs/                    # Run outputs
+    ├── logs/                       # Per-stage logs
+    └── runs/                       # Run history manifests
+```
+
+---
+
+## How Pipelines Work
+
+A pipeline is a list of stages connected by transitions. Each stage runs in its own container and communicates via **output markers**:
 
 ```
     ┌──────────┐
@@ -36,7 +72,7 @@ The **default pipeline template** ships a 4-stage loop (build → test → revie
          │ [STAGE_COMPLETE]
          ▼
     ┌──────────┐
-    │   TEST   │ ← runs adversarial tests against src/
+    │   TEST   │ ← runs tests against src/
     └────┬─────┘
          │ [STAGE_COMPLETE]
          ▼
@@ -50,11 +86,93 @@ The **default pipeline template** ships a 4-stage loop (build → test → revie
     └──────────┘
 ```
 
-On error, stages can retry or transition to error-handling stages. The pipeline FSM handles all routing based on output markers.
+This is just the default template. ART has no hardcoded stage knowledge — it understands stages, transitions, mounts, and markers. Design any pipeline via `art compose`.
 
-### Permission Enforcement via Mounts
+### Stage modes
 
-Permissions are enforced by **container mounts** — hidden directories are not mounted, so agents physically cannot access them. Each stage template declares its own rw/ro/hidden policy.
+- **Agent mode** (default): Claude agent receives a prompt and works autonomously
+- **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout
+
+### Transitions and retries
+
+Stages emit markers like `[STAGE_COMPLETE]` or `[STAGE_ERROR: msg]` to trigger transitions. Retry transitions re-send the prompt with the error description. Non-retry transitions advance to the next stage.
+
+### Resume on interrupt
+
+Completed stages are checkpointed. On restart, execution resumes from the next incomplete stage with previous context.
+
+---
+
+## Customizing Pipelines
+
+Edit `__art__/PIPELINE.json` directly, or use the visual editor (`art compose`):
+
+```json
+{
+  "stages": [
+    {
+      "name": "build",
+      "prompt": "Read PLAN.md and implement the described changes in src/.",
+      "mounts": { "plan": "ro", "src": "rw", "project": "ro" },
+      "transitions": [
+        { "marker": "STAGE_COMPLETE", "next": "test" },
+        { "marker": "STAGE_ERROR", "retry": true }
+      ]
+    }
+  ]
+}
+```
+
+**Mounts** control what each stage can see: `"rw"` (read-write), `"ro"` (read-only), or `null` (hidden — not mounted at all).
+
+Mount permissions work at file and directory granularity. `"project"` sets the default for your project root, and `"project:path/to/dir"` overrides a specific subdirectory — so you can keep the project read-only while granting write access to exactly the paths a stage needs.
+
+**Custom markers** — define any marker string in transitions. The FSM matches agent output against them.
+
+**Custom images** — each stage can use a different container image (e.g., a stage that needs CUDA or Vivado).
+
+---
+
+## Security
+
+Agents run in containers with minimal access:
+
+- **File-level mount permissions** — project defaults to read-only; specific files/directories can be granted write access per stage
+- **`.env` shadowed with `/dev/null`** — secrets never exposed inside containers
+- **Credential proxy** — containers never see real API keys; a host-side proxy injects credentials per-request
+- **Per-group IPC isolation** — groups cannot access each other's files
+- **Mount allowlist** — additional mounts validated against external allowlist
+
+ART is designed to reduce accidental access and constrain agent execution, but it is not a formal sandbox. See `docs/SECURITY.md` for the full trust model and known limitations.
+
+---
+
+## Visual Pipeline Editor
+
+`art compose` opens a browser-based editor (React + ReactFlow):
+
+- Drag-and-drop stage nodes with transition edges
+- Configure per-stage: prompt, mount policies (rw/ro/hidden), container image
+- Project mount tree — browse and override sub-directory permissions
+- Image registry with preset base images (Ubuntu, CUDA, Python, Node, ROS)
+- Run history with log viewer
+- Agent chat for plan discussion
+- Hunk-based diff review with AI edit suggestions
+
+---
+
+## Container Runtime
+
+ART auto-detects the available container runtime:
+
+| Runtime | Notes |
+|---------|-------|
+| **Docker** | Full capabilities, default choice |
+| **Podman** | Docker-compatible, SELinux support |
+
+Runtime-specific behavior is abstracted via a capabilities system — code branches on `rt.capabilities.X`, not runtime names.
+
+**Planned:** udocker (daemonless), Apple Container (macOS native).
 
 ---
 
@@ -66,15 +184,13 @@ Permissions are enforced by **container mounts** — hidden directories are not 
 npm install -g @aer-org/art
 ```
 
-### One-Line Install
+### One-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 ```
 
-Clones to `~/.art`, creates `art` CLI symlink, checks for Node.js ≥ 20 and Git.
-
-### Manual Install
+### Manual
 
 ```bash
 git clone https://github.com/aer-org/art.git ~/.art
@@ -87,117 +203,20 @@ ln -s ~/.art/dist/cli/index.js ~/.local/bin/art
 ## CLI Reference
 
 ```bash
-art compose <path>           # Initialize (if needed) and open visual pipeline editor
-art run <path>               # Execute pipeline — sequential stage containers
-art update                   # Rebuild all images in the registry
+art compose <path>    # Open visual pipeline editor
+art run <path>        # Execute pipeline
+art update            # Rebuild all images in the registry
 ```
 
 ---
 
-## Pipeline System
+## Status
 
-### How Stages Work
+ART is under active development. Core pipeline execution, the visual editor, and container isolation are functional. The API surface may change between minor versions.
 
-Each stage runs in its own isolated container. Stages communicate via **output markers** embedded in agent output:
+**Supported:** Linux, macOS
 
-| Marker | Effect |
-|--------|--------|
-| `[STAGE_COMPLETE]` | Transition to next stage |
-| `[STAGE_ERROR: msg]` | Trigger error transition or retry |
-
-Transitions are defined per-stage in `PIPELINE.json`. Retry transitions stay in the same stage; non-retry transitions advance.
-
-### Stage Modes
-
-- **Agent mode** (default): Claude agent receives a prompt and executes autonomously
-- **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout
-
-### Error Recovery
-
-On retry transitions, the stage prompt is re-sent with the error description so the agent can attempt a fix.
-
-### Resume on Interrupt
-
-Completed stages are checkpointed. On restart, execution resumes from the next incomplete stage with previous context injected.
-
-### Run Tracking
-
-Each execution records a manifest JSON with per-stage status, duration, and log file path. The dashboard shows run history and allows starting/stopping runs.
-
----
-
-## Container Runtime
-
-ART auto-detects the available container runtime:
-
-| Runtime | Characteristics |
-|---------|----------------|
-| **Docker** | Full capabilities, default choice |
-| **Podman** | Docker-compatible, SELinux support |
-| **udocker** | No daemon required, no image building (downloads pre-built tars) |
-
-Runtime-specific behavior is abstracted via a capabilities system — code branches on `rt.capabilities.X`, not runtime names.
-
-### Security
-
-- **Project root mounted read-only** — agents cannot modify host code
-- **`.env` shadowed with `/dev/null`** — secrets never exposed
-- **Credential proxy** — containers never see real API keys; a host-side proxy injects credentials
-- **Per-group IPC isolation** — groups cannot access each other's IPC directories
-- **Mount allowlist** — additional mounts validated against external allowlist
-
-See `docs/SECURITY.md` for the full security model.
-
----
-
-## Visual Pipeline Editor
-
-`art compose` launches a browser-based React SPA (ReactFlow) for visual pipeline design:
-
-- Drag-and-drop stage nodes with transition edges
-- Configure per-stage: prompt, mounts (rw/ro/hidden), image
-- Image registry management with preset base images
-- Run history panel with log viewer
-- Agent chat interface for plan discussion (init mode)
-- Hunk-based diff review with AI edit suggestions
-
----
-
-## Image Registry
-
-Custom container images are managed via `~/.config/aer-art/images.json`:
-
-```json
-{
-  "default": { "image": "aer-art-agent:latest", "hasAgent": true },
-  "vivado": { "image": "vivado-agent:latest", "hasAgent": true, "baseImage": "xilinx/vivado:2024.1" }
-}
-```
-
-Stages reference images by key. Presets available: Ubuntu, NVIDIA CUDA, Python, Node, ROS, and custom.
-
----
-
-## Project Directory Layout
-
-```
-my-project/                         # Your existing project (read-only to agents)
-├── src/, data/, ...
-│
-├── __art__/                        # All ART artifacts
-│   ├── PIPELINE.json               # Active pipeline definition
-│   ├── CLAUDE.md                   # Project context for agents
-│   ├── plan/                       # PLAN.md, VISION.md
-│   ├── src/                        # Agent-written code
-│   ├── tests/                      # Test files
-│   ├── outputs/                    # Run outputs
-│   ├── logs/                       # Pipeline logs
-│   ├── metrics/                    # Metrics data
-│   ├── insights/                   # Accumulated insights
-│   ├── memory/                     # Structured memory
-│   └── runs/                       # Run manifests (_current.json, run-*.json)
-└── .git/
-```
+**Not supported:** Windows (use WSL)
 
 ---
 
@@ -205,12 +224,10 @@ my-project/                         # Your existing project (read-only to agents
 
 | Document | Content |
 |----------|---------|
-| `docs/ARCHITECTURE.md` | Full system architecture — pipeline FSM, container runtime, mount isolation |
+| `docs/ARCHITECTURE.md` | System architecture — pipeline FSM, container runtime, mount isolation |
 | `docs/REQUIREMENTS.md` | Design philosophy and decisions |
-| `docs/SECURITY.md` | Security model — trust boundaries, mount isolation, credential proxy |
+| `docs/SECURITY.md` | Trust model, mount isolation, credential proxy, known limitations |
 | `docs/docker-sandboxes.md` | Running ART inside Docker Sandboxes (nested isolation) |
-| `docs/APPLE-CONTAINER-NETWORKING.md` | Apple Container networking setup (macOS 26) |
-| `docs/SDK_DEEP_DIVE.md` | Claude Agent SDK internals |
 
 ---
 
@@ -229,4 +246,4 @@ npm run dev          # Watch mode
 
 ## License
 
-**AGPL-3.0** — Commercial license available.
+Released under **AGPL-3.0**. Commercial licensing is available for teams that need different terms.
