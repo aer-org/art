@@ -7,10 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { ChildProcess } from 'child_process';
 
-import {
-  getCredentialProxyPort,
-  setCredentialProxyPort,
-} from './config.js';
+import { getCredentialProxyPort, setCredentialProxyPort } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import {
   ensureContainerRuntimeRunning,
@@ -130,10 +127,7 @@ export async function runPipeline(opts: {
     process.exit(1);
   }
 
-  logger.info(
-    { stageCount: pipelineConfig.stages.length },
-    'Pipeline mode',
-  );
+  logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');
 
   const runner = new PipelineRunner(
     group,

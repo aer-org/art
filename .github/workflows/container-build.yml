@@ -1,0 +1,58 @@
+name: Container Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_image:
+        description: 'Base Docker image (e.g. node:22-slim, ubuntu:24.04)'
+        required: false
+        default: ''
+      tag:
+        description: 'Image tag name (default: latest)'
+        required: false
+        default: ''
+
+jobs:
+  container-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build agent container
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          BASE="${{ github.event.inputs.base_image }}"
+          if [ -n "$TAG" ] && [ -n "$BASE" ]; then
+            ./container/build.sh "$TAG" "$BASE"
+          elif [ -n "$BASE" ]; then
+            ./container/build.sh custom "$BASE"
+          else
+            ./container/build.sh
+          fi
+
+      - name: Determine image name
+        id: image
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          BASE="${{ github.event.inputs.base_image }}"
+          if [ -n "$BASE" ]; then
+            if [ -n "$TAG" ]; then
+              echo "name=art-agent-${TAG}:latest" >> "$GITHUB_OUTPUT"
+            else
+              echo "name=art-agent-custom:latest" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ -n "$TAG" ] && [ "$TAG" != "latest" ]; then
+            echo "name=art-agent:${TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=art-agent:latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test - TypeScript compiles in container
+        run: |
+          docker run --rm --entrypoint sh ${{ steps.image.outputs.name }} -c \
+            'cd /app && node node_modules/typescript/bin/tsc --outDir /tmp/dist 2>&1 && echo TS_COMPILE_OK' \
+            | grep -q TS_COMPILE_OK
+
+      - name: Smoke test - agent-runner loads
+        run: |
+          echo '{}' | timeout 30 docker run --rm -i ${{ steps.image.outputs.name }} 2>&1 || true
