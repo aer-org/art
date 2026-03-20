@@ -47,8 +47,10 @@ export function useAgentChat(): UseAgentChatReturn {
         if (data.type === 'connected') {
           retryDelayRef.current = 1000;
           setAgentRunning(data.agentRunning);
-          if (data.agentRunning) {
+          if (data.agentRunning && !data.waitingForInput) {
             setIsStreaming(true);
+          } else {
+            setIsStreaming(false);
           }
         } else if (data.type === 'history_segment') {
           // Replay saved segment from server

@@ -95,6 +95,7 @@ export async function startEditorServer(
   let agentProcess: ChildProcess | null = null;
   let agentContainerName = '';
   let agentRunning = false;
+  let waitingForInput = false; // true when agent is in IPC wait (ready for user input)
   let ipcInputDir = '';
   let parseBuffer = '';
   // SSE clients waiting for agent output
@@ -208,6 +209,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     };
 
     agentRunning = true;
+    waitingForInput = false;
     parseBuffer = '';
     lastSegmentIsText = false;
 
@@ -268,6 +270,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           }
         } else {
           // result=null → agent entered IPC wait, unlock client input
+          waitingForInput = true;
           for (const client of sseClients) {
             sseWrite(client, { type: 'ready' });
           }
@@ -663,6 +666,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
         // Mark any running tools as done before recording user message
         markRunningToolsDone();
+        waitingForInput = false;
         chatHistory.push({ type: 'user', content: message });
         lastSegmentIsText = false;
 
@@ -688,7 +692,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       sseClients.add(res);
 
       // Send initial state
-      sseWrite(res, { type: 'connected', agentRunning });
+      sseWrite(res, { type: 'connected', agentRunning, waitingForInput });
 
       // Replay chat history as segments
       for (const seg of chatHistory) {
@@ -716,7 +720,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
       if (agentRunning && lastSegmentIsText) {
         sseWrite(res, { type: 'history_streaming' });
       }
-      sseWrite(res, { type: 'history_end', streaming: agentRunning });
+      sseWrite(res, {
+        type: 'history_end',
+        streaming: agentRunning && !waitingForInput,
+      });
 
       req.on('close', () => {
         sseClients.delete(res);

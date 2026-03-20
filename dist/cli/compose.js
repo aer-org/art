@@ -57,6 +57,7 @@ export async function startEditorServer(artDir, mode, projectDir) {
     let agentProcess = null;
     let agentContainerName = '';
     let agentRunning = false;
+    let waitingForInput = false; // true when agent is in IPC wait (ready for user input)
     let ipcInputDir = '';
     let parseBuffer = '';
     // SSE clients waiting for agent output
@@ -158,6 +159,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             sessionId: savedSessionId,
         };
         agentRunning = true;
+        waitingForInput = false;
         parseBuffer = '';
         lastSegmentIsText = false;
         // Start the credential proxy for container auth
@@ -213,6 +215,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             }
             else {
                 // result=null → agent entered IPC wait, unlock client input
+                waitingForInput = true;
                 for (const client of sseClients) {
                     sseWrite(client, { type: 'ready' });
                 }
@@ -593,6 +596,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 }
                 // Mark any running tools as done before recording user message
                 markRunningToolsDone();
+                waitingForInput = false;
                 chatHistory.push({ type: 'user', content: message });
                 lastSegmentIsText = false;
                 // Write IPC input file for the container agent to pick up
@@ -612,7 +616,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             sseHeaders(res);
             sseClients.add(res);
             // Send initial state
-            sseWrite(res, { type: 'connected', agentRunning });
+            sseWrite(res, { type: 'connected', agentRunning, waitingForInput });
             // Replay chat history as segments
             for (const seg of chatHistory) {
                 if (seg.type === 'user') {
@@ -641,7 +645,10 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             if (agentRunning && lastSegmentIsText) {
                 sseWrite(res, { type: 'history_streaming' });
             }
-            sseWrite(res, { type: 'history_end', streaming: agentRunning });
+            sseWrite(res, {
+                type: 'history_end',
+                streaming: agentRunning && !waitingForInput,
+            });
             req.on('close', () => {
                 sseClients.delete(res);
             });
