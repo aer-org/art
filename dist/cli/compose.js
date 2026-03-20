@@ -324,22 +324,26 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     }
     /** Kill the agent container, waiting for it to exit. */
     async function killAgent() {
-        if (agentContainerName) {
+        // Capture before the close event handler can clear them (race condition
+        // when SIGINT is delivered to both parent and child simultaneously).
+        const name = agentContainerName;
+        const proc = agentProcess;
+        if (name) {
             // Stop the container directly by name — this is the only reliable way.
             // Sending SIGTERM to the docker run CLI process just disconnects it;
             // the container itself keeps running.
             const { getRuntimeBin } = await import('../container-runtime.js');
             const bin = getRuntimeBin();
             await new Promise((resolve) => {
-                const stop = spawn(bin, ['stop', '-t', '3', agentContainerName], {
+                const stop = spawn(bin, ['stop', '-t', '3', name], {
                     stdio: 'ignore',
                 });
                 stop.on('close', () => resolve());
             });
         }
-        else if (agentProcess) {
+        else if (proc) {
             // No container name yet (still starting) — kill the process directly
-            agentProcess.kill('SIGTERM');
+            proc.kill('SIGTERM');
         }
     }
     const server = http.createServer(async (req, res) => {
@@ -580,13 +584,25 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             // Replay chat history as segments
             for (const seg of chatHistory) {
                 if (seg.type === 'user') {
-                    sseWrite(res, { type: 'history_segment', segmentType: 'user', content: seg.content });
+                    sseWrite(res, {
+                        type: 'history_segment',
+                        segmentType: 'user',
+                        content: seg.content,
+                    });
                 }
                 else if (seg.type === 'text') {
-                    sseWrite(res, { type: 'history_segment', segmentType: 'text', content: seg.content });
+                    sseWrite(res, {
+                        type: 'history_segment',
+                        segmentType: 'text',
+                        content: seg.content,
+                    });
                 }
                 else if (seg.type === 'tool') {
-                    sseWrite(res, { type: 'history_segment', segmentType: 'tool', tool: seg.tool });
+                    sseWrite(res, {
+                        type: 'history_segment',
+                        segmentType: 'tool',
+                        tool: seg.tool,
+                    });
                 }
             }
             // If the agent is still streaming text, tell the client

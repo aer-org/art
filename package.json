@@ -2,10 +2,12 @@
   "name": "@aer-org/art",
   "version": "0.1.0",
   "description": "ART — Agent Runtime for software projects",
+  "license": "AGPL-3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/aer-org/art.git"
   },
+  "license": "AGPL-3.0",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -19,7 +21,7 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:fix": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
-    "prepare": "node -e \"try{require('husky')}catch{process.exit(0)}\" && husky || true",
+    "prepare": "npm run build && node -e \"try{require('husky')}catch{process.exit(0)}\" && husky || true",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -47,5 +49,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
