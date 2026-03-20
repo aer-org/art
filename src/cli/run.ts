@@ -77,7 +77,7 @@ export async function run(targetDir: string): Promise<void> {
 
   if (!fs.existsSync(artDir)) {
     console.error(
-      `No ${artDirName}/ found in ${projectDir}. Run 'art init .' first.`,
+      `No ${artDirName}/ found in ${projectDir}. Run 'art compose .' first.`,
     );
     process.exit(1);
   }

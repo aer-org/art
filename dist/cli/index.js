@@ -3,8 +3,9 @@ const [command, ...args] = process.argv.slice(2);
 async function main() {
     switch (command) {
         case 'init': {
-            const { init } = await import('./init.js');
-            await init(args[0] || '.');
+            console.log(`'art init' has been merged into 'art compose'. Redirecting...\n`);
+            const { compose } = await import('./compose.js');
+            await compose(args[0] || '.');
             break;
         }
         case 'run': {
@@ -26,8 +27,7 @@ async function main() {
             console.log(`aer-art — AI agent pipeline runner
 
 Usage:
-  art init [dir]      Initialize __art__/ in a project directory
-  art compose [dir]   Open visual pipeline editor in browser
+  art compose [dir]   Initialize (if needed) and open pipeline editor
   art run [dir]       Start the agent pipeline engine
   art update          Pull latest container images from registry`);
             if (command && command !== 'help' && command !== '--help') {

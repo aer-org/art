@@ -44,7 +44,7 @@ export async function onboard(targetDir: string): Promise<void> {
 
   if (!fs.existsSync(artDir)) {
     console.error(
-      `No ${ART_DIR_NAME}/ found in ${projectDir}. Run 'art init .' first.`,
+      `No ${ART_DIR_NAME}/ found in ${projectDir}. Run 'art compose .' first.`,
     );
     process.exit(1);
   }

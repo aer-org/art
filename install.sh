@@ -91,7 +91,6 @@ fi
 echo "Done! art CLI installed at $BIN_DIR/$BIN_NAME"
 echo ""
 echo "Usage:"
-echo "  art init [dir]    Initialize __art__/ in a project"
-echo "  art compose [dir] Open visual pipeline editor in browser"
+echo "  art compose [dir]  Initialize (if needed) and open pipeline editor"
 echo "  art run [dir]     Run the agent pipeline"
 echo "  art update        Pull latest container images"

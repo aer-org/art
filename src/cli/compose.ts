@@ -1198,20 +1198,52 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 }
 
 export async function compose(targetDir: string): Promise<void> {
+  const readline = await import('readline');
   const projectDir = path.resolve(targetDir);
   const artDir = path.join(projectDir, ART_DIR_NAME);
 
   if (!fs.existsSync(artDir)) {
-    console.error(
-      `No ${ART_DIR_NAME}/ found in ${projectDir}. Run 'art init .' first.`,
+    // No __art__/ — offer to initialize
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    const answer = await new Promise<string>((resolve) =>
+      rl.question(
+        `No ${ART_DIR_NAME}/ found. Initialize project? (y/N): `,
+        resolve,
+      ),
     );
-    process.exit(1);
+    rl.close();
+
+    if (answer.trim().toLowerCase() !== 'y') {
+      console.log('Cancelled.');
+      return;
+    }
+
+    const { scaffoldArtDir, ensureContainerImage } = await import('./init.js');
+    scaffoldArtDir(projectDir);
+
+    await ensureAuth();
+
+    // Set TUI env vars early so logger routes to file before any engine import
+    process.env.ART_TUI_MODE = 'true';
+    process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
+
+    const { engineRoot, runtimeBin } = await setupEngine({
+      projectDir,
+      artDir,
+    });
+    await ensureContainerImage(runtimeBin, engineRoot);
+
+    await startEditorServer(artDir, 'init', projectDir);
+    return;
   }
 
   const pipelineFile = path.join(artDir, 'PIPELINE.json');
   if (!fs.existsSync(pipelineFile)) {
     console.error(
-      `No PIPELINE.json found in ${artDir}. Run 'art init .' first.`,
+      `No PIPELINE.json found in ${artDir}. Run 'art compose .' to re-initialize.`,
     );
     process.exit(1);
   }

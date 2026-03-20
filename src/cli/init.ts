@@ -6,8 +6,6 @@ import readline from 'readline';
 import { ART_DIR_NAME, CONTAINER_IMAGE } from '../config.js';
 import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
-import { ensureAuth } from './auth.js';
-import { startEditorServer } from './compose.js';
 
 const DEFAULT_TEMPLATE_NAMES = ['build', 'test', 'review', 'history'];
 
@@ -43,28 +41,9 @@ function buildStages(): Stage[] {
   return stages;
 }
 
-export async function init(targetDir: string): Promise<void> {
-  const projectDir = path.resolve(targetDir);
+/** Create __art__/ directory structure, pipeline config, and .gitignore */
+export function scaffoldArtDir(projectDir: string): void {
   const artDir = path.join(projectDir, ART_DIR_NAME);
-
-  if (fs.existsSync(artDir)) {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    const answer = await new Promise<string>((resolve) =>
-      rl.question(
-        `${ART_DIR_NAME}/ already exists. Remove and re-initialize? (y/N): `,
-        resolve,
-      ),
-    );
-    rl.close();
-    if (answer.trim().toLowerCase() !== 'y') {
-      console.log('Cancelled.');
-      return;
-    }
-    fs.rmSync(artDir, { recursive: true, force: true });
-  }
 
   console.log(`\nSetting up ${ART_DIR_NAME}/ in ${projectDir}\n`);
 
@@ -139,19 +118,13 @@ export async function init(targetDir: string): Promise<void> {
     };
     saveImageRegistry(registry);
   }
+}
 
-  // Ensure Claude authentication before launching editor
-  await ensureAuth();
-
-  // Set TUI env vars early so logger routes to file before any engine import
-  process.env.ART_TUI_MODE = 'true';
-  process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
-
-  // Setup engine for container agent
-  const { setupEngine } = await import('./engine-setup.js');
-  const { engineRoot, runtimeBin } = await setupEngine({ projectDir, artDir });
-
-  // Ensure default agent container image exists; prompt to build if missing
+/** Check if container image exists; prompt to build if missing */
+export async function ensureContainerImage(
+  runtimeBin: string,
+  engineRoot: string,
+): Promise<void> {
   let hasDefaultImage = false;
   try {
     execSync(`${runtimeBin} image inspect ${CONTAINER_IMAGE}`, {
@@ -164,19 +137,19 @@ export async function init(targetDir: string): Promise<void> {
   }
 
   if (!hasDefaultImage) {
-    const rl2 = readline.createInterface({
+    const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
     const answer = process.stdin.isTTY
       ? await new Promise<string>((resolve) =>
-          rl2.question(
+          rl.question(
             `\nAgent 컨테이너 이미지를 빌드하시겠습니까? (${CONTAINER_IMAGE}) (y/N): `,
             resolve,
           ),
         )
       : 'y';
-    rl2.close();
+    rl.close();
 
     if (answer.trim().toLowerCase() === 'y') {
       const scriptDir = path.resolve(engineRoot, 'container');
@@ -188,7 +161,4 @@ export async function init(targetDir: string): Promise<void> {
       });
     }
   }
-
-  // Launch GUI editor with container agent onboarding
-  await startEditorServer(artDir, 'init', projectDir);
 }

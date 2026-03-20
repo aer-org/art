@@ -12,7 +12,7 @@ export async function update() {
     const registry = loadImageRegistry();
     const images = Object.entries(registry);
     if (images.length === 0) {
-        console.log('No images registered. Run `art init` first.');
+        console.log('No images registered. Run `art compose` first.');
         return;
     }
     // Derive engine root for build script path
