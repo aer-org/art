@@ -11,14 +11,14 @@ Run `/update-aer-art` in Claude Code.
 
 ## How it works
 
-**Preflight**: checks for clean working tree (`git status --porcelain`). If `upstream` remote is missing, asks you for the URL (defaults to `https://github.com/qwibitai/aer-art.git`) and adds it. Detects the upstream branch name (`main` or `master`).
+**Preflight**: checks for clean working tree (`git status --porcelain`). If `upstream` remote is missing, asks you for the URL (defaults to `https://github.com/aer-org/art.git`) and adds it. Detects the upstream branch name (`main` or `master`).
 
 **Backup**: creates a timestamped backup branch and tag (`backup/pre-update-<hash>-<timestamp>`, `pre-update-<hash>-<timestamp>`) before touching anything. Safe to run multiple times.
 
 **Preview**: runs `git log` and `git diff` against the merge base to show upstream changes since your last sync. Groups changed files into categories:
 - **Skills** (`.claude/skills/`): unlikely to conflict unless you edited an upstream skill
-- **Source** (`src/`): may conflict if you modified the same files
-- **Build/config** (`package.json`, `tsconfig*.json`, `container/`): review needed
+- **Source** (`src/`, `container/`): may conflict if you modified the same files
+- **Build/config** (`package.json`, `tsconfig*.json`): review needed
 
 **Update paths** (you pick one):
 - `merge` (default): `git merge upstream/<branch>`. Resolves all conflicts in one pass.
@@ -68,7 +68,7 @@ If output is non-empty:
 Confirm remotes:
 - `git remote -v`
 If `upstream` is missing:
-- Ask the user for the upstream repo URL (default: `https://github.com/qwibitai/aer-art.git`).
+- Ask the user for the upstream repo URL (default: `https://github.com/aer-org/art.git`).
 - Add it: `git remote add upstream <user-provided-url>`
 - Then: `git fetch upstream --prune`
 
@@ -109,7 +109,7 @@ Show file-level impact from upstream:
 Bucket the upstream changed files:
 - **Skills** (`.claude/skills/`): unlikely to conflict unless the user edited an upstream skill
 - **Source** (`src/`): may conflict if user modified the same files
-- **Build/config** (`package.json`, `package-lock.json`, `tsconfig*.json`, `container/`, `launchd/`): review needed
+- **Build/config** (`package.json`, `package-lock.json`, `tsconfig*.json`): review needed
 - **Other**: docs, tests, misc
 
 Present these buckets to the user and ask them to choose one path using AskUserQuestion:
@@ -201,7 +201,7 @@ If one or more `[BREAKING]` lines are found:
 - For each breaking change, display the full description.
 - Collect all skill names referenced in the breaking change entries (the `/<skill-name>` part).
 - Use AskUserQuestion to ask the user which migration skills they want to run now. Options:
-  - One option per referenced skill (e.g., "Run /add-whatsapp to re-add WhatsApp channel")
+  - One option per referenced skill
   - "Skip — I'll handle these manually"
 - Set `multiSelect: true` so the user can pick multiple skills if there are several breaking changes.
 - For each skill the user selects, invoke it using the Skill tool.
@@ -230,6 +230,4 @@ Show:
 Tell the user:
 - To rollback: `git reset --hard <backup-tag-from-step-1>`
 - Backup branch also exists: `backup/pre-update-<HASH>-<TIMESTAMP>`
-- Restart the service to apply changes:
-  - If using launchd: `launchctl unload ~/Library/LaunchAgents/com.aer-art.plist && launchctl load ~/Library/LaunchAgents/com.aer-art.plist`
-  - If running manually: restart `npm run dev`
+- Rebuild after update: `npm run build && ./container/build.sh`

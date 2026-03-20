@@ -58,7 +58,7 @@ git remote -v
 If `upstream` is missing, add it:
 
 ```bash
-git remote add upstream https://github.com/qwibitai/aer-art.git
+git remote add upstream https://github.com/aer-org/art.git
 ```
 
 ### Merge the skill branch
@@ -136,10 +136,8 @@ Expected: Both operations succeed.
 
 ```bash
 npm run build
-launchctl kickstart -k gui/$(id -u)/com.aer-art
+art compose  # verify the agent starts and responds
 ```
-
-Send a message via WhatsApp and verify the agent responds.
 
 ## Troubleshooting
 

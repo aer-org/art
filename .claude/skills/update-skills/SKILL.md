@@ -42,7 +42,7 @@ Check remotes:
 - `git remote -v`
 
 If `upstream` is missing:
-- Ask the user for the upstream repo URL (default: `https://github.com/qwibitai/aer-art.git`).
+- Ask the user for the upstream repo URL (default: `https://github.com/aer-org/art.git`).
 - `git remote add upstream <url>`
 
 Fetch:
