@@ -4,10 +4,11 @@
 
 | Entity | Trust Level | Rationale |
 |--------|-------------|-----------|
-| Main group | Trusted | Private self-chat, admin control |
-| Non-main groups | Untrusted | Other users may be malicious |
-| Container agents | Sandboxed | Isolated execution environment |
-| WhatsApp messages | User input | Potential prompt injection |
+| Host process | Trusted | Runs on the user's machine, manages containers and credentials |
+| Container agents | Untrusted | Isolated execution; constrained by mounts and credential proxy |
+| User input (prompts, PIPELINE.json) | Trusted | Written by the pipeline author |
+
+The core security boundary is **host vs container**. The host controls what each container can see (mounts), what credentials it can use (credential proxy), and how long it runs (timeouts).
 
 ## Security Boundaries
 
@@ -21,7 +22,9 @@ Agents execute in containers (lightweight Linux VMs), providing:
 
 This is the primary security boundary. Rather than relying on application-level permission checks, the attack surface is limited by what's mounted.
 
-### 2. Mount Security
+### 2. Mount Security (Permission Boundary)
+
+Mount permissions control what each stage can access. This is the main mechanism for constraining agent behavior.
 
 **External Allowlist** - Mount permissions stored at `~/.config/aer-art/mount-allowlist.json`, which is:
 - Outside project root
@@ -38,33 +41,16 @@ private_key, .secret
 **Protections:**
 - Symlink resolution before validation (prevents traversal attacks)
 - Container path validation (rejects `..` and absolute paths)
-- `nonMainReadOnly` option forces read-only for non-main groups
 
 **Read-Only Project Root:**
 
-The main group's project root is mounted read-only. Writable paths the agent needs (group folder, IPC, `.claude/`) are mounted separately. This prevents the agent from modifying host application code (`src/`, `dist/`, `package.json`, etc.) which would bypass the sandbox entirely on next restart.
+The project root is mounted read-only. Writable paths the agent needs (`__art__/` subdirectories, `.claude/`) are mounted separately. This prevents the agent from modifying host application code (`src/`, `dist/`, `package.json`, etc.) which would bypass the sandbox entirely on next restart.
 
-### 3. Session Isolation
+**Per-Stage Mount Policies:**
 
-Each group has isolated Claude sessions at `data/sessions/{group}/.claude/`:
-- Groups cannot see other groups' conversation history
-- Session data includes full message history and file contents read
-- Prevents cross-group information disclosure
+Each stage declares which `__art__/` subdirectories are rw, ro, or hidden (not mounted). Stage templates enforce default policies; `PIPELINE.json` can override them. This provides adversarial separation — build agents cannot see test scripts, test agents cannot see plans.
 
-### 4. IPC Authorization
-
-Messages and task operations are verified against group identity:
-
-| Operation | Main Group | Non-Main Group |
-|-----------|------------|----------------|
-| Send message to own chat | ✓ | ✓ |
-| Send message to other chats | ✓ | ✗ |
-| Schedule task for self | ✓ | ✓ |
-| Schedule task for others | ✓ | ✗ |
-| View all tasks | ✓ | Own only |
-| Manage other groups | ✓ | ✗ |
-
-### 5. Credential Isolation (Credential Proxy)
+### 3. Credential Isolation (Auth Boundary)
 
 Real API credentials **never enter containers**. Instead, the host runs an HTTP credential proxy that injects authentication headers transparently.
 
@@ -76,12 +62,11 @@ Real API credentials **never enter containers**. Instead, the host runs an HTTP 
 5. Agents cannot discover real credentials — not in environment, stdin, files, or `/proc`
 
 **NOT Mounted:**
-- WhatsApp session (`store/auth/`) - host only
 - Mount allowlist - external, never mounted
 - Any credentials matching blocked patterns
 - `.env` is shadowed with `/dev/null` in the project root mount
 
-### 6. Pipeline Stage Isolation
+### 4. Pipeline Stage Isolation
 
 Each pipeline stage runs in its own ephemeral container with independent mount configuration:
 
@@ -90,49 +75,32 @@ Each pipeline stage runs in its own ephemeral container with independent mount c
 - **Stage templates** enforce mount policies by default (overridable in `PIPELINE.json`)
 - **Command mode** stages (`sh -c`) get the same mount isolation as agent-mode stages
 
-### 7. Run ID Container Cleanup
+### 5. Run ID Container Cleanup
 
 Each container spawned during a pipeline run is labeled with `art-run-id={runId}`:
 - On normal completion, containers are auto-removed (`--rm`)
 - On abnormal termination (SIGKILL, crash), orphan containers are bulk-cleaned by label via `cleanupRunContainers()`
 - `_current.json` tracks the active run's PID; stale PIDs are detected and cleaned up automatically
 
-### 8. Dynamic Port Allocation
+### 6. Dynamic Port Allocation
 
 The credential proxy and editor server use dynamic port allocation (binding to port 0) to avoid `EADDRINUSE` conflicts. The actual port is read back after binding and passed to containers via environment variables.
-
-## Privilege Comparison
-
-| Capability | Main Group | Non-Main Group |
-|------------|------------|----------------|
-| Project root access | `/workspace/project` (ro) | None |
-| Group folder | `/workspace/group` (rw) | `/workspace/group` (rw) |
-| Global memory | Implicit via project | `/workspace/global` (ro) |
-| Additional mounts | Configurable | Read-only unless allowed |
-| Network access | Unrestricted | Unrestricted |
-| MCP tools | All | All |
 
 ## Security Architecture Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        UNTRUSTED ZONE                             │
-│  WhatsApp Messages (potentially malicious)                        │
-└────────────────────────────────┬─────────────────────────────────┘
-                                 │
-                                 ▼ Trigger check, input escaping
-┌──────────────────────────────────────────────────────────────────┐
 │                     HOST PROCESS (TRUSTED)                        │
-│  • Message routing                                                │
-│  • IPC authorization                                              │
-│  • Mount validation (external allowlist)                          │
-│  • Container lifecycle                                            │
+│  • Pipeline FSM (stage transitions)                              │
+│  • Mount validation (external allowlist)                         │
+│  • Container lifecycle management                                │
 │  • Credential proxy (injects auth headers)                       │
+│  • Output streaming and marker parsing                           │
 └────────────────────────────────┬─────────────────────────────────┘
                                  │
                                  ▼ Explicit mounts only, no secrets
 ┌──────────────────────────────────────────────────────────────────┐
-│                CONTAINER (ISOLATED/SANDBOXED)                     │
+│                CONTAINER (ISOLATED/UNTRUSTED)                     │
 │  • Agent execution                                                │
 │  • Bash commands (sandboxed)                                      │
 │  • File operations (limited to mounts)                            │

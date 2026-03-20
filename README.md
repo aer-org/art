@@ -140,7 +140,7 @@ Agents run in containers with minimal access:
 - **File-level mount permissions** — project defaults to read-only; specific files/directories can be granted write access per stage
 - **`.env` shadowed with `/dev/null`** — secrets never exposed inside containers
 - **Credential proxy** — containers never see real API keys; a host-side proxy injects credentials per-request
-- **Per-group IPC isolation** — groups cannot access each other's files
+- **Per-stage isolation** — each stage gets independent mount configuration
 - **Mount allowlist** — additional mounts validated against external allowlist
 
 ART is designed to reduce accidental access and constrain agent execution, but it is not a formal sandbox. See `docs/SECURITY.md` for the full trust model and known limitations.
@@ -227,8 +227,8 @@ ART is under active development. Core pipeline execution, the visual editor, and
 | `docs/PIPELINE-REFERENCE.md` | PIPELINE.json field reference — stages, mounts, transitions, command mode |
 | `docs/ARCHITECTURE.md` | System architecture — pipeline FSM, container runtime, mount isolation |
 | `docs/REQUIREMENTS.md` | Design philosophy and decisions |
-| `docs/SECURITY.md` | Trust model, mount isolation, credential proxy, known limitations |
-| `docs/docker-sandboxes.md` | Running ART inside Docker Sandboxes (nested isolation) |
+| `docs/SECURITY.md` | Trust model, mount isolation, credential proxy |
+| `docs/TESTING.md` | Test files, mocking patterns, CI configuration |
 
 ---
 

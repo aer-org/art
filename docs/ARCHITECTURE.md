@@ -1,7 +1,7 @@
 # AerArt Architecture Guide
 
 A comprehensive guide to AerArt's core mechanisms for newcomers.
-See `REQUIREMENTS.md` for design philosophy and `skills-as-branches.md` for skill distribution.
+See `REQUIREMENTS.md` for design philosophy and `PIPELINE-REFERENCE.md` for pipeline JSON schema.
 
 ---
 
@@ -10,10 +10,10 @@ See `REQUIREMENTS.md` for design philosophy and `skills-as-branches.md` for skil
 ```
 art init    → creates __art__/ scaffold + PIPELINE.json + builds agent image
 art compose → browser-based pipeline editor (configuration only, no execution)
-art run     → executes pipeline: per-stage containers → IPC → transitions → done
+art run     → executes pipeline: per-stage containers → markers → transitions → done
 ```
 
-A single Node.js process handles message routing, container spawning, IPC processing, and scheduling.
+A single Node.js process handles container spawning, output streaming, marker parsing, and stage transitions.
 
 ---
 
@@ -168,11 +168,10 @@ Spawns containers and configures mounts, security, and IPC.
 | Mount | Permission | Purpose |
 |-------|-----------|---------|
 | Project root | ro | Prevent code modification (sandbox bypass protection) |
-| Group folder | rw | Agent workspace |
+| `__art__/` subdirectories | per-stage | rw/ro/null per stage template or PIPELINE.json |
 | `.env` → `/dev/null` | shadow | Prevent secret exposure |
-| `ipc/` | rw | Per-group isolated IPC channel |
 | `.claude/` | rw | Isolated Claude Code session |
-| Skill files | sync | `container/skills/` → per-group `.claude/skills/` |
+| Skill files | sync | `container/skills/` → `.claude/skills/` |
 | Pipeline internal mounts | direct | Bypasses security validation (pipeline is trusted) |
 | Additional mounts | validated | Checked against allowlist |
 
@@ -200,43 +199,7 @@ On abnormal termination, orphan containers are bulk-cleaned by label (`cleanupRu
 
 ---
 
-## 6. Channel System (`src/channels/`)
-
-Uses a self-registration pattern to add channels as plugins.
-
-### How It Works
-
-1. Each channel file (e.g., `telegram.ts`) calls `registerChannel(name, factory)` at module load
-2. `src/channels/index.ts` imports all channels → triggers registration
-3. On startup, `getChannelFactory(name)` is called → returns `null` if credentials are missing (auto-skip)
-
-Adding a new channel = write a channel file + add to barrel import. No core code changes needed.
-
----
-
-## 7. IPC System (`src/ipc.ts`)
-
-Filesystem-based host-container communication. Containers write JSON files; the host polls (500ms) and processes them.
-
-### Namespace
-
-`~/.aer-art/data/ipc/{group_folder}/{messages,tasks}/` — isolated per group
-
-### Supported Commands
-
-| Type | Function | Authorization |
-|------|----------|---------------|
-| `message` | Send message to a chat | main → any, others → own group only |
-| `schedule_task` | Schedule a task | others → own group, main → any |
-| `spawn_agent` | Spawn a sub-agent | all groups |
-| `register_group` | Register a new group | main only |
-| `report_issue` / `resolve_issue` | Pipeline issue tracking | per-group isolated |
-
-Processed files are deleted. Errors are moved to `ipc/errors/`.
-
----
-
-## 8. Image Registry (`src/image-registry.ts`)
+## 6. Image Registry (`src/image-registry.ts`)
 
 Stores image key → spec mappings in `~/.config/aer-art/images.json`.
 
@@ -253,7 +216,7 @@ Stores image key → spec mappings in `~/.config/aer-art/images.json`.
 
 ---
 
-## 9. Team Editor / Dashboard (`team-editor/`)
+## 7. Team Editor / Dashboard (`team-editor/`)
 
 ReactFlow-based React SPA. Served by `art compose`.
 
@@ -281,36 +244,30 @@ ReactFlow-based React SPA. Served by `art compose`.
 
 ---
 
-## 10. Remote Control (`src/remote-control.ts`)
-
-Allows container agents to spawn a host-level Claude Code session.
-
-1. Container sends `remote_control_start` via IPC
-2. Host spawns a detached `claude remote-control` process
-3. Extracts `https://claude.ai/code*` URL from stdout (30s timeout)
-4. Saves URL to `~/.aer-art/data/remote-control.json`, returns to agent
-5. Only one active session at a time. On host restart, PID is checked and restored
-
----
-
 ## File Map
 
 | File | Role |
 |------|------|
-| `src/index.ts` | Orchestrator: state, message loop, agent invocation |
+| `src/run-engine.ts` | Minimal pipeline execution engine for `art run` |
 | `src/pipeline-runner.ts` | Pipeline FSM, run manifest, stage execution |
 | `src/container-runner.ts` | Container spawning, mount/security configuration |
 | `src/container-runtime.ts` | Runtime abstraction (Docker/Podman/udocker) |
 | `src/credential-proxy.ts` | API credential proxy |
 | `src/image-registry.ts` | Image registry CRUD |
 | `src/stage-templates.ts` | Stage prompt templates |
-| `src/channels/registry.ts` | Channel self-registration |
-| `src/ipc.ts` | Filesystem-based IPC |
-| `src/remote-control.ts` | Host-level Claude Code remote access |
+| `src/mount-security.ts` | Mount allowlist and blocked-pattern enforcement |
+| `src/mount-validation.ts` | Mount path validation utilities |
+| `src/group-folder.ts` | Workspace path resolution and traversal defense |
+| `src/config.ts` | Paths, intervals, image registry path |
+| `src/env.ts` | Environment variable handling |
+| `src/logger.ts` | Logging utilities |
+| `src/types.ts` | Shared TypeScript types |
+| `src/cli/index.ts` | CLI entry point and command registration |
 | `src/cli/init.ts` | `art init` command |
 | `src/cli/compose.ts` | `art compose` editor server |
 | `src/cli/run.ts` | `art run` pipeline execution |
 | `src/cli/auth.ts` | Auth token management |
+| `src/cli/update.ts` | `art update` command |
 | `team-editor/` | React-based pipeline editor SPA |
 | `container/build.sh` | Agent container image build |
 | `install.sh` | One-line CLI installation script |
