@@ -2,8 +2,7 @@
 
 ```bash
 cd my-project
-art init .                    # Scaffold __art__/ with default pipeline
-art compose .                 # Visual pipeline editor (browser UI)
+art compose .                 # Initialize (if needed) and open pipeline editor
 art run .                     # Execute pipeline in Docker-isolated containers
 ```
 
@@ -78,8 +77,7 @@ ln -s ~/.art/dist/cli/index.js ~/.local/bin/art
 ## CLI Reference
 
 ```bash
-art init <path>              # Scaffold __art__/ with default pipeline + onboarding editor
-art compose <path>           # Visual pipeline editor (browser-based, does not execute)
+art compose <path>           # Initialize (if needed) and open visual pipeline editor
 art run <path>               # Execute pipeline — sequential stage containers
 art update                   # Rebuild all images in the registry
 ```
