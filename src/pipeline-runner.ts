@@ -265,7 +265,7 @@ interface StageHandle {
  * Parse stage markers dynamically from the stage's transitions array.
  * Matches `[MARKER]` or `[MARKER: payload]` patterns, first match wins.
  */
-function parseStageMarkers(
+export function parseStageMarkers(
   resultTexts: string[],
   transitions: PipelineTransition[],
 ): StageMarkerResult {

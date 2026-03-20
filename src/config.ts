@@ -1,21 +1,6 @@
 import os from 'os';
 import path from 'path';
 
-import { readEnvFile } from './env.js';
-
-// Read config values from .env (falls back to process.env).
-// Secrets (API keys, tokens) are NOT read here — they are loaded only
-// by the credential proxy (credential-proxy.ts), never exposed to containers.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
-
-export const ASSISTANT_NAME =
-  process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
-export const ASSISTANT_HAS_OWN_NUMBER =
-  (process.env.ASSISTANT_HAS_OWN_NUMBER ||
-    envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
-export const POLL_INTERVAL = 2000;
-export const SCHEDULER_POLL_INTERVAL = 60000;
-
 // Absolute paths needed for container mounts
 let PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
@@ -28,12 +13,6 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
   '.config',
   'aer-art',
   'mount-allowlist.json',
-);
-export const SENDER_ALLOWLIST_PATH = path.join(
-  HOME_DIR,
-  '.config',
-  'aer-art',
-  'sender-allowlist.json',
 );
 export const IMAGE_REGISTRY_PATH = path.join(
   HOME_DIR,
@@ -87,26 +66,11 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
   process.env.CREDENTIAL_PROXY_PORT || '3001',
   10,
 );
-export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(
   process.env.IDLE_TIMEOUT || '2147483647',
   10,
 ); // ~24.8 days — effectively infinite
-export const MAX_CONCURRENT_CONTAINERS = Math.max(
-  1,
-  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
-);
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
-  'i',
-);
-
-// Timezone for scheduled tasks (cron expressions, etc.)
-// Uses system timezone by default
+// Timezone — used by pipeline-runner for stage timestamps
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
