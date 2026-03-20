@@ -5,7 +5,9 @@ const [command, ...args] = process.argv.slice(2);
 async function main(): Promise<void> {
   switch (command) {
     case 'init': {
-      console.log(`'art init' has been merged into 'art compose'. Redirecting...\n`);
+      console.log(
+        `'art init' has been merged into 'art compose'. Redirecting...\n`,
+      );
       const { compose } = await import('./compose.js');
       await compose(args[0] || '.');
       break;

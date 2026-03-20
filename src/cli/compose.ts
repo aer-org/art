@@ -1209,7 +1209,10 @@ export async function compose(targetDir: string): Promise<void> {
       output: process.stdout,
     });
     const answer = await new Promise<string>((resolve) =>
-      rl.question(`No ${ART_DIR_NAME}/ found. Initialize project? (y/N): `, resolve),
+      rl.question(
+        `No ${ART_DIR_NAME}/ found. Initialize project? (y/N): `,
+        resolve,
+      ),
     );
     rl.close();
 
@@ -1227,7 +1230,10 @@ export async function compose(targetDir: string): Promise<void> {
     process.env.ART_TUI_MODE = 'true';
     process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
 
-    const { engineRoot, runtimeBin } = await setupEngine({ projectDir, artDir });
+    const { engineRoot, runtimeBin } = await setupEngine({
+      projectDir,
+      artDir,
+    });
     await ensureContainerImage(runtimeBin, engineRoot);
 
     await startEditorServer(artDir, 'init', projectDir);

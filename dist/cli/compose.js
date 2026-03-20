@@ -1107,7 +1107,10 @@ export async function compose(targetDir) {
         // Set TUI env vars early so logger routes to file before any engine import
         process.env.ART_TUI_MODE = 'true';
         process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
-        const { engineRoot, runtimeBin } = await setupEngine({ projectDir, artDir });
+        const { engineRoot, runtimeBin } = await setupEngine({
+            projectDir,
+            artDir,
+        });
         await ensureContainerImage(runtimeBin, engineRoot);
         await startEditorServer(artDir, 'init', projectDir);
         return;
