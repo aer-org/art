@@ -55,10 +55,16 @@ export async function runPipeline(opts: {
 
   // Graceful shutdown
   let shuttingDown = false;
-  const shutdown = (signal: string) => {
+  const activeRunners: PipelineRunner[] = [];
+  const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
+    await Promise.allSettled(activeRunners.map((r) => r.abort()));
+    try {
+      const { cleanupRunContainers } = await import('./container-runtime.js');
+      cleanupRunContainers(runId);
+    } catch { /* best effort */ }
     proxyServer.close();
     process.exit(1);
   };
@@ -110,6 +116,7 @@ export async function runPipeline(opts: {
           agentGroupDir,
           runId,
         );
+        activeRunners.push(runner);
         return runner.run();
       }),
     );
@@ -138,6 +145,7 @@ export async function runPipeline(opts: {
     undefined,
     runId,
   );
+  activeRunners.push(runner);
   const result = await runner.run();
 
   proxyServer.close();

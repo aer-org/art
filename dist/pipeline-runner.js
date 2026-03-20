@@ -148,7 +148,7 @@ export function loadPipelineState(groupDir) {
  * Parse stage markers dynamically from the stage's transitions array.
  * Matches `[MARKER]` or `[MARKER: payload]` patterns, first match wins.
  */
-function parseStageMarkers(resultTexts, transitions) {
+export function parseStageMarkers(resultTexts, transitions) {
     const combined = resultTexts.join('\n');
     for (const transition of transitions) {
         // Match [MARKER] or [MARKER: payload]
@@ -210,6 +210,8 @@ export class PipelineRunner {
     groupDir;
     runId;
     manifest;
+    aborted = false;
+    currentHandle = null;
     constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId) {
         this.group = group;
         this.chatJid = chatJid;
@@ -229,6 +231,12 @@ export class PipelineRunner {
     getRunId() {
         return this.runId;
     }
+    async abort() {
+        this.aborted = true;
+        if (this.currentHandle) {
+            await this.closeAndWait(this.currentHandle);
+        }
+    }
     /** Send a visually prominent banner to TUI for stage transitions */
     async notifyBanner(text) {
         if (process.env.ART_TUI_MODE) {
@@ -247,8 +255,8 @@ export class PipelineRunner {
         const groupDir = this.groupDir;
         const mounts = [];
         for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-            if (key === 'project')
-                continue; // handled separately (different host path)
+            if (key === 'project' || key.startsWith('project:'))
+                continue; // handled separately
             if (!policy)
                 continue;
             const hostDir = path.join(groupDir, key);
@@ -292,6 +300,34 @@ export class PipelineRunner {
                 containerPath: `/workspace/project/${artDirName}`,
                 readonly: true,
             });
+            // Process project:* sub-mount overrides
+            const projectRoot = path.dirname(this.groupDir);
+            for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
+                if (!key.startsWith('project:'))
+                    continue;
+                const subPath = key.slice('project:'.length);
+                // Skip __art__/ paths (already shadowed above)
+                if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
+                    continue;
+                if (subPolicy === null) {
+                    // Disabled → shadow with empty dir
+                    internalMounts.push({
+                        hostPath: emptyDir,
+                        containerPath: `/workspace/project/${subPath}`,
+                        readonly: true,
+                    });
+                }
+                else if (subPolicy && subPolicy !== effectivePolicy) {
+                    // Different permission from root → overlay mount
+                    const subHostPath = path.join(projectRoot, subPath);
+                    internalMounts.push({
+                        hostPath: subHostPath,
+                        containerPath: `/workspace/project/${subPath}`,
+                        readonly: subPolicy === 'ro',
+                    });
+                }
+                // Same permission as root → inherited, no extra mount needed
+            }
         }
         // Resolve container image from registry (agent mode only)
         let resolvedImage;
@@ -567,10 +603,18 @@ export class PipelineRunner {
      */
     async closeAndWait(handle) {
         closeStage(handle);
-        await Promise.race([
-            handle.containerPromise,
-            new Promise((r) => setTimeout(r, 5000)),
+        const settled = await Promise.race([
+            handle.containerPromise.then(() => 'done'),
+            new Promise((r) => setTimeout(() => r('timeout'), 5000)),
         ]);
+        if (settled === 'timeout') {
+            logger.warn({ stage: handle.name }, 'Stage did not exit in 5s, force-stopping');
+            try {
+                const { cleanupRunContainers } = await import('./container-runtime.js');
+                cleanupRunContainers(this.runId);
+            }
+            catch { /* best effort */ }
+        }
     }
     /**
      * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
@@ -692,6 +736,8 @@ ${markerLines.join('\n')}`;
             status: 'running',
         });
         while (currentStageName !== null) {
+            if (this.aborted)
+                break;
             const stageConfig = stagesByName.get(currentStageName);
             if (!stageConfig) {
                 logger.error({ stage: currentStageName }, 'Stage config not found');
@@ -715,6 +761,7 @@ ${markerLines.join('\n')}`;
                 nextInitialPrompt = null;
                 const stageStartTime = Date.now();
                 const handle = this.spawnStageContainer(stageConfig, initialPrompt, pipelineLogStream);
+                this.currentHandle = handle;
                 handle.pendingResult = createDeferred();
                 logger.info({ stage: currentStageName }, 'Stage container spawned (on-demand)');
                 logger.info({ stage: currentStageName }, 'Entering stage');
@@ -787,6 +834,7 @@ ${markerLines.join('\n')}`;
                                 duration: Date.now() - stageStartTime,
                             });
                             await this.closeAndWait(handle);
+                            this.currentHandle = null;
                             currentStageName = null;
                             lastResult = 'error';
                             stageResolved = true;
@@ -825,6 +873,7 @@ ${markerLines.join('\n')}`;
                             status: 'running',
                         });
                         await this.closeAndWait(handle);
+                        this.currentHandle = null;
                         if (targetName) {
                             // Inject payload as context for the next stage
                             if (payload) {

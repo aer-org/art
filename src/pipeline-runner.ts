@@ -347,6 +347,8 @@ export class PipelineRunner {
   private groupDir: string;
   private runId: string;
   private manifest: RunManifest;
+  private aborted = false;
+  private currentHandle: StageHandle | null = null;
   constructor(
     group: RegisteredGroup,
     chatJid: string,
@@ -379,6 +381,13 @@ export class PipelineRunner {
     return this.runId;
   }
 
+  async abort(): Promise<void> {
+    this.aborted = true;
+    if (this.currentHandle) {
+      await this.closeAndWait(this.currentHandle);
+    }
+  }
+
   /** Send a visually prominent banner to TUI for stage transitions */
   private async notifyBanner(text: string): Promise<void> {
     if (process.env.ART_TUI_MODE) {
@@ -406,7 +415,7 @@ export class PipelineRunner {
     }> = [];
 
     for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-      if (key === 'project') continue; // handled separately (different host path)
+      if (key === 'project' || key.startsWith('project:')) continue; // handled separately
       if (!policy) continue;
 
       const hostDir = path.join(groupDir, key);
@@ -464,6 +473,33 @@ export class PipelineRunner {
         containerPath: `/workspace/project/${artDirName}`,
         readonly: true,
       });
+
+      // Process project:* sub-mount overrides
+      const projectRoot = path.dirname(this.groupDir);
+      for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
+        if (!key.startsWith('project:')) continue;
+        const subPath = key.slice('project:'.length);
+        // Skip __art__/ paths (already shadowed above)
+        if (subPath === artDirName || subPath.startsWith(artDirName + '/')) continue;
+
+        if (subPolicy === null) {
+          // Disabled → shadow with empty dir
+          internalMounts.push({
+            hostPath: emptyDir,
+            containerPath: `/workspace/project/${subPath}`,
+            readonly: true,
+          });
+        } else if (subPolicy && subPolicy !== effectivePolicy) {
+          // Different permission from root → overlay mount
+          const subHostPath = path.join(projectRoot, subPath);
+          internalMounts.push({
+            hostPath: subHostPath,
+            containerPath: `/workspace/project/${subPath}`,
+            readonly: subPolicy === 'ro',
+          });
+        }
+        // Same permission as root → inherited, no extra mount needed
+      }
     }
 
     // Resolve container image from registry (agent mode only)
@@ -812,10 +848,17 @@ export class PipelineRunner {
    */
   private async closeAndWait(handle: StageHandle): Promise<void> {
     closeStage(handle);
-    await Promise.race([
-      handle.containerPromise,
-      new Promise((r) => setTimeout(r, 5000)),
+    const settled = await Promise.race([
+      handle.containerPromise.then(() => 'done' as const),
+      new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 5000)),
     ]);
+    if (settled === 'timeout') {
+      logger.warn({ stage: handle.name }, 'Stage did not exit in 5s, force-stopping');
+      try {
+        const { cleanupRunContainers } = await import('./container-runtime.js');
+        cleanupRunContainers(this.runId);
+      } catch { /* best effort */ }
+    }
   }
 
   /**
@@ -965,6 +1008,8 @@ ${markerLines.join('\n')}`;
     });
 
     while (currentStageName !== null) {
+      if (this.aborted) break;
+
       const stageConfig = stagesByName.get(currentStageName);
       if (!stageConfig) {
         logger.error({ stage: currentStageName }, 'Stage config not found');
@@ -1005,6 +1050,7 @@ ${markerLines.join('\n')}`;
           initialPrompt,
           pipelineLogStream,
         );
+        this.currentHandle = handle;
         handle.pendingResult = createDeferred();
 
         logger.info(
@@ -1122,6 +1168,7 @@ ${markerLines.join('\n')}`;
                 duration: Date.now() - stageStartTime,
               });
               await this.closeAndWait(handle);
+              this.currentHandle = null;
               currentStageName = null;
               lastResult = 'error';
               stageResolved = true;
@@ -1166,6 +1213,7 @@ ${markerLines.join('\n')}`;
             });
 
             await this.closeAndWait(handle);
+            this.currentHandle = null;
 
             if (targetName) {
               // Inject payload as context for the next stage

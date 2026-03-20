@@ -51,8 +51,9 @@ export function getMountOptions(
   } else {
     Object.assign(opts, DEFAULT_MOUNT_OPTIONS);
   }
-  // Also include any extra keys already in the stage's mounts
+  // Also include any extra keys already in the stage's mounts (skip project:* sub-mounts)
   for (const key of Object.keys(stage.mounts)) {
+    if (key.startsWith('project:') || key.startsWith('art:')) continue; // handled by MountOverlay
     if (!opts[key]) {
       opts[key] = ['rw', 'ro', 'null'];
     }

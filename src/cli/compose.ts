@@ -488,11 +488,38 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     if (method === 'GET' && parsed.pathname === '/api/project-files') {
       try {
         const projectDir = path.dirname(artDir);
-        const entries = fs.readdirSync(projectDir, { withFileTypes: true });
+        const subPath = parsed.searchParams.get('path') || '';
+
+        // Security: reject path traversal
+        if (subPath.includes('..')) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid path' }));
+          return;
+        }
+
+        const targetDir = subPath
+          ? path.join(projectDir, subPath)
+          : projectDir;
+
+        // Ensure resolved path is still under project root
+        const resolved = path.resolve(targetDir);
+        if (!resolved.startsWith(path.resolve(projectDir))) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid path' }));
+          return;
+        }
+
+        const artDirName = path.basename(artDir);
+        const entries = fs.readdirSync(targetDir, { withFileTypes: true });
         const files = entries
-          .filter(
-            (e) => !e.name.startsWith('.') && e.name !== path.basename(artDir),
-          )
+          .filter((e) => {
+            if (e.name.startsWith('.')) return false;
+            // Hide __art__/ dir only at project root level
+            if (!subPath && e.name === artDirName) return false;
+            // Skip symlinks to prevent escaping project root
+            if (e.isSymbolicLink()) return false;
+            return true;
+          })
           .map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(files));
@@ -860,13 +887,8 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     // POST /api/runs/stop — stop currently running pipeline
     if (method === 'POST' && parsed.pathname === '/api/runs/stop') {
       const current = readCurrentRun(artDir);
-      if (current && isPidAlive(current.pid)) {
-        try {
-          process.kill(current.pid, 'SIGTERM');
-        } catch {
-          /* already dead */
-        }
-      }
+
+      // Kill the child process via direct reference first (safe, no PID guessing)
       if (runProcess) {
         try {
           runProcess.kill('SIGTERM');
@@ -874,9 +896,33 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           /* already dead */
         }
         runProcess = null;
+      } else if (current && isPidAlive(current.pid) && current.pid !== process.pid) {
+        // Fallback: kill by PID only if no direct reference AND not self
+        try {
+          process.kill(current.pid, 'SIGTERM');
+        } catch {
+          /* already dead */
+        }
       }
+
+      // Respond BEFORE container cleanup — docker stop modifies iptables/bridge
+      // networking which triggers Chrome's ERR_NETWORK_CHANGED on all sockets.
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+
+      // Fallback: if child doesn't exit within 10s, compose cleans up directly
+      if (current) {
+        const fallbackRunId = current.runId;
+        const fallbackPid = current.pid;
+        setTimeout(async () => {
+          try {
+            if (isPidAlive(fallbackPid)) {
+              const { cleanupRunContainers } = await import('../container-runtime.js');
+              cleanupRunContainers(fallbackRunId);
+            }
+          } catch { /* best effort */ }
+        }, 10_000);
+      }
       return;
     }
 
@@ -955,6 +1001,12 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
     // GET /api/pipeline-state — current pipeline execution state
     if (method === 'GET' && parsed.pathname === '/api/pipeline-state') {
+      // No running child → no active pipeline state
+      if (!runProcess) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('null');
+        return;
+      }
       const statePath = path.join(artDir, 'PIPELINE_STATE.json');
       try {
         const data = fs.readFileSync(statePath, 'utf-8');
@@ -1247,6 +1299,9 @@ export async function compose(targetDir: string): Promise<void> {
     );
     process.exit(1);
   }
+
+  // Clean up stale pipeline state from previous run
+  try { fs.unlinkSync(path.join(artDir, 'PIPELINE_STATE.json')); } catch { /* not present */ }
 
   // Setup auth + engine for container agent
   await ensureAuth();

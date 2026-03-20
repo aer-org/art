@@ -44,11 +44,9 @@ function ChatHeader({ isStreaming, hasContent, onComplete }: {
         <span className="chat-phase-badge">
           {isStreaming ? 'Analyzing...' : 'Ready'}
         </span>
-        {!isStreaming && hasContent && (
-          <button className="chat-complete-header-btn" onClick={onComplete}>
-            Complete &rarr;
-          </button>
-        )}
+        <button className="chat-complete-header-btn" onClick={onComplete}>
+          Complete &rarr;
+        </button>
       </div>
     </div>
   );

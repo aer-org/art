@@ -22,8 +22,7 @@ import { StageNode } from './nodes/StageNode';
 import { PropertiesPanel } from './panels/PropertiesPanel';
 import { ErrorPolicyPanel } from './panels/ErrorPolicyPanel';
 import { AgentListPanel } from './panels/AgentListPanel';
-import { FilesPanel } from './panels/FilesPanel';
-import { ProjectsPanel, type ProjectFile } from './panels/ProjectsPanel';
+import { FilesPanel, type ProjectFile } from './panels/FilesPanel';
 import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
 import { useRunControls, RunOutputPanel } from './panels/RunPanel';
 import { Onboarding } from './components/Onboarding';
@@ -632,8 +631,7 @@ export default function App() {
                 policy={agent.pipeline.errorPolicy}
                 onChange={handleUpdateErrorPolicy}
               />
-              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} onOpenChat={handleOpenChat} onOpenFile={isSingleMode ? setEditingFile : undefined} />
-              {isSingleMode && <ProjectsPanel files={projectFiles} />}
+              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} projectFiles={isSingleMode ? projectFiles : undefined} onOpenChat={handleOpenChat} onOpenFile={isSingleMode ? setEditingFile : undefined} />
               {isSingleMode && <ImagesPanel registry={imageRegistry} onRefresh={refreshDirs} />}
             </>
           )}
