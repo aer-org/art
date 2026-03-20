@@ -224,6 +224,7 @@ ART is under active development. Core pipeline execution, the visual editor, and
 
 | Document | Content |
 |----------|---------|
+| `docs/PIPELINE-REFERENCE.md` | PIPELINE.json field reference — stages, mounts, transitions, command mode |
 | `docs/ARCHITECTURE.md` | System architecture — pipeline FSM, container runtime, mount isolation |
 | `docs/REQUIREMENTS.md` | Design philosophy and decisions |
 | `docs/SECURITY.md` | Trust model, mount isolation, credential proxy, known limitations |
