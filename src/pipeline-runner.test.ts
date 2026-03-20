@@ -320,7 +320,6 @@ describe('loadPipelineConfig', () => {
     const result = loadPipelineConfig('test', tmpDir);
     expect(result).toBeNull();
   });
-
 });
 
 describe('loadAgentTeamConfig', () => {
@@ -490,7 +489,6 @@ function makeTwoStagePipelineConfig(): PipelineConfig {
         ],
       },
     ],
-
   };
 }
 
@@ -759,7 +757,6 @@ describe('Command mode stage', () => {
           ],
         },
       ],
-  
     };
 
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);

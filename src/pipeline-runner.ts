@@ -1202,7 +1202,6 @@ ${markerLines.join('\n')}`;
 
     return lastResult;
   }
-
 }
 
 // --- Agent Team Config ---
