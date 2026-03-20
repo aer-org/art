@@ -192,7 +192,7 @@ describe('loadPipelineConfig', () => {
     afterEach(() => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
-    it('parses valid PIPELINE.json with stages and errorPolicy', () => {
+    it('parses valid PIPELINE.json with stages', () => {
         const config = {
             stages: [
                 {
@@ -202,13 +202,11 @@ describe('loadPipelineConfig', () => {
                     transitions: [{ marker: 'DONE', next: null }],
                 },
             ],
-            errorPolicy: { maxConsecutive: 5, debugOnMaxErrors: false },
         };
         fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
         const result = loadPipelineConfig('test', tmpDir);
         expect(result).not.toBeNull();
         expect(result.stages).toHaveLength(1);
-        expect(result.errorPolicy.maxConsecutive).toBe(5);
     });
     it('returns null when file does not exist', () => {
         const result = loadPipelineConfig('nonexistent', tmpDir);
@@ -218,24 +216,6 @@ describe('loadPipelineConfig', () => {
         fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify({ stages: [] }));
         const result = loadPipelineConfig('test', tmpDir);
         expect(result).toBeNull();
-    });
-    it('applies default errorPolicy when missing', () => {
-        const config = {
-            stages: [
-                {
-                    name: 'build',
-                    prompt: 'Build',
-                    mounts: {},
-                    transitions: [{ marker: 'DONE' }],
-                },
-            ],
-        };
-        fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
-        const result = loadPipelineConfig('test', tmpDir);
-        expect(result.errorPolicy).toEqual({
-            maxConsecutive: 3,
-            debugOnMaxErrors: true,
-        });
     });
 });
 describe('loadAgentTeamConfig', () => {
@@ -377,7 +357,6 @@ function makeTwoStagePipelineConfig() {
                 ],
             },
         ],
-        errorPolicy: { maxConsecutive: 3, debugOnMaxErrors: false },
     };
 }
 function makeTestGroup() {
@@ -551,7 +530,6 @@ describe('Command mode stage', () => {
                     ],
                 },
             ],
-            errorPolicy: { maxConsecutive: 3, debugOnMaxErrors: false },
         };
         const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
         // Create IPC dirs for command stage

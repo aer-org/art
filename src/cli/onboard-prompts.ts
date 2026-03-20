@@ -42,10 +42,6 @@ Your job is to help the user design their agent pipeline stages.
       ]
     }
   ],
-  "errorPolicy": {
-    "maxConsecutive": 3,
-    "debugOnMaxErrors": true
-  }
 }
 
 When the user is ready, output the final pipeline JSON wrapped in:

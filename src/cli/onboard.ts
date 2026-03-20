@@ -122,10 +122,6 @@ export async function onboard(targetDir: string): Promise<void> {
   // Write PIPELINE.json
   const pipeline = {
     stages,
-    errorPolicy: {
-      maxConsecutive: 3,
-      debugOnMaxErrors: true,
-    },
   };
 
   fs.writeFileSync(

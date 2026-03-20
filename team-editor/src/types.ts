@@ -22,10 +22,6 @@ export interface PipelineStage {
 export interface PipelineConfig {
   stages: PipelineStage[];
   entryStage?: string;
-  errorPolicy: {
-    maxConsecutive: number;
-    debugOnMaxErrors: boolean;
-  };
 }
 
 // Default mount keys and their allowed modes for the UI (fallback when dirs not available).
@@ -98,7 +94,6 @@ export interface TeamProject {
 
 export const DEFAULT_PIPELINE: PipelineConfig = {
   stages: [],
-  errorPolicy: { maxConsecutive: 3, debugOnMaxErrors: true },
 };
 
 export const DEFAULT_AGENT_FILES: AgentFiles = {

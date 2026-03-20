@@ -78,10 +78,6 @@ export async function onboard(targetDir) {
     // Write PIPELINE.json
     const pipeline = {
         stages,
-        errorPolicy: {
-            maxConsecutive: 3,
-            debugOnMaxErrors: true,
-        },
     };
     fs.writeFileSync(path.join(artDir, 'PIPELINE.json'), JSON.stringify(pipeline, null, 2) + '\n');
     // Create stage subdirectories

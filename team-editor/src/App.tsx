@@ -20,7 +20,6 @@ import '@xyflow/react/dist/style.css';
 
 import { StageNode } from './nodes/StageNode';
 import { PropertiesPanel } from './panels/PropertiesPanel';
-import { ErrorPolicyPanel } from './panels/ErrorPolicyPanel';
 import { AgentListPanel } from './panels/AgentListPanel';
 import { FilesPanel, type ProjectFile } from './panels/FilesPanel';
 import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
@@ -165,12 +164,11 @@ export default function App() {
         const idx = selectedAgentIdx;
         if (idx >= prev.length) return prev;
         const a = prev[idx];
-        const errorPolicy = a.pipeline.errorPolicy;
         const entryFromNodes = newNodes.find((n) => n.data.isEntry)?.id;
         const entry = overrideEntryStage !== undefined ? overrideEntryStage : (a.pipeline.entryStage || entryFromNodes);
         const pipeline = newNodes.length > 0
-          ? serialize(newNodes, newEdges, errorPolicy, entry)
-          : { stages: [], errorPolicy };
+          ? serialize(newNodes, newEdges, entry)
+          : { stages: [] };
         const next = [...prev];
         next[idx] = { ...a, pipeline };
         return next;
@@ -378,19 +376,6 @@ export default function App() {
       });
     },
     [],
-  );
-
-  const handleUpdateErrorPolicy = useCallback(
-    (policy: PipelineConfig['errorPolicy']) => {
-      setAgents((prev) => {
-        const idx = selectedAgentIdx;
-        if (idx >= prev.length) return prev;
-        const next = [...prev];
-        next[idx] = { ...next[idx], pipeline: { ...next[idx].pipeline, errorPolicy: policy } };
-        return next;
-      });
-    },
-    [selectedAgentIdx],
   );
 
   const handleUpdateFiles = useCallback(
@@ -627,10 +612,6 @@ export default function App() {
           />
           {agent && (
             <>
-              <ErrorPolicyPanel
-                policy={agent.pipeline.errorPolicy}
-                onChange={handleUpdateErrorPolicy}
-              />
               <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} projectFiles={isSingleMode ? projectFiles : undefined} onOpenChat={handleOpenChat} onOpenFile={isSingleMode ? setEditingFile : undefined} />
               {isSingleMode && <ImagesPanel registry={imageRegistry} onRefresh={refreshDirs} />}
             </>

@@ -624,35 +624,6 @@ body {
   font-weight: 600;
 }
 
-/* Error policy */
-.error-policy {
-  border: 1px solid #313244;
-  border-radius: 6px;
-  padding: 8px;
-}
-
-.error-policy legend {
-  font-size: 11px;
-  font-weight: 600;
-  color: #a6adc8;
-  padding: 0 4px;
-}
-
-.error-policy label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  color: #a6adc8;
-  font-weight: 500;
-  margin-top: 6px;
-}
-
-.error-policy .checkbox-row {
-  flex-direction: row !important;
-  align-items: center;
-}
-
 /* Files panel */
 .files-panel {
   border-top: 1px solid #313244;

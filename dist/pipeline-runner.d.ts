@@ -49,10 +49,6 @@ export interface PipelineStage {
 export interface PipelineConfig {
     stages: PipelineStage[];
     entryStage?: string;
-    errorPolicy: {
-        maxConsecutive: number;
-        debugOnMaxErrors: boolean;
-    };
 }
 export interface PipelineState {
     currentStage: string | null;
@@ -110,10 +106,6 @@ export declare class PipelineRunner {
      * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
      */
     run(): Promise<'success' | 'error'>;
-    /**
-     * Spawn a one-off debug container to analyze a repeated error.
-     */
-    private runDebugSession;
 }
 export interface AgentTeamConfig {
     agents: Array<{

@@ -50,7 +50,7 @@ The **default pipeline template** ships a 4-stage loop (build → test → revie
     └──────────┘
 ```
 
-On error, stages can retry (with debug agent coaching) or transition to error-handling stages. The pipeline FSM handles all routing based on output markers.
+On error, stages can retry or transition to error-handling stages. The pipeline FSM handles all routing based on output markers.
 
 ### Permission Enforcement via Mounts
 
@@ -108,7 +108,7 @@ Transitions are defined per-stage in `PIPELINE.json`. Retry transitions stay in 
 
 ### Error Recovery
 
-When the same error repeats `maxConsecutive` times, a **debug agent** is spawned in a separate container to analyze the failure. Its advice is injected into the original agent for retry.
+On retry transitions, the stage prompt is re-sent with the error description so the agent can attempt a fix.
 
 ### Resume on Interrupt
 
@@ -149,7 +149,7 @@ See `docs/SECURITY.md` for the full security model.
 `art compose` launches a browser-based React SPA (ReactFlow) for visual pipeline design:
 
 - Drag-and-drop stage nodes with transition edges
-- Configure per-stage: prompt, mounts (rw/ro/hidden), image, error policy
+- Configure per-stage: prompt, mounts (rw/ro/hidden), image
 - Image registry management with preset base images
 - Run history panel with log viewer
 - Agent chat interface for plan discussion (init mode)
