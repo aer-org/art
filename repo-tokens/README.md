@@ -12,7 +12,7 @@ A GitHub Action that calculates the size of your codebase in terms of tokens and
 ## Usage
 
 ```yaml
-- uses: qwibitai/aer-art/repo-tokens@v1
+- uses: aer-org/art/repo-tokens@v1
   with:
     include: 'src/**/*.ts'
     exclude: 'src/**/*.test.ts'
@@ -34,7 +34,7 @@ Repos using repo-tokens:
 
 | Repo | Badge |
 |------|-------|
-| [AerArt](https://github.com/qwibitai/AerArt) | ![tokens](https://raw.githubusercontent.com/qwibitai/AerArt/main/repo-tokens/badge.svg) |
+| [AerArt](https://github.com/aer-org/art) | ![tokens](https://raw.githubusercontent.com/aer-org/art/main/repo-tokens/badge.svg) |
 
 ### Full workflow example
 
@@ -59,7 +59,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: qwibitai/aer-art/repo-tokens@v1
+      - uses: aer-org/art/repo-tokens@v1
         id: tokens
         with:
           include: 'src/**/*.ts'
