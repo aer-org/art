@@ -15,7 +15,7 @@ export async function update(): Promise<void> {
   const images = Object.entries(registry);
 
   if (images.length === 0) {
-    console.log('No images registered. Run `art init` first.');
+    console.log('No images registered. Run `art compose` first.');
     return;
   }
 

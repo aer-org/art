@@ -61,7 +61,7 @@ export async function run(targetDir) {
     const artDirName = '__art__';
     const artDir = path.join(projectDir, artDirName);
     if (!fs.existsSync(artDir)) {
-        console.error(`No ${artDirName}/ found in ${projectDir}. Run 'art init .' first.`);
+        console.error(`No ${artDirName}/ found in ${projectDir}. Run 'art compose .' first.`);
         process.exit(1);
     }
     // Check for existing run (_current.json)

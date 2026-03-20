@@ -25,7 +25,7 @@ export async function onboard(targetDir) {
     const projectDir = path.resolve(targetDir);
     const artDir = path.join(projectDir, ART_DIR_NAME);
     if (!fs.existsSync(artDir)) {
-        console.error(`No ${ART_DIR_NAME}/ found in ${projectDir}. Run 'art init .' first.`);
+        console.error(`No ${ART_DIR_NAME}/ found in ${projectDir}. Run 'art compose .' first.`);
         process.exit(1);
     }
     const rl = readline.createInterface({
