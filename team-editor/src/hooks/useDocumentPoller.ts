@@ -18,13 +18,13 @@ export function useDocumentPoller(
   const [hasChanged, setHasChanged] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [pendingReview, setPendingReview] = useState(false);
+
+  // Snapshot of content before the first unreviewed change.
+  // Fixed while reviewing — diff is always base vs latest.
+  const baseContentRef = useRef<string | null>(null);
   const lastContentRef = useRef<string | null>(null);
-  const pendingReviewRef = useRef(false);
 
   const fetchFile = useCallback(async () => {
-    // Pause polling updates while user is reviewing a diff
-    if (pendingReviewRef.current) return;
-
     try {
       const res = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`);
       if (!res.ok) {
@@ -34,15 +34,25 @@ export function useDocumentPoller(
       const text = await res.text();
       setIsLoading(false);
 
-      if (lastContentRef.current !== null && text !== lastContentRef.current) {
-        setPrevContent(lastContentRef.current);
+      const previousContent = lastContentRef.current;
+      lastContentRef.current = text;
+
+      if (previousContent !== null && text !== previousContent) {
+        // Content changed since last poll
+        if (baseContentRef.current === null) {
+          // First change — snapshot the pre-change state as diff base
+          baseContentRef.current = previousContent;
+        }
+        // Always diff base vs latest (accumulates multiple AI edits)
+        setPrevContent(baseContentRef.current);
+        setContent(text);
         setHasChanged(true);
         setPendingReview(true);
-        pendingReviewRef.current = true;
+      } else if (baseContentRef.current === null) {
+        // No change, not in review — update displayed content
+        setContent(text);
       }
-
-      lastContentRef.current = text;
-      setContent(text);
+      // In review but no new change this poll — keep current diff as-is
     } catch {
       // Network error — will retry next interval
     }
@@ -51,7 +61,7 @@ export function useDocumentPoller(
   const resolveReview = useCallback(
     async (finalContent: string | null) => {
       if (finalContent !== null) {
-        // Write modified content back to file
+        // Write user-modified content back to file
         await fetch(`/api/file?path=${encodeURIComponent(filePath)}`, {
           method: 'PUT',
           body: finalContent,
@@ -59,10 +69,11 @@ export function useDocumentPoller(
         setContent(finalContent);
         lastContentRef.current = finalContent;
       }
+      // Reset review state — next change starts a fresh diff
+      baseContentRef.current = null;
       setPrevContent(null);
       setHasChanged(false);
       setPendingReview(false);
-      pendingReviewRef.current = false;
     },
     [filePath],
   );

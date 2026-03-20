@@ -53,10 +53,10 @@ function ChatHeader({ isStreaming, hasContent, onComplete }: {
 }
 
 const THINKING_STEPS = [
+  'Waking agent up...',
   'Reading project structure...',
   'Analyzing dependencies...',
   'Reviewing architecture...',
-  'Evaluating code quality...',
   'Writing analysis...',
 ];
 
@@ -139,6 +139,7 @@ function groupSegments(segments: ChatSegment[], isStreaming: boolean): RenderIte
       if (seg.type === 'user') {
         items.push({ kind: 'user', content: seg.content });
       } else if (seg.type === 'text') {
+        if (!seg.content.trim()) continue; // skip empty text segments
         const isLast = i === segments.length - 1;
         items.push({ kind: 'text', content: seg.content, isLast: isLast && isStreaming });
       }

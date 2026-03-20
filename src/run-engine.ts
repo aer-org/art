@@ -64,7 +64,9 @@ export async function runPipeline(opts: {
     try {
       const { cleanupRunContainers } = await import('./container-runtime.js');
       cleanupRunContainers(runId);
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
     proxyServer.close();
     process.exit(1);
   };

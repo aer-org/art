@@ -480,7 +480,8 @@ export class PipelineRunner {
         if (!key.startsWith('project:')) continue;
         const subPath = key.slice('project:'.length);
         // Skip __art__/ paths (already shadowed above)
-        if (subPath === artDirName || subPath.startsWith(artDirName + '/')) continue;
+        if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
+          continue;
 
         if (subPolicy === null) {
           // Disabled → shadow with empty dir
@@ -853,11 +854,16 @@ export class PipelineRunner {
       new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 5000)),
     ]);
     if (settled === 'timeout') {
-      logger.warn({ stage: handle.name }, 'Stage did not exit in 5s, force-stopping');
+      logger.warn(
+        { stage: handle.name },
+        'Stage did not exit in 5s, force-stopping',
+      );
       try {
         const { cleanupRunContainers } = await import('./container-runtime.js');
         cleanupRunContainers(this.runId);
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
     }
   }
 

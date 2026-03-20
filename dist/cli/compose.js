@@ -150,7 +150,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             },
         };
         const input = {
-            prompt,
+            prompt: savedSessionId ? '' : prompt, // resume: skip initial prompt
             groupFolder: folderName,
             chatJid: `art://${resolvedProjectDir}`,
             isMain: false,
@@ -209,6 +209,12 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 lastSegmentIsText = false;
                 for (const client of sseClients) {
                     sseWrite(client, { type: 'result', content: output.result });
+                }
+            }
+            else {
+                // result=null → agent entered IPC wait, unlock client input
+                for (const client of sseClients) {
+                    sseWrite(client, { type: 'ready' });
                 }
             }
         }).catch((err) => {
@@ -432,9 +438,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                     res.end(JSON.stringify({ error: 'Invalid path' }));
                     return;
                 }
-                const targetDir = subPath
-                    ? path.join(projectDir, subPath)
-                    : projectDir;
+                const targetDir = subPath ? path.join(projectDir, subPath) : projectDir;
                 // Ensure resolved path is still under project root
                 const resolved = path.resolve(targetDir);
                 if (!resolved.startsWith(path.resolve(projectDir))) {
@@ -637,7 +641,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             if (agentRunning && lastSegmentIsText) {
                 sseWrite(res, { type: 'history_streaming' });
             }
-            sseWrite(res, { type: 'history_end' });
+            sseWrite(res, { type: 'history_end', streaming: agentRunning });
             req.on('close', () => {
                 sseClients.delete(res);
             });
@@ -657,9 +661,8 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 }
                 killAgent().catch(() => { });
             }
-            // Reset session so next spawnAgent() starts fresh
-            savedSessionId = undefined;
-            chatHistory.length = 0;
+            // Keep savedSessionId and chatHistory so next spawnAgent() resumes
+            // the same session with full conversation context in the UI
             lastSegmentIsText = false;
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
@@ -804,7 +807,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 }
                 runProcess = null;
             }
-            else if (current && isPidAlive(current.pid) && current.pid !== process.pid) {
+            else if (current &&
+                isPidAlive(current.pid) &&
+                current.pid !== process.pid) {
                 // Fallback: kill by PID only if no direct reference AND not self
                 try {
                     process.kill(current.pid, 'SIGTERM');
@@ -828,7 +833,9 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                             cleanupRunContainers(fallbackRunId);
                         }
                     }
-                    catch { /* best effort */ }
+                    catch {
+                        /* best effort */
+                    }
                 }, 10_000);
             }
             return;
@@ -1176,7 +1183,9 @@ export async function compose(targetDir) {
     try {
         fs.unlinkSync(path.join(artDir, 'PIPELINE_STATE.json'));
     }
-    catch { /* not present */ }
+    catch {
+        /* not present */
+    }
     // Setup auth + engine for container agent
     await ensureAuth();
     await setupEngine({ projectDir, artDir });

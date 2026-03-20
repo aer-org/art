@@ -724,6 +724,15 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  // Resume mode: if prompt is empty and we have a session, skip initial query
+  if (!prompt.trim() && sessionId) {
+    log(`Resuming session ${sessionId}, waiting for IPC message...`);
+    writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+    const msg = await waitForIpcMessage();
+    if (!msg) return;
+    prompt = msg;
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {

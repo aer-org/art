@@ -10,7 +10,10 @@ export function validateProjectMounts(
 
   // Collect project root and all project:* entries
   const rootPolicy = mounts['project'];
-  const subEntries: Array<{ path: string; policy: 'ro' | 'rw' | null | undefined }> = [];
+  const subEntries: Array<{
+    path: string;
+    policy: 'ro' | 'rw' | null | undefined;
+  }> = [];
 
   for (const [key, policy] of Object.entries(mounts)) {
     if (key.startsWith('project:')) {

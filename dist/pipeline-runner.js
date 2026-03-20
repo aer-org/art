@@ -613,7 +613,9 @@ export class PipelineRunner {
                 const { cleanupRunContainers } = await import('./container-runtime.js');
                 cleanupRunContainers(this.runId);
             }
-            catch { /* best effort */ }
+            catch {
+                /* best effort */
+            }
         }
     }
     /**
