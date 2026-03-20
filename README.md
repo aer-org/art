@@ -1,5 +1,7 @@
 # ART — Agent Runtime
 
+Draw your own harness for agentic loops. Improve existing projects 24/7.
+
 Run agent workflows against real projects with **stage boundaries**, **isolated mounts**, and **resumable execution**.
 
 Design a plan collaboratively with an AI agent via `art compose`, then execute it with `art run` — a pipeline runtime where **the plan is read-only by default** (unless you explicitly grant write access). Each stage runs in its own container with file-level mount permissions on your project.
