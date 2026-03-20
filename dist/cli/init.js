@@ -52,10 +52,6 @@ export function scaffoldArtDir(projectDir) {
     const pipeline = {
         stages,
         entryStage: stages[0]?.name,
-        errorPolicy: {
-            maxConsecutive: 3,
-            debugOnMaxErrors: true,
-        },
     };
     fs.writeFileSync(path.join(artDir, 'PIPELINE.json'), JSON.stringify(pipeline, null, 2) + '\n');
     // Create any additional stage mount directories

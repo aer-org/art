@@ -5,7 +5,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { setCredentialProxyPort, } from './config.js';
+import { setCredentialProxyPort } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
 import { loadAgentTeamConfig, loadPipelineConfig, PipelineRunner, writeCurrentRun, } from './pipeline-runner.js';
@@ -30,11 +30,20 @@ export async function runPipeline(opts) {
     });
     // Graceful shutdown
     let shuttingDown = false;
-    const shutdown = (signal) => {
+    const activeRunners = [];
+    const shutdown = async (signal) => {
         if (shuttingDown)
             return;
         shuttingDown = true;
         logger.info({ signal }, 'Shutdown signal received');
+        await Promise.allSettled(activeRunners.map((r) => r.abort()));
+        try {
+            const { cleanupRunContainers } = await import('./container-runtime.js');
+            cleanupRunContainers(runId);
+        }
+        catch {
+            /* best effort */
+        }
         proxyServer.close();
         process.exit(1);
     };
@@ -67,6 +76,7 @@ export async function runPipeline(opts) {
                 folder: `${group.folder}__team_${agent.folder}`,
             };
             const runner = new PipelineRunner(virtualGroup, chatJid, pipelineConfig, async (text) => console.log(`[${agent.name}] ${text}`), onProcess, agentGroupDir, runId);
+            activeRunners.push(runner);
             return runner.run();
         }));
         const allSuccess = results.every((r) => r === 'success');
@@ -82,6 +92,7 @@ export async function runPipeline(opts) {
     }
     logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');
     const runner = new PipelineRunner(group, chatJid, pipelineConfig, notify, onProcess, undefined, runId);
+    activeRunners.push(runner);
     const result = await runner.run();
     proxyServer.close();
     process.exit(result === 'success' ? 0 : 1);

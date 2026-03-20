@@ -148,7 +148,7 @@ export function loadPipelineState(groupDir) {
  * Parse stage markers dynamically from the stage's transitions array.
  * Matches `[MARKER]` or `[MARKER: payload]` patterns, first match wins.
  */
-function parseStageMarkers(resultTexts, transitions) {
+export function parseStageMarkers(resultTexts, transitions) {
     const combined = resultTexts.join('\n');
     for (const transition of transitions) {
         // Match [MARKER] or [MARKER: payload]
@@ -162,9 +162,6 @@ function parseStageMarkers(resultTexts, transitions) {
 }
 function escapeRegExp(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-function normalizeError(desc) {
-    return desc.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 function createDeferred() {
     let resolve;
@@ -210,6 +207,8 @@ export class PipelineRunner {
     groupDir;
     runId;
     manifest;
+    aborted = false;
+    currentHandle = null;
     constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId) {
         this.group = group;
         this.chatJid = chatJid;
@@ -229,6 +228,12 @@ export class PipelineRunner {
     getRunId() {
         return this.runId;
     }
+    async abort() {
+        this.aborted = true;
+        if (this.currentHandle) {
+            await this.closeAndWait(this.currentHandle);
+        }
+    }
     /** Send a visually prominent banner to TUI for stage transitions */
     async notifyBanner(text) {
         if (process.env.ART_TUI_MODE) {
@@ -247,8 +252,8 @@ export class PipelineRunner {
         const groupDir = this.groupDir;
         const mounts = [];
         for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-            if (key === 'project')
-                continue; // handled separately (different host path)
+            if (key === 'project' || key.startsWith('project:'))
+                continue; // handled separately
             if (!policy)
                 continue;
             const hostDir = path.join(groupDir, key);
@@ -292,6 +297,34 @@ export class PipelineRunner {
                 containerPath: `/workspace/project/${artDirName}`,
                 readonly: true,
             });
+            // Process project:* sub-mount overrides
+            const projectRoot = path.dirname(this.groupDir);
+            for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
+                if (!key.startsWith('project:'))
+                    continue;
+                const subPath = key.slice('project:'.length);
+                // Skip __art__/ paths (already shadowed above)
+                if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
+                    continue;
+                if (subPolicy === null) {
+                    // Disabled → shadow with empty dir
+                    internalMounts.push({
+                        hostPath: emptyDir,
+                        containerPath: `/workspace/project/${subPath}`,
+                        readonly: true,
+                    });
+                }
+                else if (subPolicy && subPolicy !== effectivePolicy) {
+                    // Different permission from root → overlay mount
+                    const subHostPath = path.join(projectRoot, subPath);
+                    internalMounts.push({
+                        hostPath: subHostPath,
+                        containerPath: `/workspace/project/${subPath}`,
+                        readonly: subPolicy === 'ro',
+                    });
+                }
+                // Same permission as root → inherited, no extra mount needed
+            }
         }
         // Resolve container image from registry (agent mode only)
         let resolvedImage;
@@ -567,10 +600,20 @@ export class PipelineRunner {
      */
     async closeAndWait(handle) {
         closeStage(handle);
-        await Promise.race([
-            handle.containerPromise,
-            new Promise((r) => setTimeout(r, 5000)),
+        const settled = await Promise.race([
+            handle.containerPromise.then(() => 'done'),
+            new Promise((r) => setTimeout(() => r('timeout'), 5000)),
         ]);
+        if (settled === 'timeout') {
+            logger.warn({ stage: handle.name }, 'Stage did not exit in 5s, force-stopping');
+            try {
+                const { cleanupRunContainers } = await import('./container-runtime.js');
+                cleanupRunContainers(this.runId);
+            }
+            catch {
+                /* best effort */
+            }
+        }
     }
     /**
      * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
@@ -692,6 +735,8 @@ ${markerLines.join('\n')}`;
             status: 'running',
         });
         while (currentStageName !== null) {
+            if (this.aborted)
+                break;
             const stageConfig = stagesByName.get(currentStageName);
             if (!stageConfig) {
                 logger.error({ stage: currentStageName }, 'Stage config not found');
@@ -715,15 +760,11 @@ ${markerLines.join('\n')}`;
                 nextInitialPrompt = null;
                 const stageStartTime = Date.now();
                 const handle = this.spawnStageContainer(stageConfig, initialPrompt, pipelineLogStream);
+                this.currentHandle = handle;
                 handle.pendingResult = createDeferred();
                 logger.info({ stage: currentStageName }, 'Stage container spawned (on-demand)');
                 logger.info({ stage: currentStageName }, 'Entering stage');
                 await this.notifyBanner(`📌 Stage: ${currentStageName} 시작`);
-                const tracker = {
-                    lastError: null,
-                    consecutiveCount: 0,
-                    debugAttempted: false,
-                };
                 let isFirstTurn = true;
                 let stageResolved = false;
                 while (!stageResolved) {
@@ -752,49 +793,11 @@ ${markerLines.join('\n')}`;
                         sendToStage(handle, `이전 응답에 스테이지 마커가 없었습니다. 작업을 계속하고 완료 시 적절한 마커를 출력하세요.\n\n${stageConfig.prompt}\n${commonRules}`);
                     }
                     else if (matched.retry) {
-                        // Retry transition (error with error tracking)
+                        // Retry transition — re-send the stage prompt
                         const errorDesc = payload || matched.marker;
-                        const normalized = normalizeError(errorDesc);
-                        if (tracker.lastError &&
-                            normalizeError(tracker.lastError) === normalized) {
-                            tracker.consecutiveCount++;
-                        }
-                        else {
-                            tracker.lastError = errorDesc;
-                            tracker.consecutiveCount = 1;
-                            tracker.debugAttempted = false;
-                        }
-                        await this.notify(`⚠️ [턴 ${turnCount}] ${currentStageName} 에러 (${tracker.consecutiveCount}/${this.config.errorPolicy.maxConsecutive}회): ${errorDesc}`);
-                        if (tracker.consecutiveCount >=
-                            this.config.errorPolicy.maxConsecutive &&
-                            !tracker.debugAttempted &&
-                            this.config.errorPolicy.debugOnMaxErrors) {
-                            await this.notify(`🔍 ${currentStageName} 디버깅 세션 시작`);
-                            const debugAdvice = await this.runDebugSession(currentStageName, tracker.lastError, planContent);
-                            tracker.consecutiveCount = 0;
-                            tracker.debugAttempted = true;
-                            handle.pendingResult = createDeferred();
-                            sendToStage(handle, `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}\n\n## Debugging Advice\n\n${debugAdvice}\n\nApply this advice to resolve the previous error, then continue.`);
-                            await this.notify(`🔄 디버그 조언 적용하여 재시도`);
-                        }
-                        else if (tracker.consecutiveCount >=
-                            this.config.errorPolicy.maxConsecutive &&
-                            tracker.debugAttempted) {
-                            await this.notify(`❌ ${currentStageName} 실패: 디버그 후에도 동일 에러 반복`);
-                            this.manifest.stages.push({
-                                name: currentStageName,
-                                status: 'error',
-                                duration: Date.now() - stageStartTime,
-                            });
-                            await this.closeAndWait(handle);
-                            currentStageName = null;
-                            lastResult = 'error';
-                            stageResolved = true;
-                        }
-                        else {
-                            handle.pendingResult = createDeferred();
-                            sendToStage(handle, `이전 시도에서 에러가 발생했습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`);
-                        }
+                        await this.notify(`⚠️ [턴 ${turnCount}] ${currentStageName} 에러: ${errorDesc}`);
+                        handle.pendingResult = createDeferred();
+                        sendToStage(handle, `이전 시도에서 에러가 발생했습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`);
                     }
                     else {
                         // Non-retry transition — move to next stage or end pipeline
@@ -825,6 +828,7 @@ ${markerLines.join('\n')}`;
                             status: 'running',
                         });
                         await this.closeAndWait(handle);
+                        this.currentHandle = null;
                         if (targetName) {
                             // Inject payload as context for the next stage
                             if (payload) {
@@ -869,63 +873,6 @@ ${markerLines.join('\n')}`;
             ? '🏁 전체 파이프라인 완료!'
             : '❌ 파이프라인이 에러로 종료되었습니다.');
         return lastResult;
-    }
-    /**
-     * Spawn a one-off debug container to analyze a repeated error.
-     */
-    async runDebugSession(stageName, error, planContent) {
-        const debugPrompt = `You are a debugging advisor. An implementation agent has repeatedly hit the following error during the **${stageName}** stage.
-
-## Repeated Error
-${error}
-
-## Current Stage
-${stageName}
-
-## Plan Being Implemented
-${planContent}
-
-Analyze the error in the context of the current stage and plan. Provide specific, actionable debugging advice:
-1. What is likely causing this error?
-2. What specific steps should the agent take to fix it?
-3. Are there alternative approaches if the current approach is fundamentally broken?
-
-Be concise and specific. Your advice will be injected into the implementation agent's next prompt.`;
-        const subFolder = `${this.group.folder}__pipeline_debug`;
-        // Debug workspace nested inside parent group dir
-        const debugWorkspaceDir = path.join(this.groupDir, 'debug');
-        fs.mkdirSync(debugWorkspaceDir, { recursive: true });
-        const virtualGroup = {
-            name: 'pipeline-debug',
-            folder: subFolder, // Flat folder for IPC/sessions
-            trigger: '',
-            added_at: new Date().toISOString(),
-            containerConfig: {
-                additionalMounts: this.group.containerConfig?.additionalMounts || [],
-                workspaceDir: debugWorkspaceDir,
-            },
-        };
-        let debugResult = 'No specific advice generated.';
-        try {
-            const output = await runContainerAgent(virtualGroup, {
-                prompt: debugPrompt,
-                groupFolder: subFolder,
-                chatJid: this.chatJid,
-                isMain: false,
-                assistantName: 'pipeline-debug',
-                endOnFirstResult: true,
-                runId: this.runId,
-            }, (proc, containerName) => this.onProcess(proc, containerName), async (o) => {
-                if (o.result) {
-                    debugResult = o.result;
-                }
-            });
-            logger.info({ stage: stageName, status: output.status }, 'Debug session completed');
-        }
-        catch (err) {
-            logger.error({ stage: stageName, err }, 'Debug session failed');
-        }
-        return debugResult;
     }
 }
 /**
@@ -977,9 +924,6 @@ export function loadPipelineConfig(groupFolder, groupDir) {
         if (!Array.isArray(config.stages) || config.stages.length === 0) {
             logger.warn({ groupFolder }, 'PIPELINE.json has no stages');
             return null;
-        }
-        if (!config.errorPolicy) {
-            config.errorPolicy = { maxConsecutive: 3, debugOnMaxErrors: true };
         }
         return config;
     }

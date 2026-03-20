@@ -45,7 +45,6 @@ export function validate(nodes: Node[], edges: Edge[]): ValidationError[] {
 export function serialize(
   nodes: Node[],
   edges: Edge[],
-  errorPolicy: PipelineConfig['errorPolicy'],
   entryStage?: string,
 ): PipelineConfig {
   // Build edge lookup: source+handle(marker) -> target
@@ -121,7 +120,7 @@ export function serialize(
     return stage;
   });
 
-  const config: PipelineConfig = { stages, errorPolicy };
+  const config: PipelineConfig = { stages };
   if (entryStage && nodes.some((n) => n.id === entryStage)) {
     config.entryStage = entryStage;
   }

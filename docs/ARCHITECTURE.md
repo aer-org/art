@@ -74,11 +74,6 @@ Agents embed markers in their output to trigger stage transitions:
 Each stage's `transitions` array defines marker → target stage mappings.
 Transitions with `retry: true` stay in the same stage; others advance to the next.
 
-### Error Debug Agent
-
-When the same error repeats `maxConsecutive` times, a separate debug container is spawned.
-The debug agent returns analysis, which is injected as coaching into the original agent for retry.
-
 ### Agent Mode vs Command Mode
 
 - **Agent mode**: Claude agent receives a prompt and executes (default)
@@ -265,7 +260,7 @@ ReactFlow-based React SPA. Served by `art compose`.
 ### Features
 
 - **Visual pipeline editing** — drag-and-drop stage nodes, connect transitions (success/error/retry)
-- **Stage properties** — prompt, mounts (rw/ro/null), commands, image, error policy
+- **Stage properties** — prompt, mounts (rw/ro/null), commands, image
 - **Image management** — registry CRUD + preset selection
 - **Run history** — view past runs, read logs, start/stop current run
 - **Agent chat** (init mode) — real-time conversation with a project analysis agent

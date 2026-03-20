@@ -47,15 +47,19 @@ export function useAgentChat(): UseAgentChatReturn {
         if (data.type === 'connected') {
           retryDelayRef.current = 1000;
           setAgentRunning(data.agentRunning);
-          if (data.agentRunning) {
+          if (data.agentRunning && !data.waitingForInput) {
             setIsStreaming(true);
+          } else {
+            setIsStreaming(false);
           }
         } else if (data.type === 'history_segment') {
           // Replay saved segment from server
           if (data.segmentType === 'user') {
             setSegments((prev) => [...prev, { type: 'user', content: data.content }]);
           } else if (data.segmentType === 'text') {
-            setSegments((prev) => [...prev, { type: 'text', content: data.content }]);
+            if (data.content && data.content.trim()) {
+              setSegments((prev) => [...prev, { type: 'text', content: data.content }]);
+            }
           } else if (data.segmentType === 'tool') {
             setSegments((prev) => [...prev, { type: 'tool', tool: data.tool }]);
           }
@@ -63,17 +67,22 @@ export function useAgentChat(): UseAgentChatReturn {
           // Last text segment is still being streamed
           setIsStreaming(true);
         } else if (data.type === 'history_end') {
-          // History replay complete
+          // History replay complete — if agent isn't actively streaming, unlock input
+          if (!data.streaming) {
+            setIsStreaming(false);
+          }
         } else if (data.type === 'text_delta') {
           setIsStreaming(true);
+          const delta = data.content;
+          if (!delta) return; // skip empty deltas
           setSegments((prev) => {
             const last = prev[prev.length - 1];
             if (last && last.type === 'text') {
               const updated = [...prev];
-              updated[updated.length - 1] = { type: 'text', content: last.content + data.content };
+              updated[updated.length - 1] = { type: 'text', content: last.content + delta };
               return updated;
             }
-            return [...prev, { type: 'text', content: data.content }];
+            return [...prev, { type: 'text', content: delta }];
           });
         } else if (data.type === 'tool_start') {
           setSegments((prev) => {
@@ -116,6 +125,8 @@ export function useAgentChat(): UseAgentChatReturn {
             }
             return updated;
           });
+          setIsStreaming(false);
+        } else if (data.type === 'ready') {
           setIsStreaming(false);
         } else if (data.type === 'agent_stopped') {
           setAgentRunning(false);
@@ -174,7 +185,6 @@ export function useAgentChat(): UseAgentChatReturn {
     }
     setAgentRunning(false);
     setIsStreaming(false);
-    setSegments([]);
     setError(null);
   }, []);
 
@@ -183,6 +193,7 @@ export function useAgentChat(): UseAgentChatReturn {
       const resp = await fetch('/api/chat/start', { method: 'POST' });
       if (resp.ok) {
         setAgentRunning(true);
+        setIsStreaming(true); // Lock input until first response arrives
       }
     } catch {
       // best effort

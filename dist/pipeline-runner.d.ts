@@ -49,10 +49,6 @@ export interface PipelineStage {
 export interface PipelineConfig {
     stages: PipelineStage[];
     entryStage?: string;
-    errorPolicy: {
-        maxConsecutive: number;
-        debugOnMaxErrors: boolean;
-    };
 }
 export interface PipelineState {
     currentStage: string | null;
@@ -62,6 +58,15 @@ export interface PipelineState {
 }
 export declare function savePipelineState(groupDir: string, state: PipelineState): void;
 export declare function loadPipelineState(groupDir: string): PipelineState | null;
+interface StageMarkerResult {
+    matched: PipelineTransition | null;
+    payload: string | null;
+}
+/**
+ * Parse stage markers dynamically from the stage's transitions array.
+ * Matches `[MARKER]` or `[MARKER: payload]` patterns, first match wins.
+ */
+export declare function parseStageMarkers(resultTexts: string[], transitions: PipelineTransition[]): StageMarkerResult;
 export declare class PipelineRunner {
     private group;
     private chatJid;
@@ -71,8 +76,11 @@ export declare class PipelineRunner {
     private groupDir;
     private runId;
     private manifest;
+    private aborted;
+    private currentHandle;
     constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string);
     getRunId(): string;
+    abort(): Promise<void>;
     /** Send a visually prominent banner to TUI for stage transitions */
     private notifyBanner;
     /**
@@ -98,10 +106,6 @@ export declare class PipelineRunner {
      * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
      */
     run(): Promise<'success' | 'error'>;
-    /**
-     * Spawn a one-off debug container to analyze a repeated error.
-     */
-    private runDebugSession;
 }
 export interface AgentTeamConfig {
     agents: Array<{
@@ -119,4 +123,5 @@ export declare function loadAgentTeamConfig(groupFolder: string): AgentTeamConfi
  * Returns null if the file doesn't exist.
  */
 export declare function loadPipelineConfig(groupFolder: string, groupDir?: string): PipelineConfig | null;
+export {};
 //# sourceMappingURL=pipeline-runner.d.ts.map

@@ -22,10 +22,6 @@ export interface PipelineStage {
 export interface PipelineConfig {
   stages: PipelineStage[];
   entryStage?: string;
-  errorPolicy: {
-    maxConsecutive: number;
-    debugOnMaxErrors: boolean;
-  };
 }
 
 // Default mount keys and their allowed modes for the UI (fallback when dirs not available).
@@ -51,8 +47,9 @@ export function getMountOptions(
   } else {
     Object.assign(opts, DEFAULT_MOUNT_OPTIONS);
   }
-  // Also include any extra keys already in the stage's mounts
+  // Also include any extra keys already in the stage's mounts (skip project:* sub-mounts)
   for (const key of Object.keys(stage.mounts)) {
+    if (key.startsWith('project:') || key.startsWith('art:')) continue; // handled by MountOverlay
     if (!opts[key]) {
       opts[key] = ['rw', 'ro', 'null'];
     }
@@ -97,7 +94,6 @@ export interface TeamProject {
 
 export const DEFAULT_PIPELINE: PipelineConfig = {
   stages: [],
-  errorPolicy: { maxConsecutive: 3, debugOnMaxErrors: true },
 };
 
 export const DEFAULT_AGENT_FILES: AgentFiles = {

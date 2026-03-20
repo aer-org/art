@@ -71,10 +71,9 @@ npx vitest run src/pipeline-runner.test.ts  # Single file
 | parseStageMarkers — multi-text join | Joins array before matching |
 | generateRunId — format | Matches `run-{timestamp}-{hex}` |
 | generateRunId — uniqueness | 10 IDs are all distinct |
-| loadPipelineConfig — valid JSON | Parses stages + errorPolicy |
+| loadPipelineConfig — valid JSON | Parses stages |
 | loadPipelineConfig — file missing | Returns null |
 | loadPipelineConfig — empty stages | Returns null |
-| loadPipelineConfig — default errorPolicy | `{ maxConsecutive: 3, debugOnMaxErrors: true }` |
 | loadAgentTeamConfig — valid | Returns agents array |
 | loadAgentTeamConfig — path traversal | Returns null for `../` folders |
 | savePipelineState / loadPipelineState | Round-trip save/load |

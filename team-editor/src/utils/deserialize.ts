@@ -129,7 +129,7 @@ export function deserializeTeam(
   return teamJson.agents.map((entry) => ({
     name: entry.name,
     folder: entry.folder,
-    pipeline: pipelines.get(entry.folder) || { stages: [], errorPolicy: { maxConsecutive: 3, debugOnMaxErrors: true } },
+    pipeline: pipelines.get(entry.folder) || { stages: [] },
     files: { ...DEFAULT_AGENT_FILES },
   }));
 }

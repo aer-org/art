@@ -81,10 +81,6 @@ export function scaffoldArtDir(projectDir: string): void {
   const pipeline = {
     stages,
     entryStage: stages[0]?.name,
-    errorPolicy: {
-      maxConsecutive: 3,
-      debugOnMaxErrors: true,
-    },
   };
   fs.writeFileSync(
     path.join(artDir, 'PIPELINE.json'),
