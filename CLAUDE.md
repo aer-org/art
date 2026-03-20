@@ -15,7 +15,7 @@ CLI tool (`art compose` + `art run`) that orchestrates multi-stage pipelines. Ea
 | `src/container-runner.ts` | Spawns agent containers with mounts and per-stage image support |
 | `src/pipeline-runner.ts` | Host-side pipeline FSM with per-stage image and command mode |
 | `src/image-registry.ts` | Image registry CRUD (`~/.config/aer-art/images.json`) |
-| `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
+| `container/skills/agent-browser/SKILL.md` | Browser automation tool (available to all agents via Bash) |
 
 ## Skills
 

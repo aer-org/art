@@ -137,7 +137,7 @@ Runtime-specific behavior is abstracted via a capabilities system — code branc
 - **Project root mounted read-only** — agents cannot modify host code
 - **`.env` shadowed with `/dev/null`** — secrets never exposed
 - **Credential proxy** — containers never see real API keys; a host-side proxy injects credentials
-- **Per-group IPC isolation** — groups cannot access each other's communication channels
+- **Per-group IPC isolation** — groups cannot access each other's IPC directories
 - **Mount allowlist** — additional mounts validated against external allowlist
 
 See `docs/SECURITY.md` for the full security model.
@@ -199,10 +199,9 @@ my-project/                         # Your existing project (read-only to agents
 
 | Document | Content |
 |----------|---------|
-| `docs/ARCHITECTURE.md` | Full system architecture — pipeline FSM, container runtime, IPC, channels |
+| `docs/ARCHITECTURE.md` | Full system architecture — pipeline FSM, container runtime, mount isolation |
 | `docs/REQUIREMENTS.md` | Design philosophy and decisions |
 | `docs/SECURITY.md` | Security model — trust boundaries, mount isolation, credential proxy |
-| `docs/skills-as-branches.md` | How skills are distributed and installed via git branches |
 | `docs/docker-sandboxes.md` | Running ART inside Docker Sandboxes (nested isolation) |
 | `docs/APPLE-CONTAINER-NETWORKING.md` | Apple Container networking setup (macOS 26) |
 | `docs/SDK_DEEP_DIVE.md` | Claude Agent SDK internals |
