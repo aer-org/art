@@ -1,7 +1,7 @@
 # Automated Research Team (ART)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
+npm install -g @aer-org/art
 ```
 
 ```bash
@@ -59,6 +59,12 @@ Permissions are enforced by **container mounts** — hidden directories are not 
 ---
 
 ## Installation
+
+### npm (recommended)
+
+```bash
+npm install -g @aer-org/art
+```
 
 ### One-Line Install
 
