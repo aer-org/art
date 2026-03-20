@@ -35,7 +35,6 @@ export async function setupEngine(opts: {
   process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
 
   const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
-  process.env.ART_TUI_JID = `art://${projectDir}`;
 
   // Import engine modules (logger will see ART_TUI_LOG_DIR)
   const { setEngineRoot, setDataDir, setCredentialProxyPort } =

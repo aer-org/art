@@ -132,11 +132,8 @@ export async function run(targetDir) {
             workspaceDir: artDir,
         },
     };
-    // Import and start the engine
-    const { startEngine } = await import('../index.js');
-    await startEngine({
-        autoRegisterGroup: { jid: process.env.ART_TUI_JID, group: artGroup },
-        runId,
-    });
+    // Import and run the pipeline engine
+    const { runPipeline } = await import('../run-engine.js');
+    await runPipeline({ group: artGroup, runId, artDir });
 }
 //# sourceMappingURL=run.js.map
