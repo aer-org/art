@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_SSH="git@github.com:aer-org/art.git"
 REPO_HTTPS="https://github.com/aer-org/art.git"
-BRANCH="dev"
+BRANCH="main"
 INSTALL_DIR="${ART_INSTALL_DIR:-$HOME/.art}"
 BIN_NAME="art"
 
@@ -27,7 +27,7 @@ if ! command -v git &>/dev/null; then
 fi
 
 # Pick SSH if key access works, otherwise fall back to HTTPS
-SSH_OUTPUT=$(ssh -T git@github.com 2>&1 || true)
+SSH_OUTPUT=$(ssh -T git@github.com < /dev/null 2>&1 || true)
 if echo "$SSH_OUTPUT" | grep -qi "successfully authenticated"; then
   REPO="$REPO_SSH"
 else

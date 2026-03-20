@@ -1,6 +1,10 @@
 # Automated Research Team (ART)
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
+```
+
+```bash
 cd my-project
 art compose .                 # Initialize (if needed) and open pipeline editor
 art run .                     # Execute pipeline in Docker-isolated containers
