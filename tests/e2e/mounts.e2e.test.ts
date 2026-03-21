@@ -43,9 +43,10 @@ describe.skipIf(!hasDocker)('Mount: read-only (ro)', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain('READ_OK');
-    expect(result.stdout).toContain('WRITE_FAIL');
-    expect(result.stdout).not.toContain('WRITE_OK');
+    // Stage output is prefixed with [stage-name] to distinguish from log lines
+    expect(result.stdout).toContain('[test-ro] READ_OK');
+    expect(result.stdout).toContain('[test-ro] WRITE_FAIL');
+    expect(result.stdout).not.toContain('[test-ro] WRITE_OK');
   });
 });
 
@@ -66,8 +67,8 @@ describe.skipIf(!hasDocker)('Mount: read-write (rw)', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain('WRITE_OK');
-    expect(result.stdout).not.toContain('WRITE_FAIL');
+    expect(result.stdout).toContain('[test-rw] WRITE_OK');
+    expect(result.stdout).not.toContain('[test-rw] WRITE_FAIL');
 
     // Verify file actually persisted on host
     const writtenFile = path.join(fixtureDir, '__art__', 'src', 'written.txt');
@@ -93,8 +94,8 @@ describe.skipIf(!hasDocker)('Mount: hidden (null)', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain('HIDDEN');
-    expect(result.stdout).not.toContain('VISIBLE');
+    expect(result.stdout).toContain('[test-hidden] HIDDEN');
+    expect(result.stdout).not.toContain('[test-hidden] VISIBLE');
   });
 });
 
@@ -117,19 +118,19 @@ describe.skipIf(!hasDocker)('Mount: project ro + sub-path rw', () => {
     expect(result.code).toBe(0);
 
     // Project root is readable
-    expect(result.stdout).toContain('PROJECT_READ_OK');
+    expect(result.stdout).toContain('[test-project-sub] PROJECT_READ_OK');
 
     // Project root is NOT writable
-    expect(result.stdout).toContain('PROJECT_WRITE_FAIL');
-    expect(result.stdout).not.toContain('PROJECT_WRITE_OK');
+    expect(result.stdout).toContain('[test-project-sub] PROJECT_WRITE_FAIL');
+    expect(result.stdout).not.toContain('[test-project-sub] PROJECT_WRITE_OK');
 
     // Sub-path src/generated is writable
-    expect(result.stdout).toContain('SUB_WRITE_OK');
-    expect(result.stdout).not.toContain('SUB_WRITE_FAIL');
+    expect(result.stdout).toMatch(/SUB_WRITE_OK/);
+    expect(result.stdout).not.toMatch(/\] SUB_WRITE_FAIL/);
 
-    // __art__/ is always hidden from container
-    expect(result.stdout).toContain('ART_HIDDEN');
-    expect(result.stdout).not.toContain('ART_VISIBLE');
+    // __art__/ contents are hidden from container (shadow with empty dir)
+    expect(result.stdout).toMatch(/ART_HIDDEN/);
+    expect(result.stdout).not.toMatch(/\] ART_VISIBLE/);
 
     // Verify written file persisted on host
     const outputFile = path.join(

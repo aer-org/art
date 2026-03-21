@@ -84,10 +84,11 @@ export declare class PipelineRunner {
     /** Send a visually prominent banner to TUI for stage transitions */
     private notifyBanner;
     /**
-     * Build internal mounts for a stage based on its mount policy.
-     * Returns absolute container paths under /workspace/group/ for direct overlay.
+     * Build all internal mounts for a stage: group mounts + project mount +
+     * __art__ shadow + project:* sub-path overrides.
+     * Shared by both agent mode and command mode.
      */
-    private pipelineStageMounts;
+    private buildStageMounts;
     /**
      * Spawn a stage container as a virtual sub-group.
      * The container starts with an initial prompt and enters the IPC wait loop.
