@@ -18,7 +18,7 @@ src/container-runner.ts               container/agent-runner/
     │ with volume mounts                   │ with MCP servers
     │                                      │
     ├── data/env/env ──────────────> /workspace/env-dir/env
-    ├── groups/{folder} ───────────> /workspace/group
+    ├── (internalMounts) ─────────> /workspace/{key}
     ├── data/ipc/{folder} ────────> /workspace/ipc
     └── data/sessions/{folder}/.claude/ ──> /home/node/.claude/
 ```
@@ -163,7 +163,7 @@ cp .env data/env/env
 echo '{"prompt":"What is 2+2?","groupFolder":"test","chatJid":"test","isMain":false}' | \
   docker run -i \
   -v $(pwd)/data/env:/workspace/env-dir:ro \
-  -v $(pwd)/groups/test:/workspace/group \
+  -v $(pwd)/groups/test:/workspace \
   -v $(pwd)/data/ipc:/workspace/ipc \
   art-agent:latest
 ```
@@ -191,7 +191,7 @@ The agent-runner uses these Claude Agent SDK options:
 query({
   prompt: input.prompt,
   options: {
-    cwd: '/workspace/group',
+    cwd: '/workspace',
     allowedTools: ['Bash', 'Read', 'Write', ...],
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,  // Required with bypassPermissions

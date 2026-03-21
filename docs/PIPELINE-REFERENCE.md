@@ -91,13 +91,13 @@ This mounts the project root as read-only, but grants write access to `src/gener
 
 | Mount key | Container path |
 |-----------|---------------|
-| `plan` | `/workspace/group/plan` |
-| `src` | `/workspace/group/src` |
-| `outputs` | `/workspace/group/outputs` |
+| `plan` | `/workspace/plan` |
+| `src` | `/workspace/src` |
+| `outputs` | `/workspace/outputs` |
 | `project` | `/workspace/project` |
 | `project:src/foo` | `/workspace/project/src/foo` (overlay on project mount) |
 
-The agent's working directory is `/workspace/group`.
+The agent's working directory is `/workspace`.
 
 ## Transitions
 

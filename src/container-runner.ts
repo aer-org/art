@@ -2,7 +2,7 @@
  * Container Runner for AerArt
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, exec, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -71,7 +71,7 @@ function buildVolumeMounts(
 
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
+    // (IPC, .claude/) are mounted separately below.
     // Read-only prevents the agent from modifying host application code
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
@@ -91,23 +91,10 @@ function buildVolumeMounts(
         readonly: true,
       });
     }
+  }
 
-    // Main also gets its group folder as the working directory
-    mounts.push({
-      hostPath: groupDir,
-      containerPath: '/workspace/group',
-      readonly: false,
-    });
-  } else {
-    // Other groups only get their own folder (workspaceDir overrides host path)
-    mounts.push({
-      hostPath: group.containerConfig?.workspaceDir || groupDir,
-      containerPath: '/workspace/group',
-      readonly: group.containerConfig?.groupReadonly === true,
-    });
-
-    // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
+  // Global memory directory (read-only, shared across all groups)
+  if (!isMain) {
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
@@ -295,6 +282,20 @@ export function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
+  // Pass host git identity so containers can commit without extra config
+  try {
+    const gitName = execSync('git config --global user.name', {
+      encoding: 'utf-8',
+    }).trim();
+    const gitEmail = execSync('git config --global user.email', {
+      encoding: 'utf-8',
+    }).trim();
+    if (gitName) args.push('-e', `GIT_AUTHOR_NAME=${gitName}`, '-e', `GIT_COMMITTER_NAME=${gitName}`);
+    if (gitEmail) args.push('-e', `GIT_AUTHOR_EMAIL=${gitEmail}`, '-e', `GIT_COMMITTER_EMAIL=${gitEmail}`);
+  } catch {
+    // No global git config — containers will need their own
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
@@ -373,8 +374,7 @@ export async function runContainerAgent(
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
-  const groupDir =
-    group.containerConfig?.workspaceDir || resolveGroupFolderPath(group.folder);
+  const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
   const mounts = buildVolumeMounts(group, input.isMain);

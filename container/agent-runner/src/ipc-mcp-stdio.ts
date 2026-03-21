@@ -46,7 +46,7 @@ server.tool(
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
   },
-  async (args) => {
+  async (args: any) => {
     const data: Record<string, string | undefined> = {
       type: 'message',
       chatJid,
@@ -92,7 +92,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
-  async (args) => {
+  async (args: any) => {
     // Validate schedule_value before writing IPC
     if (args.schedule_type === 'cron') {
       try {
@@ -194,7 +194,7 @@ server.tool(
   'pause_task',
   'Pause a scheduled task. It will not run until resumed.',
   { task_id: z.string().describe('The task ID to pause') },
-  async (args) => {
+  async (args: any) => {
     const data = {
       type: 'pause_task',
       taskId: args.task_id,
@@ -213,7 +213,7 @@ server.tool(
   'resume_task',
   'Resume a paused task.',
   { task_id: z.string().describe('The task ID to resume') },
-  async (args) => {
+  async (args: any) => {
     const data = {
       type: 'resume_task',
       taskId: args.task_id,
@@ -232,7 +232,7 @@ server.tool(
   'cancel_task',
   'Cancel and delete a scheduled task.',
   { task_id: z.string().describe('The task ID to cancel') },
-  async (args) => {
+  async (args: any) => {
     const data = {
       type: 'cancel_task',
       taskId: args.task_id,
@@ -256,7 +256,7 @@ server.tool(
     schedule_type: z.enum(['cron', 'interval', 'once']).optional().describe('New schedule type'),
     schedule_value: z.string().optional().describe('New schedule value (see schedule_task for format)'),
   },
-  async (args) => {
+  async (args: any) => {
     // Validate schedule_value if provided
     if (args.schedule_type === 'cron' || (!args.schedule_type && args.schedule_value)) {
       if (args.schedule_value) {
@@ -308,7 +308,7 @@ Use available_groups.json to find the JID for a group. The folder name must be c
     folder: z.string().describe('Channel-prefixed folder name (e.g., "whatsapp_family-chat", "telegram_dev-team")'),
     trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
   },
-  async (args) => {
+  async (args: any) => {
     if (!isMain) {
       return {
         content: [{ type: 'text' as const, text: 'Only the main group can register new groups.' }],
@@ -356,7 +356,7 @@ Each mount is an object with:
     })).optional().describe('Additional host directories to mount into the sub-agent container'),
     system_prompt: z.string().optional().describe('Custom system prompt / CLAUDE.md content for the sub-agent'),
   },
-  async (args) => {
+  async (args: any) => {
     const agentId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const data = {

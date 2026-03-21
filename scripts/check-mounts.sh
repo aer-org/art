@@ -40,7 +40,19 @@ verify_policy() {
     if [ "$exists" = "no" ]; then
       echo -e "  ${GREEN}OK${RESET}  $label = disabled  ${DIM}(not present)${RESET}"
       ((PASS++))
+    elif docker exec "$container" sh -c "[ ! -d '$cpath' ]" 2>/dev/null; then
+      # Non-directory (file, /dev/null, etc.): disabled means empty or special
+      local size
+      size=$(docker exec "$container" sh -c "stat -c %s '$cpath' 2>/dev/null || echo '?'" 2>/dev/null)
+      if [ "$size" = "0" ]; then
+        echo -e "  ${GREEN}OK${RESET}  $label = disabled  ${DIM}(/dev/null)${RESET}"
+        ((PASS++))
+      else
+        echo -e "  ${RED}FAIL${RESET}  $label = disabled  but file has ${size} bytes!"
+        ((FAIL++))
+      fi
     else
+      # Directory: disabled means empty dir
       local count
       count=$(docker exec "$container" sh -c "ls -A '$cpath' 2>/dev/null | wc -l" 2>/dev/null || echo "?")
       if [ "$count" = "0" ]; then
@@ -65,9 +77,15 @@ verify_policy() {
     return
   fi
 
-  local test_file="$cpath/.art-mount-check-$$"
   local can_write
-  can_write=$(docker exec "$container" sh -c "touch '$test_file' 2>/dev/null && rm -f '$test_file' && echo yes || echo no" 2>/dev/null || echo "error")
+  if docker exec "$container" sh -c "[ -f '$cpath' ]" 2>/dev/null; then
+    # Path is a file — test by touching it (updates mtime if writable)
+    can_write=$(docker exec "$container" sh -c "touch '$cpath' 2>/dev/null && echo yes || echo no" 2>/dev/null || echo "error")
+  else
+    # Path is a directory — test by creating a temp file inside
+    local test_file="$cpath/.art-mount-check-$$"
+    can_write=$(docker exec "$container" sh -c "touch '$test_file' 2>/dev/null && rm -f '$test_file' && echo yes || echo no" 2>/dev/null || echo "error")
+  fi
 
   if [ "$expected" = "rw" ]; then
     if [ "$can_write" = "yes" ]; then
@@ -144,31 +162,14 @@ for stage in pipeline['stages']:
     continue
   fi
 
-  # --- Check group mounts ---
-  echo -e "  ${DIM}── /workspace/group ──${RESET}"
+  # --- Check stage mounts ---
+  echo -e "  ${DIM}── /workspace ──${RESET}"
   mapfile -t GROUP_LINES < <(echo "$STAGE_CONFIG" | grep '^GROUP' || true)
   for line in "${GROUP_LINES[@]}"; do
     [ -z "$line" ] && continue
     key=$(echo "$line" | cut -f2)
     policy=$(echo "$line" | cut -f3)
-    verify_policy "$CONTAINER" "$key" "/workspace/group/$key" "$policy"
-  done
-
-  # Also check all top-level entries under /workspace/group/ for unexpected mounts
-  GROUP_CHILDREN=$(docker exec "$CONTAINER" sh -c "ls -1 /workspace/group/ 2>/dev/null" 2>/dev/null || true)
-  for CHILD in $GROUP_CHILDREN; do
-    # Skip if already checked via PIPELINE.json
-    FOUND=0
-    for line in "${GROUP_LINES[@]}"; do
-      [ -z "$line" ] && continue
-      key=$(echo "$line" | cut -f2)
-      if [ "$key" = "$CHILD" ]; then FOUND=1; break; fi
-    done
-    if [ "$FOUND" = "0" ]; then
-      # Not in pipeline config — report what it actually is
-      can_write=$(docker exec "$CONTAINER" sh -c "touch '/workspace/group/$CHILD/.art-mount-check-$$' 2>/dev/null && rm -f '/workspace/group/$CHILD/.art-mount-check-$$' && echo rw || echo ro" 2>/dev/null || echo "?")
-      echo -e "  ${DIM}--${RESET}  $CHILD = $can_write  ${DIM}(not in pipeline config)${RESET}"
-    fi
+    verify_policy "$CONTAINER" "$key" "/workspace/$key" "$policy"
   done
 
   # --- Check project ---

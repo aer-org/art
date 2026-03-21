@@ -138,9 +138,7 @@ export async function run(targetDir, opts) {
         added_at: new Date().toISOString(),
         requiresTrigger: false,
         isMain: true,
-        containerConfig: {
-            workspaceDir: artDir,
-        },
+        containerConfig: {},
     };
     // Import and run the pipeline engine
     const { runPipeline } = await import('../run-engine.js');

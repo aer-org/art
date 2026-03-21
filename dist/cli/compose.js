@@ -93,14 +93,14 @@ export async function startEditorServer(artDir, mode, projectDir) {
         const prompt = mode === 'init'
             ? `You are an expert software architect. Explore the project at /workspace/project/ (read-only).
 
-Write your analysis to /workspace/group/plan/ANALYSIS.md with sections:
+Write your analysis to /workspace/plan/ANALYSIS.md with sections:
 1. Project purpose and type
 2. Tech stack and dependencies
 3. Architecture overview
 4. Code quality observations
 5. Areas for improvement
 
-Then write /workspace/group/plan/PLAN.md with:
+Then write /workspace/plan/PLAN.md with:
 1. Recommended improvement direction
 2. Specific first tasks
 3. Success metrics
@@ -110,10 +110,10 @@ After writing both files, summarize your findings in 2-3 sentences. The user can
 Use Korean if the project contains Korean documentation, otherwise use English. You can mix both naturally.`
             : `You are an expert software architect. The project is mounted at /workspace/project/ (read-only).
 
-The current plan is at /workspace/group/plan/PLAN.md (if it exists).
+The current plan is at /workspace/plan/PLAN.md (if it exists).
 The user wants to discuss and modify the plan. Help them refine it.
 
-When the user asks for changes, update /workspace/group/plan/PLAN.md accordingly.
+When the user asks for changes, update /workspace/plan/PLAN.md accordingly.
 Continue the conversation until the user is done.
 
 Use Korean if the project contains Korean documentation, otherwise use English.`;
@@ -130,7 +130,6 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             isMain: false,
             containerConfig: {
                 image: getImageForStage(),
-                groupReadonly: true,
                 internalMounts: [
                     {
                         hostPath: resolvedProjectDir,
@@ -144,7 +143,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                     },
                     {
                         hostPath: planDir,
-                        containerPath: '/workspace/group/plan',
+                        containerPath: '/workspace/plan',
                         readonly: false,
                     },
                 ],
@@ -1169,14 +1168,14 @@ async function runHeadlessCompose(artDir, mode, projectDir) {
     const prompt = mode === 'init'
         ? `You are an expert software architect. Explore the project at /workspace/project/ (read-only).
 
-Write your analysis to /workspace/group/plan/ANALYSIS.md with sections:
+Write your analysis to /workspace/plan/ANALYSIS.md with sections:
 1. Project purpose and type
 2. Tech stack and dependencies
 3. Architecture overview
 4. Code quality observations
 5. Areas for improvement
 
-Then write /workspace/group/plan/PLAN.md with:
+Then write /workspace/plan/PLAN.md with:
 1. Recommended improvement direction
 2. Specific first tasks
 3. Success metrics
@@ -1186,8 +1185,8 @@ After writing both files, output a brief summary.
 Use Korean if the project contains Korean documentation, otherwise use English.`
         : `You are an expert software architect. The project is mounted at /workspace/project/ (read-only).
 
-The current plan is at /workspace/group/plan/PLAN.md (if it exists).
-Review the plan and refine it. Update /workspace/group/plan/PLAN.md with improvements.
+The current plan is at /workspace/plan/PLAN.md (if it exists).
+Review the plan and refine it. Update /workspace/plan/PLAN.md with improvements.
 
 After updating, output a brief summary of changes.
 
@@ -1203,7 +1202,6 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         isMain: false,
         containerConfig: {
             image: getImageForStage(),
-            groupReadonly: true,
             internalMounts: [
                 {
                     hostPath: projectDir,
@@ -1217,7 +1215,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
                 },
                 {
                     hostPath: planDir,
-                    containerPath: '/workspace/group/plan',
+                    containerPath: '/workspace/plan',
                     readonly: false,
                 },
             ],

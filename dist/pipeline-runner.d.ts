@@ -78,6 +78,7 @@ export declare class PipelineRunner {
     private manifest;
     private aborted;
     private currentHandle;
+    private stageSessionIds;
     constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string);
     getRunId(): string;
     abort(): Promise<void>;
