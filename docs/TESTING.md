@@ -140,6 +140,15 @@ The E2E suite installs the package globally via `npm pack → npm install -g` to
 - `cleanupFixture(dir)` — removes tmpdir
 - `readPipelineState(artDir)` — parses `PIPELINE_STATE.json`
 
+### `tests/e2e/mounts.e2e.test.ts`
+
+| Test | Docker | API | Description |
+|------|:---:|:---:|-------------|
+| Read-only mount (ro) | Yes | No | Can read, cannot write to `"src": "ro"` mount |
+| Read-write mount (rw) | Yes | No | Can read and write to `"src": "rw"` mount, file persists on host |
+| Hidden mount (null) | Yes | No | `"memory": null` path not visible in container |
+| Project ro + sub-path rw | Yes | No | Project readable not writable, `project:src/generated` writable, `__art__/` hidden |
+
 ### Fixtures (`tests/e2e/fixtures/`)
 
 | Fixture | Purpose |
@@ -148,6 +157,10 @@ The E2E suite installs the package globally via `npm pack → npm install -g` to
 | `multi-stage/` | 3 command stages with transitions |
 | `minimal-agent/` | Single agent stage (API required) |
 | `minimal-compose/` | Empty project for headless compose |
+| `mount-ro/` | Read-only group mount verification |
+| `mount-rw/` | Read-write group mount verification |
+| `mount-hidden/` | Hidden (null) mount verification |
+| `mount-project-sub/` | Project mount with sub-path override |
 
 ## CI Configuration
 
