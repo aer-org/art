@@ -20,6 +20,6 @@ groups/
 .DS_Store
 .idea/
 .vscode/
-src/
+/src/
 tsconfig.json
 vitest.config.ts
