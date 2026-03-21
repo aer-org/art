@@ -93,6 +93,10 @@ describe.skipIf(!hasDocker)('Mount: hidden (null)', () => {
   it('cannot see hidden mount path', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
+    if (result.code !== 0) {
+      console.error('HIDDEN STDERR:', result.stderr);
+      console.error('HIDDEN STDOUT:', result.stdout.slice(-500));
+    }
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('[test-hidden] HIDDEN');
     expect(result.stdout).not.toContain('[test-hidden] VISIBLE');
@@ -115,6 +119,10 @@ describe.skipIf(!hasDocker)('Mount: project ro + sub-path rw', () => {
   it('project is readable, not writable; sub-path is writable; __art__ is hidden', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
+    if (result.code !== 0) {
+      console.error('PROJECT-SUB STDERR:', result.stderr);
+      console.error('PROJECT-SUB STDOUT:', result.stdout.slice(-500));
+    }
     expect(result.code).toBe(0);
 
     // Project root is readable
