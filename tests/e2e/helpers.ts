@@ -14,11 +14,13 @@ export interface RunResult {
  * Call once in globalSetup or beforeAll. Returns the tarball path for cleanup.
  */
 export function installGlobal(): string {
-  // npm pack creates a .tgz in cwd
-  const tarball = execSync('npm pack --pack-destination /tmp', {
+  // npm pack outputs build logs + filename; grab the last non-empty line
+  const output = execSync('npm pack --pack-destination /tmp', {
     encoding: 'utf-8',
-    timeout: 30_000,
-  }).trim();
+    timeout: 60_000,
+  });
+  const lines = output.trim().split('\n').filter(Boolean);
+  const tarball = lines[lines.length - 1].trim();
   const tgzPath = path.join('/tmp', tarball);
   execSync(`npm install -g "${tgzPath}"`, {
     stdio: 'pipe',
