@@ -34,6 +34,7 @@ export function StageNode({ data, selected }: NodeProps<StageNodeType>) {
     <div className={`stage-node ${selected ? 'selected' : ''} ${isEntry ? 'entry' : ''} ${runStatus ? `run-${runStatus}` : ''}`}>
       <div className="stage-title-bar">
         {isEntry && <span className="entry-badge">START</span>}
+        {stage.command && <span className="cmd-badge">CMD</span>}
         {stage.name}
       </div>
 

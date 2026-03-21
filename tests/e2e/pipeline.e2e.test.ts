@@ -111,6 +111,10 @@ describe.skipIf(!hasDocker)('Command-mode pipeline', () => {
   it('completes single-stage command pipeline with exit 0', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
+    if (result.code !== 0) {
+      console.error('STDERR:', result.stderr);
+      console.error('STDOUT:', result.stdout.slice(-500));
+    }
     expect(result.code).toBe(0);
 
     const state = readPipelineState(path.join(fixtureDir, '__art__'));

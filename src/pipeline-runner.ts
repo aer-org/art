@@ -387,24 +387,25 @@ export class PipelineRunner {
   }
 
   /**
-   * Build internal mounts for a stage based on its mount policy.
-   * Returns absolute container paths under /workspace/group/ for direct overlay.
+   * Build all internal mounts for a stage: group mounts + project mount +
+   * __art__ shadow + project:* sub-path overrides.
+   * Shared by both agent mode and command mode.
    */
-  private pipelineStageMounts(
+  private buildStageMounts(
     stageConfig: PipelineStage,
   ): Array<{ hostPath: string; containerPath: string; readonly: boolean }> {
-    const groupDir = this.groupDir;
     const mounts: Array<{
       hostPath: string;
       containerPath: string;
       readonly: boolean;
     }> = [];
 
+    // Group mounts (e.g. "src": "rw" → /workspace/group/src)
     for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-      if (key === 'project' || key.startsWith('project:')) continue; // handled separately
+      if (key === 'project' || key.startsWith('project:')) continue;
       if (!policy) continue;
 
-      const hostDir = path.join(groupDir, key);
+      const hostDir = path.join(this.groupDir, key);
       fs.mkdirSync(hostDir, { recursive: true });
 
       mounts.push({
@@ -412,6 +413,51 @@ export class PipelineRunner {
         containerPath: `/workspace/group/${key}`,
         readonly: policy === 'ro',
       });
+    }
+
+    // Project mount (parent of __art__/)
+    const projectPolicy = stageConfig.mounts['project'];
+    const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
+    if (effectivePolicy) {
+      mounts.push({
+        hostPath: path.dirname(this.groupDir),
+        containerPath: '/workspace/project',
+        readonly: effectivePolicy === 'ro',
+      });
+
+      // Shadow __art__/ with empty dir
+      const emptyDir = path.join(DATA_DIR, 'empty');
+      fs.mkdirSync(emptyDir, { recursive: true });
+      const artDirName = path.basename(this.groupDir);
+      mounts.push({
+        hostPath: emptyDir,
+        containerPath: `/workspace/project/${artDirName}`,
+        readonly: true,
+      });
+
+      // Process project:* sub-mount overrides
+      const projectRoot = path.dirname(this.groupDir);
+      for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
+        if (!key.startsWith('project:')) continue;
+        const subPath = key.slice('project:'.length);
+        if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
+          continue;
+
+        if (subPolicy === null) {
+          mounts.push({
+            hostPath: emptyDir,
+            containerPath: `/workspace/project/${subPath}`,
+            readonly: true,
+          });
+        } else if (subPolicy && subPolicy !== effectivePolicy) {
+          const subHostPath = path.join(projectRoot, subPath);
+          mounts.push({
+            hostPath: subHostPath,
+            containerPath: `/workspace/project/${subPath}`,
+            readonly: subPolicy === 'ro',
+          });
+        }
+      }
     }
 
     return mounts;
@@ -438,56 +484,8 @@ export class PipelineRunner {
       `# Pipeline Stage: ${stageConfig.name}\n\nYou are the ${stageConfig.name} agent in an automated pipeline. Follow instructions precisely and use the correct stage markers.\n`,
     );
 
-    // Build internal mounts (project dirs mounted under /workspace/group/)
-    const internalMounts = this.pipelineStageMounts(stageConfig);
-
-    // Mount project directory (parent of __art__/) based on config
-    const projectPolicy = stageConfig.mounts['project'];
-    const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
-    if (effectivePolicy) {
-      internalMounts.push({
-        hostPath: path.dirname(this.groupDir),
-        containerPath: '/workspace/project',
-        readonly: effectivePolicy === 'ro',
-      });
-      // Shadow __art__/ with empty dir so agents can't see pipeline internals
-      const emptyDir = path.join(DATA_DIR, 'empty');
-      fs.mkdirSync(emptyDir, { recursive: true });
-      const artDirName = path.basename(this.groupDir);
-      internalMounts.push({
-        hostPath: emptyDir,
-        containerPath: `/workspace/project/${artDirName}`,
-        readonly: true,
-      });
-
-      // Process project:* sub-mount overrides
-      const projectRoot = path.dirname(this.groupDir);
-      for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
-        if (!key.startsWith('project:')) continue;
-        const subPath = key.slice('project:'.length);
-        // Skip __art__/ paths (already shadowed above)
-        if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
-          continue;
-
-        if (subPolicy === null) {
-          // Disabled → shadow with empty dir
-          internalMounts.push({
-            hostPath: emptyDir,
-            containerPath: `/workspace/project/${subPath}`,
-            readonly: true,
-          });
-        } else if (subPolicy && subPolicy !== effectivePolicy) {
-          // Different permission from root → overlay mount
-          const subHostPath = path.join(projectRoot, subPath);
-          internalMounts.push({
-            hostPath: subHostPath,
-            containerPath: `/workspace/project/${subPath}`,
-            readonly: subPolicy === 'ro',
-          });
-        }
-        // Same permission as root → inherited, no extra mount needed
-      }
-    }
+    // Build internal mounts (group + project + sub-path overrides)
+    const internalMounts = this.buildStageMounts(stageConfig);
 
     // Resolve container image from registry (agent mode only)
     let resolvedImage: string | undefined;
@@ -653,27 +651,7 @@ export class PipelineRunner {
     logStream?: fs.WriteStream,
   ): Promise<ContainerOutput> {
     const rt = getRuntime();
-    const internalMounts = this.pipelineStageMounts(stageConfig);
-
-    // Mount project directory based on config
-    const projectPolicy = stageConfig.mounts['project'];
-    const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
-    if (effectivePolicy) {
-      internalMounts.push({
-        hostPath: path.dirname(this.groupDir),
-        containerPath: '/workspace/project',
-        readonly: effectivePolicy === 'ro',
-      });
-      // Shadow __art__/ with empty dir so commands can't see pipeline internals
-      const emptyDir = path.join(DATA_DIR, 'empty');
-      fs.mkdirSync(emptyDir, { recursive: true });
-      const artDirName = path.basename(this.groupDir);
-      internalMounts.push({
-        hostPath: emptyDir,
-        containerPath: `/workspace/project/${artDirName}`,
-        readonly: true,
-      });
-    }
+    const internalMounts = this.buildStageMounts(stageConfig);
 
     const safeName = stageConfig.name.replace(/[^a-zA-Z0-9-]/g, '-');
     const containerName = `aer-art-cmd-${safeName}-${Date.now()}`;
