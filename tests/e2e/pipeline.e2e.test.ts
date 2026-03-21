@@ -12,6 +12,7 @@ import {
   imageExists,
   installGlobal,
   uninstallGlobal,
+  listPackageFiles,
 } from './helpers.js';
 
 const hasDocker = isDockerAvailable();
@@ -27,6 +28,43 @@ beforeAll(() => {
 afterAll(() => {
   uninstallGlobal();
   try { fs.unlinkSync(tgzPath); } catch { /* ok */ }
+});
+
+// ─── Package contents (regression for #13: agent-runner src excluded) ─────────
+
+describe('Package contents', () => {
+  let files: string[];
+
+  beforeAll(() => {
+    files = listPackageFiles();
+  });
+
+  it('includes CLI entry point', () => {
+    expect(files).toContain('dist/cli/index.js');
+  });
+
+  it('includes container build files', () => {
+    expect(files).toContain('container/Dockerfile');
+    expect(files).toContain('container/build.sh');
+  });
+
+  it('includes agent-runner source (regression #13)', () => {
+    const agentRunnerSrc = files.filter((f) =>
+      f.startsWith('container/agent-runner/src/'),
+    );
+    expect(agentRunnerSrc.length).toBeGreaterThan(0);
+  });
+
+  it('includes agent-runner dist', () => {
+    const agentRunnerDist = files.filter((f) =>
+      f.startsWith('container/agent-runner/dist/'),
+    );
+    expect(agentRunnerDist.length).toBeGreaterThan(0);
+  });
+
+  it('includes agent-runner package.json', () => {
+    expect(files).toContain('container/agent-runner/package.json');
+  });
 });
 
 // ─── Test 1: Environment check ───────────────────────────────────────────────

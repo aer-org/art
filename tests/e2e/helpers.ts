@@ -103,6 +103,24 @@ export function readPipelineState(
 }
 
 /**
+ * List files included in the npm package (npm pack --dry-run).
+ * Returns an array of relative file paths.
+ */
+export function listPackageFiles(): string[] {
+  const output = execSync('npm pack --dry-run 2>&1', {
+    encoding: 'utf-8',
+    timeout: 60_000,
+  });
+  const files: string[] = [];
+  for (const line of output.split('\n')) {
+    // npm notice <size> <path>
+    const match = line.match(/^npm notice\s+[\d.]+\s*[kMG]?B\s+(.+)$/);
+    if (match) files.push(match[1].trim());
+  }
+  return files;
+}
+
+/**
  * Check if Docker is available.
  */
 export function isDockerAvailable(): boolean {
