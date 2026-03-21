@@ -1231,41 +1231,48 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         endOnFirstResult: true, // one-shot: exit after first result
     };
     // Start credential proxy
+    let proxyServer;
     try {
-        const { port: actualPort } = await startCredentialProxy(0, '0.0.0.0');
+        const { server, port: actualPort } = await startCredentialProxy(0, '0.0.0.0');
+        proxyServer = server;
         setCredentialProxyPort(actualPort);
     }
     catch {
         // May already be running
     }
     console.log('🔍 Headless compose: running planning agent...');
-    const result = await runContainerAgent(group, input, (proc, _containerName) => {
-        proc.stdout?.on('data', (data) => {
-            // Stream raw agent output to console
-            const text = data.toString();
-            // Strip output markers for clean console display
-            const cleaned = text
-                .replace(/---AER_ART_OUTPUT_START---/g, '')
-                .replace(/---AER_ART_OUTPUT_END---/g, '')
-                .replace(/---AER_ART_TOOL_START---/g, '')
-                .replace(/---AER_ART_TOOL_END---/g, '');
-            if (cleaned.trim())
-                process.stdout.write(cleaned);
+    try {
+        const result = await runContainerAgent(group, input, (proc, _containerName) => {
+            proc.stdout?.on('data', (data) => {
+                // Stream raw agent output to console
+                const text = data.toString();
+                // Strip output markers for clean console display
+                const cleaned = text
+                    .replace(/---AER_ART_OUTPUT_START---/g, '')
+                    .replace(/---AER_ART_OUTPUT_END---/g, '')
+                    .replace(/---AER_ART_TOOL_START---/g, '')
+                    .replace(/---AER_ART_TOOL_END---/g, '');
+                if (cleaned.trim())
+                    process.stdout.write(cleaned);
+            });
+            proc.stderr?.on('data', (data) => {
+                const lines = data.toString().trim().split('\n');
+                for (const line of lines) {
+                    if (line)
+                        console.error(`[agent] ${line}`);
+                }
+            });
         });
-        proc.stderr?.on('data', (data) => {
-            const lines = data.toString().trim().split('\n');
-            for (const line of lines) {
-                if (line)
-                    console.error(`[agent] ${line}`);
-            }
-        });
-    });
-    if (result.status === 'success') {
-        console.log('\n✅ Headless compose completed.');
+        if (result.status === 'success') {
+            console.log('\n✅ Headless compose completed.');
+        }
+        else {
+            console.error(`\n❌ Headless compose failed: ${result.error || 'unknown error'}`);
+            process.exit(1);
+        }
     }
-    else {
-        console.error(`\n❌ Headless compose failed: ${result.error || 'unknown error'}`);
-        process.exit(1);
+    finally {
+        proxyServer?.close();
     }
 }
 export async function compose(targetDir, opts) {

@@ -1357,8 +1357,13 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
   };
 
   // Start credential proxy
+  let proxyServer: import('http').Server | undefined;
   try {
-    const { port: actualPort } = await startCredentialProxy(0, '0.0.0.0');
+    const { server, port: actualPort } = await startCredentialProxy(
+      0,
+      '0.0.0.0',
+    );
+    proxyServer = server;
     setCredentialProxyPort(actualPort);
   } catch {
     // May already be running
@@ -1366,37 +1371,41 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
   console.log('🔍 Headless compose: running planning agent...');
 
-  const result = await runContainerAgent(
-    group,
-    input,
-    (proc: ChildProcess, _containerName: string) => {
-      proc.stdout?.on('data', (data: Buffer) => {
-        // Stream raw agent output to console
-        const text = data.toString();
-        // Strip output markers for clean console display
-        const cleaned = text
-          .replace(/---AER_ART_OUTPUT_START---/g, '')
-          .replace(/---AER_ART_OUTPUT_END---/g, '')
-          .replace(/---AER_ART_TOOL_START---/g, '')
-          .replace(/---AER_ART_TOOL_END---/g, '');
-        if (cleaned.trim()) process.stdout.write(cleaned);
-      });
-      proc.stderr?.on('data', (data: Buffer) => {
-        const lines = data.toString().trim().split('\n');
-        for (const line of lines) {
-          if (line) console.error(`[agent] ${line}`);
-        }
-      });
-    },
-  );
-
-  if (result.status === 'success') {
-    console.log('\n✅ Headless compose completed.');
-  } else {
-    console.error(
-      `\n❌ Headless compose failed: ${result.error || 'unknown error'}`,
+  try {
+    const result = await runContainerAgent(
+      group,
+      input,
+      (proc: ChildProcess, _containerName: string) => {
+        proc.stdout?.on('data', (data: Buffer) => {
+          // Stream raw agent output to console
+          const text = data.toString();
+          // Strip output markers for clean console display
+          const cleaned = text
+            .replace(/---AER_ART_OUTPUT_START---/g, '')
+            .replace(/---AER_ART_OUTPUT_END---/g, '')
+            .replace(/---AER_ART_TOOL_START---/g, '')
+            .replace(/---AER_ART_TOOL_END---/g, '');
+          if (cleaned.trim()) process.stdout.write(cleaned);
+        });
+        proc.stderr?.on('data', (data: Buffer) => {
+          const lines = data.toString().trim().split('\n');
+          for (const line of lines) {
+            if (line) console.error(`[agent] ${line}`);
+          }
+        });
+      },
     );
-    process.exit(1);
+
+    if (result.status === 'success') {
+      console.log('\n✅ Headless compose completed.');
+    } else {
+      console.error(
+        `\n❌ Headless compose failed: ${result.error || 'unknown error'}`,
+      );
+      process.exit(1);
+    }
+  } finally {
+    proxyServer?.close();
   }
 }
 
