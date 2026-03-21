@@ -5,6 +5,7 @@ setup/
 repo-tokens/
 team-editor/src/
 team-editor/node_modules/
+container/agent-runner/node_modules/
 team-editor/*.json
 team-editor/*.js
 team-editor/*.md
