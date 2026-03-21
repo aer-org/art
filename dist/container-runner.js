@@ -124,12 +124,12 @@ function buildVolumeMounts(group, isMain) {
         // Agents can still customize at runtime; changes are overwritten on next run.
         fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
         fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+        mounts.push({
+            hostPath: groupAgentRunnerDir,
+            containerPath: '/app/src',
+            readonly: false,
+        });
     }
-    mounts.push({
-        hostPath: groupAgentRunnerDir,
-        containerPath: '/app/src',
-        readonly: false,
-    });
     // udocker F1 (Fakechroot) can't resolve symlinked binaries like npx,
     // and doesn't support stdin piping. Mount a patched entrypoint that:
     // 1. Calls tsc via node directly (no npx symlink)
