@@ -113,25 +113,30 @@ npm run test:e2e                    # All E2E tests (Docker required)
 npx vitest run --config vitest.e2e.config.ts tests/e2e/pipeline.e2e.test.ts  # Single file
 ```
 
+The E2E suite installs the package globally via `npm pack → npm install -g` to match real user install environment.
+
 ### `tests/e2e/pipeline.e2e.test.ts`
 
-| # | Test | API Required | Description |
-|---|------|:---:|-------------|
-| 1 | Environment check | No | Docker available, Node 20+ |
-| 2 | Container image build | No | `art-agent:latest` exists or builds successfully |
-| 3 | Single command pipeline | No | `echo '[STAGE_COMPLETE]'` → exit 0, state=success |
-| 4 | Multi-stage command pipeline | No | 3 stages (a→b→c) complete in order |
-| 5 | Agent-mode pipeline | Yes | Claude API call → `[STAGE_COMPLETE]` marker |
-| 6 | Headless compose | Yes | `art compose --headless` → PLAN.md created |
-| 7 | Compose + Run full flow | Yes | headless compose → overwrite PLAN.md → `art run` succeeds |
+| # | Test | Docker | API | Description |
+|---|------|:---:|:---:|-------------|
+| — | Package contents (regression #13) | No | No | Verifies `npm pack` includes agent-runner src/dist, Dockerfile, build.sh |
+| 1 | Environment check | No | No | Docker available, Node 20+ |
+| 2 | Container image build | Yes | No | `art-agent:latest` exists or builds successfully |
+| 3 | Single command pipeline | Yes | No | `echo '[STAGE_COMPLETE]'` → exit 0, state=success |
+| 4 | Multi-stage command pipeline | Yes | No | 3 stages (a→b→c) complete in order |
+| 5 | Agent-mode pipeline | Yes | Yes | Claude API call → `[STAGE_COMPLETE]` marker |
+| 6 | Headless compose | Yes | Yes | `art compose --headless` → PLAN.md created |
+| 7 | Compose + Run full flow | Yes | Yes | headless compose → overwrite PLAN.md → `art run` succeeds |
 
 - Command-mode tests (#3-4) use `--skip-preflight` to bypass Claude CLI/auth checks.
 - API-dependent tests (#5-7) auto-skip when `ANTHROPIC_API_KEY` is absent.
 
 ### Test helpers (`tests/e2e/helpers.ts`)
 
+- `installGlobal()` / `uninstallGlobal()` — `npm pack` → `npm install -g` / cleanup
+- `listPackageFiles()` — `npm pack --dry-run` output parsed to file list
 - `copyFixture(name)` — copies `tests/e2e/fixtures/{name}` to tmpdir
-- `runArt(args, cwd, env?)` — spawns `node dist/cli/index.js` and returns `{ code, stdout, stderr }`
+- `runArt(args, cwd, env?)` — spawns global `art` binary and returns `{ code, stdout, stderr }`
 - `cleanupFixture(dir)` — removes tmpdir
 - `readPipelineState(artDir)` — parses `PIPELINE_STATE.json`
 
