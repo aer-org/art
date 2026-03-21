@@ -65,6 +65,18 @@
   letter-spacing: 0.5px;
 }
 
+.cmd-badge {
+  display: inline-block;
+  background: #1e3a5f;
+  color: #89b4fa;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+  letter-spacing: 0.5px;
+}
+
 /* Title bar with left accent strip */
 .stage-title-bar {
   background: #313244;

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Node } from '@xyflow/react';
 import type { PipelineStage, PipelineTransition } from '../types';
-import { getMountOptions } from '../types';
+import { getMountOptions, DEFAULT_COMMAND_STAGE, DEFAULT_COMMAND_TRANSITIONS, DEFAULT_TRANSITIONS } from '../types';
 import { MountOverlay } from '../components/MountOverlay';
 
 interface Props {
@@ -23,9 +23,26 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
 
   const stage = node.data.stage as PipelineStage;
   const isEntry = node.data.isEntry as boolean | undefined;
+  const isCommandMode = !!stage.command;
 
   const update = (partial: Partial<PipelineStage>) => {
     onUpdate(node.id, { ...stage, ...partial });
+  };
+
+  const switchMode = (toCommand: boolean) => {
+    if (toCommand && !isCommandMode) {
+      update({
+        ...DEFAULT_COMMAND_STAGE,
+        transitions: DEFAULT_COMMAND_TRANSITIONS.map((t) => ({ ...t })),
+      });
+    } else if (!toCommand && isCommandMode) {
+      update({
+        command: undefined,
+        prompt: 'Describe what this stage should do.',
+        image: undefined,
+        transitions: DEFAULT_TRANSITIONS.map((t) => ({ ...t })),
+      });
+    }
   };
 
   const hasProjectSubKeys = Object.keys(stage.mounts).some((k) => k.startsWith('project:'));
@@ -66,41 +83,76 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
       </label>
 
       <label>
-        Image
+        Mode
         <select
-          value={stage.image || 'default'}
-          onChange={(e) => update({ image: e.target.value === 'default' ? undefined : e.target.value })}
+          value={isCommandMode ? 'command' : 'agent'}
+          onChange={(e) => switchMode(e.target.value === 'command')}
         >
-          {(imageKeys && imageKeys.length > 0 ? imageKeys : ['default']).map((k) => (
-            <option key={k} value={k}>{k}</option>
-          ))}
+          <option value="agent">Agent</option>
+          <option value="command">Command</option>
         </select>
       </label>
 
-      <label>
-        Prompt
-        <div
-          onClick={() => onEditPrompt?.(node.id, stage.prompt, (p) => update({ prompt: p }))}
-          style={{
-            background: '#11111b',
-            border: '1px solid #45475a',
-            borderRadius: '4px',
-            padding: '8px 10px',
-            fontSize: '12px',
-            color: stage.prompt ? '#cdd6f4' : '#6c7086',
-            cursor: 'pointer',
-            whiteSpace: 'pre-wrap',
-            maxHeight: '80px',
-            overflow: 'hidden',
-            fontFamily: "'JetBrains Mono', monospace",
-            lineHeight: '1.4',
-          }}
-        >
-          {stage.prompt
-            ? (stage.prompt.length > 120 ? stage.prompt.slice(0, 120) + '...' : stage.prompt)
-            : 'Click to edit prompt...'}
-        </div>
-      </label>
+      {isCommandMode ? (
+        <>
+          <label>
+            Image
+            <input
+              type="text"
+              value={stage.image || ''}
+              placeholder="e.g. node:22-slim"
+              onChange={(e) => update({ image: e.target.value || undefined })}
+            />
+          </label>
+          <label>
+            Command
+            <input
+              type="text"
+              value={stage.command || ''}
+              placeholder="e.g. echo '[STAGE_COMPLETE]'"
+              onChange={(e) => update({ command: e.target.value || undefined })}
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          <label>
+            Image
+            <select
+              value={stage.image || 'default'}
+              onChange={(e) => update({ image: e.target.value === 'default' ? undefined : e.target.value })}
+            >
+              {(imageKeys && imageKeys.length > 0 ? imageKeys : ['default']).map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Prompt
+            <div
+              onClick={() => onEditPrompt?.(node.id, stage.prompt, (p) => update({ prompt: p }))}
+              style={{
+                background: '#11111b',
+                border: '1px solid #45475a',
+                borderRadius: '4px',
+                padding: '8px 10px',
+                fontSize: '12px',
+                color: stage.prompt ? '#cdd6f4' : '#6c7086',
+                cursor: 'pointer',
+                whiteSpace: 'pre-wrap',
+                maxHeight: '80px',
+                overflow: 'hidden',
+                fontFamily: "'JetBrains Mono', monospace",
+                lineHeight: '1.4',
+              }}
+            >
+              {stage.prompt
+                ? (stage.prompt.length > 120 ? stage.prompt.slice(0, 120) + '...' : stage.prompt)
+                : 'Click to edit prompt...'}
+            </div>
+          </label>
+        </>
+      )}
 
       <fieldset>
         <legend>Mounts</legend>
@@ -118,7 +170,7 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
                 value={stage.mounts['project'] === null ? 'null' : (stage.mounts['project'] || 'ro')}
                 onChange={(e) => {
                   const val = e.target.value === 'null' ? null : e.target.value as 'ro' | 'rw';
-                  const next = { ...stage.mounts, project: val };
+                  const next: Record<string, 'ro' | 'rw' | null | undefined> = { ...stage.mounts, project: val };
                   // Clear project:* sub-keys when root is disabled
                   if (val === null) {
                     for (const k of Object.keys(next)) {

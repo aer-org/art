@@ -65,12 +65,22 @@ export const DEFAULT_TRANSITIONS: PipelineTransition[] = [
   { marker: 'STAGE_ERROR_CODE', next: null, prompt: '코드 수정이 필요한 에러' },
 ];
 
+export const DEFAULT_COMMAND_TRANSITIONS: PipelineTransition[] = [
+  { marker: 'STAGE_COMPLETE', next: null },
+];
+
 export const DEFAULT_STAGE: PipelineStage = {
   name: 'new_stage',
   prompt:
     'Describe what this stage should do. The agent will follow these instructions.',
   mounts: {},
   transitions: DEFAULT_TRANSITIONS.map((t) => ({ ...t })),
+};
+
+export const DEFAULT_COMMAND_STAGE: Partial<PipelineStage> = {
+  prompt: '',
+  command: 'echo "[STAGE_COMPLETE]"',
+  image: 'node:22-slim',
 };
 
 // Team editor types

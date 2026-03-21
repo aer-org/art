@@ -36,3 +36,6 @@ groups/global/*
 .aer-art/
 
 agents-sdk-docs
+
+# Runtime output
+__art__/

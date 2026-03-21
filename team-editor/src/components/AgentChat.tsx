@@ -29,7 +29,7 @@ const TOOL_ICONS: Record<string, string> = {
 
 // ── Components ──
 
-function ChatHeader({ isStreaming, hasContent, onComplete }: {
+function ChatHeader({ isStreaming, hasContent: _hasContent, onComplete }: {
   isStreaming: boolean;
   hasContent: boolean;
   onComplete: () => void;
