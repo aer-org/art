@@ -1371,6 +1371,8 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
   console.log('🔍 Headless compose: running planning agent...');
 
+  let lastResult: { status: string; error?: string } | undefined;
+
   try {
     const result = await runContainerAgent(
       group,
@@ -1384,7 +1386,8 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
             .replace(/---AER_ART_OUTPUT_START---/g, '')
             .replace(/---AER_ART_OUTPUT_END---/g, '')
             .replace(/---AER_ART_TOOL_START---/g, '')
-            .replace(/---AER_ART_TOOL_END---/g, '');
+            .replace(/---AER_ART_TOOL_END---/g, '')
+            .replace(/\{[^}]*"id"\s*:\s*"toolu_[^}]*\}/g, '');
           if (cleaned.trim()) process.stdout.write(cleaned);
         });
         proc.stderr?.on('data', (data: Buffer) => {
@@ -1394,13 +1397,26 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           }
         });
       },
+      // onOutput: use streaming mode for robust marker parsing
+      async (output) => {
+        if (output.result) {
+          lastResult = { status: output.status };
+        }
+        if (output.error) {
+          lastResult = { status: output.status, error: output.error };
+        }
+      },
     );
 
-    if (result.status === 'success') {
+    // Streaming mode returns status='success' with result=null on clean exit
+    const finalStatus = lastResult?.status || result.status;
+    const finalError = lastResult?.error || result.error;
+
+    if (finalStatus === 'success' || result.status === 'success') {
       console.log('\n✅ Headless compose completed.');
     } else {
       console.error(
-        `\n❌ Headless compose failed: ${result.error || 'unknown error'}`,
+        `\n❌ Headless compose failed: ${finalError || 'unknown error'}`,
       );
       process.exit(1);
     }
