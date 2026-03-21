@@ -10,12 +10,24 @@ import {
   readPipelineState,
   isDockerAvailable,
   imageExists,
+  installGlobal,
+  uninstallGlobal,
 } from './helpers.js';
 
 const hasDocker = isDockerAvailable();
 const hasApiKey =
   !!process.env.ANTHROPIC_API_KEY &&
   process.env.ANTHROPIC_API_KEY !== 'placeholder';
+
+// Install package globally before all tests, uninstall after
+let tgzPath: string;
+beforeAll(() => {
+  tgzPath = installGlobal();
+}, 120_000);
+afterAll(() => {
+  uninstallGlobal();
+  try { fs.unlinkSync(tgzPath); } catch { /* ok */ }
+});
 
 // ─── Test 1: Environment check ───────────────────────────────────────────────
 
