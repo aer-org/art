@@ -1,0 +1,12 @@
+{
+  "stages": [
+    {
+      "name": "agent-test",
+      "prompt": "Just output [STAGE_COMPLETE]. Do nothing else.",
+      "mounts": {},
+      "transitions": [
+        { "marker": "STAGE_COMPLETE", "next": null }
+      ]
+    }
+  ]
+}
