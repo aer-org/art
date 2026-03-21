@@ -6,5 +6,6 @@ export default defineConfig({
     testTimeout: 600_000, // 10 min per test
     hookTimeout: 300_000, // 5 min setup/teardown
     sequence: { concurrent: false },
+    fileParallelism: false,
   },
 });

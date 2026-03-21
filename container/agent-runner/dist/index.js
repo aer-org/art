@@ -133,7 +133,7 @@ function createPreCompactHook(assistantName) {
             }
             const summary = getSessionSummary(sessionId, transcriptPath);
             const name = summary ? sanitizeFilename(summary) : generateFallbackName();
-            const conversationsDir = '/workspace/group/conversations';
+            const conversationsDir = '/workspace/conversations';
             fs.mkdirSync(conversationsDir, { recursive: true });
             const date = new Date().toISOString().split('T')[0];
             const filename = `${date}-${name}.md`;
@@ -345,7 +345,7 @@ async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv
     for await (const message of query({
         prompt: stream,
         options: {
-            cwd: '/workspace/group',
+            cwd: '/workspace',
             additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
             resume: sessionId,
             resumeSessionAt: resumeAt,

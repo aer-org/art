@@ -335,6 +335,7 @@ export class PipelineRunner {
   private manifest: RunManifest;
   private aborted = false;
   private currentHandle: StageHandle | null = null;
+  private stageSessionIds = new Map<string, string>();
   constructor(
     group: RegisteredGroup,
     chatJid: string,
@@ -400,17 +401,33 @@ export class PipelineRunner {
       readonly: boolean;
     }> = [];
 
-    // Group mounts (e.g. "src": "rw" → /workspace/group/src)
+    // Reserved keys that conflict with /workspace/* system paths
+    const RESERVED_KEYS = new Set([
+      'project',
+      'ipc',
+      'global',
+      'extra',
+      'conversations',
+    ]);
+
+    // Stage mounts (e.g. "src": "rw" → /workspace/src)
     for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-      if (key === 'project' || key.startsWith('project:')) continue;
+      if (key.startsWith('project:')) continue;
       if (!policy) continue;
+      if (RESERVED_KEYS.has(key)) {
+        logger.warn(
+          { key },
+          `mount key "${key}" conflicts with reserved /workspace/${key} — skipped`,
+        );
+        continue;
+      }
 
       const hostDir = path.join(this.groupDir, key);
       fs.mkdirSync(hostDir, { recursive: true });
 
       mounts.push({
         hostPath: hostDir,
-        containerPath: `/workspace/group/${key}`,
+        containerPath: `/workspace/${key}`,
         readonly: policy === 'ro',
       });
     }
@@ -435,13 +452,27 @@ export class PipelineRunner {
         readonly: true,
       });
 
-      // Process project:* sub-mount overrides
+      // Process project:* sub-mount overrides (directory-level only)
+      // File-level bind mounts are not supported because Docker tracks inodes,
+      // and git operations (reset, checkout) replace files with new inodes,
+      // making the bind mount stale.
       const projectRoot = path.dirname(this.groupDir);
       for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
         if (!key.startsWith('project:')) continue;
         const subPath = key.slice('project:'.length);
         if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
           continue;
+
+        const subHostPath = path.join(projectRoot, subPath);
+        const isFile =
+          fs.existsSync(subHostPath) && fs.statSync(subHostPath).isFile();
+        if (isFile) {
+          logger.warn(
+            { key, subPath },
+            'File-level project mount ignored (only directories supported)',
+          );
+          continue;
+        }
 
         if (subPolicy === null) {
           mounts.push({
@@ -450,7 +481,6 @@ export class PipelineRunner {
             readonly: true,
           });
         } else if (subPolicy && subPolicy !== effectivePolicy) {
-          const subHostPath = path.join(projectRoot, subPath);
           mounts.push({
             hostPath: subHostPath,
             containerPath: `/workspace/project/${subPath}`,
@@ -459,6 +489,19 @@ export class PipelineRunner {
         }
       }
     }
+
+    // Conversations archive directory (agent-runner writes transcripts here)
+    const subFolder = `${this.group.folder}__pipeline_${stageConfig.name}`;
+    const convDir = path.join(
+      resolveGroupFolderPath(subFolder),
+      'conversations',
+    );
+    fs.mkdirSync(convDir, { recursive: true });
+    mounts.push({
+      hostPath: convDir,
+      containerPath: '/workspace/conversations',
+      readonly: false,
+    });
 
     return mounts;
   }
@@ -473,16 +516,6 @@ export class PipelineRunner {
     logStream?: fs.WriteStream,
   ): StageHandle {
     const subFolder = `${this.group.folder}__pipeline_${stageConfig.name}`;
-
-    // Stage workspace nested inside parent group dir
-    const stageWorkspaceDir = path.join(this.groupDir, stageConfig.name);
-    fs.mkdirSync(stageWorkspaceDir, { recursive: true });
-
-    // Write CLAUDE.md in the nested stage workspace
-    fs.writeFileSync(
-      path.join(stageWorkspaceDir, 'CLAUDE.md'),
-      `# Pipeline Stage: ${stageConfig.name}\n\nYou are the ${stageConfig.name} agent in an automated pipeline. Follow instructions precisely and use the correct stage markers.\n`,
-    );
 
     // Build internal mounts (group + project + sub-path overrides)
     const internalMounts = this.buildStageMounts(stageConfig);
@@ -524,12 +557,21 @@ export class PipelineRunner {
       config: stageConfig,
       ipcInputDir,
       containerPromise: null!,
-      pendingResult: null,
+      pendingResult: createDeferred(),
       resultTexts: [],
     };
 
     // Create onOutput callback that resolves the pending deferred
     const onOutput = async (output: ContainerOutput) => {
+      logger.info(
+        {
+          stage: stageConfig.name,
+          hasResult: !!output.result,
+          hasPending: !!handle.pendingResult,
+          textsLen: handle.resultTexts.length,
+        },
+        'onOutput called',
+      );
       // result=null means query ended (agent entering IPC wait).
       // If we have accumulated text with no marker, resolve as no-match
       // so the FSM can send a retry prompt via IPC.
@@ -558,10 +600,23 @@ export class PipelineRunner {
         handle.resultTexts,
         stageConfig.transitions,
       );
+      logger.info(
+        { stage: stageConfig.name, matched: markers.matched?.marker ?? null },
+        'parseStageMarkers result',
+      );
       if (markers.matched) {
         if (handle.pendingResult) {
+          logger.info(
+            { stage: stageConfig.name, marker: markers.matched.marker },
+            'Resolving pendingResult',
+          );
           handle.pendingResult.resolve(markers);
           handle.pendingResult = null;
+        } else {
+          logger.warn(
+            { stage: stageConfig.name, marker: markers.matched.marker },
+            'Marker matched but no pendingResult!',
+          );
         }
         handle.resultTexts = [];
       }
@@ -576,10 +631,12 @@ export class PipelineRunner {
       );
     } else {
       // Agent mode: spawn the container (don't await — it runs in background)
+      // Resume previous session if available (preserves context across loop iterations)
       handle.containerPromise = runContainerAgent(
         virtualGroup,
         {
           prompt: initialPrompt,
+          sessionId: this.stageSessionIds.get(stageConfig.name),
           groupFolder: subFolder,
           chatJid: this.chatJid,
           isMain: false,
@@ -905,7 +962,7 @@ RULES:
 - Read files before editing. Use tools freely.
 - Do not stop until this stage is complete or you hit a blocking error.
 - 프로젝트 소스는 /workspace/project/ 에서 읽기 전용으로 볼 수 있다.
-- 스테이지 작업 디렉토리는 /workspace/group/ 아래에 마운트되어 있다 (plan/, src/, tb/, build/, sim/ 등). 반드시 이 경로에서 파일을 읽고 작업하라.
+- 스테이지 작업 디렉토리는 /workspace/ 아래에 마운트되어 있다 (plan/, src/, tb/, build/, sim/ 등). 반드시 이 경로에서 파일을 읽고 작업하라.
 
 STAGE MARKERS — use the correct one:
 ${markerLines.join('\n')}`;
@@ -1021,7 +1078,6 @@ ${markerLines.join('\n')}`;
           pipelineLogStream,
         );
         this.currentHandle = handle;
-        handle.pendingResult = createDeferred();
 
         logger.info(
           { stage: currentStageName },
@@ -1122,7 +1178,15 @@ ${markerLines.join('\n')}`;
               status: 'running',
             });
 
+            // Close the container first, then retrieve session ID
             await this.closeAndWait(handle);
+            const containerResult = await handle.containerPromise;
+            if (containerResult.newSessionId) {
+              this.stageSessionIds.set(
+                currentStageName!,
+                containerResult.newSessionId,
+              );
+            }
             this.currentHandle = null;
 
             if (targetName) {
