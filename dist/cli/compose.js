@@ -1151,11 +1151,165 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         server.on('close', () => resolve());
     });
 }
-export async function compose(targetDir) {
+/**
+ * Run compose in headless mode: one-shot planning agent without HTTP server.
+ * Agent writes PLAN.md/ANALYSIS.md then exits automatically.
+ */
+async function runHeadlessCompose(artDir, mode, projectDir) {
+    const { DATA_DIR } = await import('../config.js');
+    const { runContainerAgent } = await import('../container-runner.js');
+    const { getImageForStage } = await import('../image-registry.js');
+    const { startCredentialProxy } = await import('../credential-proxy.js');
+    const { setCredentialProxyPort } = await import('../config.js');
+    const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
+    const ipcInputDir = path.join(DATA_DIR, 'ipc', folderName, 'input');
+    fs.mkdirSync(ipcInputDir, { recursive: true });
+    const emptyDir = path.join(DATA_DIR, 'empty');
+    fs.mkdirSync(emptyDir, { recursive: true });
+    const prompt = mode === 'init'
+        ? `You are an expert software architect. Explore the project at /workspace/project/ (read-only).
+
+Write your analysis to /workspace/group/plan/ANALYSIS.md with sections:
+1. Project purpose and type
+2. Tech stack and dependencies
+3. Architecture overview
+4. Code quality observations
+5. Areas for improvement
+
+Then write /workspace/group/plan/PLAN.md with:
+1. Recommended improvement direction
+2. Specific first tasks
+3. Success metrics
+
+After writing both files, output a brief summary.
+
+Use Korean if the project contains Korean documentation, otherwise use English.`
+        : `You are an expert software architect. The project is mounted at /workspace/project/ (read-only).
+
+The current plan is at /workspace/group/plan/PLAN.md (if it exists).
+Review the plan and refine it. Update /workspace/group/plan/PLAN.md with improvements.
+
+After updating, output a brief summary of changes.
+
+Use Korean if the project contains Korean documentation, otherwise use English.`;
+    const planDir = path.join(artDir, 'plan');
+    fs.mkdirSync(planDir, { recursive: true });
+    const group = {
+        name: 'art',
+        folder: folderName,
+        trigger: '',
+        added_at: new Date().toISOString(),
+        requiresTrigger: false,
+        isMain: false,
+        containerConfig: {
+            image: getImageForStage(),
+            groupReadonly: true,
+            internalMounts: [
+                {
+                    hostPath: projectDir,
+                    containerPath: '/workspace/project',
+                    readonly: true,
+                },
+                {
+                    hostPath: emptyDir,
+                    containerPath: `/workspace/project/${ART_DIR_NAME}`,
+                    readonly: true,
+                },
+                {
+                    hostPath: planDir,
+                    containerPath: '/workspace/group/plan',
+                    readonly: false,
+                },
+            ],
+        },
+    };
+    const input = {
+        prompt,
+        groupFolder: folderName,
+        chatJid: `art://${projectDir}`,
+        isMain: false,
+        endOnFirstResult: true, // one-shot: exit after first result
+    };
+    // Start credential proxy
+    let proxyServer;
+    try {
+        const { server, port: actualPort } = await startCredentialProxy(0, '0.0.0.0');
+        proxyServer = server;
+        setCredentialProxyPort(actualPort);
+    }
+    catch {
+        // May already be running
+    }
+    console.log('🔍 Headless compose: running planning agent...');
+    let lastResult;
+    try {
+        const result = await runContainerAgent(group, input, (proc, _containerName) => {
+            proc.stdout?.on('data', (data) => {
+                // Stream raw agent output to console
+                const text = data.toString();
+                // Strip output markers for clean console display
+                const cleaned = text
+                    .replace(/---AER_ART_OUTPUT_START---/g, '')
+                    .replace(/---AER_ART_OUTPUT_END---/g, '')
+                    .replace(/---AER_ART_TOOL_START---/g, '')
+                    .replace(/---AER_ART_TOOL_END---/g, '')
+                    .replace(/\{[^}]*"id"\s*:\s*"toolu_[^}]*\}/g, '');
+                if (cleaned.trim())
+                    process.stdout.write(cleaned);
+            });
+            proc.stderr?.on('data', (data) => {
+                const lines = data.toString().trim().split('\n');
+                for (const line of lines) {
+                    if (line)
+                        console.error(`[agent] ${line}`);
+                }
+            });
+        }, 
+        // onOutput: use streaming mode for robust marker parsing
+        async (output) => {
+            if (output.result) {
+                lastResult = { status: output.status };
+            }
+            if (output.error) {
+                lastResult = { status: output.status, error: output.error };
+            }
+        });
+        // Streaming mode returns status='success' with result=null on clean exit
+        const finalStatus = lastResult?.status || result.status;
+        const finalError = lastResult?.error || result.error;
+        if (finalStatus === 'success' || result.status === 'success') {
+            console.log('\n✅ Headless compose completed.');
+        }
+        else {
+            console.error(`\n❌ Headless compose failed: ${finalError || 'unknown error'}`);
+            process.exit(1);
+        }
+    }
+    finally {
+        proxyServer?.close();
+    }
+}
+export async function compose(targetDir, opts) {
+    const headless = opts?.headless ?? false;
     const readline = await import('readline');
     const projectDir = path.resolve(targetDir);
     const artDir = path.join(projectDir, ART_DIR_NAME);
     if (!fs.existsSync(artDir)) {
+        if (headless) {
+            // Headless init: scaffold without prompting
+            const { scaffoldArtDir, ensureContainerImage } = await import('./init.js');
+            scaffoldArtDir(projectDir);
+            await ensureAuth();
+            process.env.ART_TUI_MODE = 'true';
+            process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
+            const { engineRoot, runtimeBin } = await setupEngine({
+                projectDir,
+                artDir,
+            });
+            await ensureContainerImage(runtimeBin, engineRoot);
+            await runHeadlessCompose(artDir, 'init', projectDir);
+            return;
+        }
         // No __art__/ — offer to initialize
         const rl = readline.createInterface({
             input: process.stdin,
@@ -1196,6 +1350,10 @@ export async function compose(targetDir) {
     // Setup auth + engine for container agent
     await ensureAuth();
     await setupEngine({ projectDir, artDir });
+    if (headless) {
+        await runHeadlessCompose(artDir, 'single', projectDir);
+        return;
+    }
     await startEditorServer(artDir, 'single', projectDir);
 }
 //# sourceMappingURL=compose.js.map

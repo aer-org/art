@@ -6,7 +6,7 @@ import readline from 'readline';
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
 
-function preflight(): void {
+function preflight(opts?: { skipClaudeCli?: boolean }): void {
   const errors: string[] = [];
 
   // Node.js version
@@ -35,13 +35,15 @@ function preflight(): void {
     );
   }
 
-  // Claude CLI
-  try {
-    execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
-  } catch {
-    errors.push(
-      'Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code',
-    );
+  // Claude CLI (skippable for command-mode-only pipelines)
+  if (!opts?.skipClaudeCli) {
+    try {
+      execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
+    } catch {
+      errors.push(
+        'Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code',
+      );
+    }
   }
 
   if (errors.length > 0) {
@@ -68,8 +70,11 @@ async function askConfirmation(prompt: string): Promise<boolean> {
   return trimmed === '' || trimmed === 'y' || trimmed === 'yes';
 }
 
-export async function run(targetDir: string): Promise<void> {
-  preflight();
+export async function run(
+  targetDir: string,
+  opts?: { skipPreflight?: boolean },
+): Promise<void> {
+  preflight({ skipClaudeCli: opts?.skipPreflight });
 
   const projectDir = path.resolve(targetDir);
   const artDirName = '__art__';
@@ -119,7 +124,14 @@ export async function run(targetDir: string): Promise<void> {
   const runId = generateRunId();
 
   // Ensure Claude authentication is available (before any engine imports)
-  await ensureAuth();
+  if (opts?.skipPreflight) {
+    // Set placeholder so credential proxy can start without real auth
+    if (!process.env.ANTHROPIC_API_KEY && !process.env._ART_OAUTH_TOKEN) {
+      process.env.ANTHROPIC_API_KEY = 'placeholder';
+    }
+  } else {
+    await ensureAuth();
+  }
 
   // Setup engine (paths, runtime, images, IPC dirs)
   const { folderName } = await setupEngine({

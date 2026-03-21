@@ -9,13 +9,19 @@ async function main() {
             break;
         }
         case 'run': {
+            const runFlags = args.filter((a) => a.startsWith('--'));
+            const runPositional = args.filter((a) => !a.startsWith('--'));
+            const skipPreflight = runFlags.includes('--skip-preflight');
             const { run } = await import('./run.js');
-            await run(args[0] || '.');
+            await run(runPositional[0] || '.', { skipPreflight });
             break;
         }
         case 'compose': {
+            const composeFlags = args.filter((a) => a.startsWith('--'));
+            const composePositional = args.filter((a) => !a.startsWith('--'));
+            const headless = composeFlags.includes('--headless');
             const { compose } = await import('./compose.js');
-            await compose(args[0] || '.');
+            await compose(composePositional[0] || '.', { headless });
             break;
         }
         case 'update': {

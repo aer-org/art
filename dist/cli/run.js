@@ -4,7 +4,7 @@ import path from 'path';
 import readline from 'readline';
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
-function preflight() {
+function preflight(opts) {
     const errors = [];
     // Node.js version
     const [major] = process.versions.node.split('.').map(Number);
@@ -27,12 +27,14 @@ function preflight() {
     if (!hasRuntime) {
         errors.push('No container runtime found. Install Docker, Podman, or udocker.');
     }
-    // Claude CLI
-    try {
-        execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
-    }
-    catch {
-        errors.push('Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code');
+    // Claude CLI (skippable for command-mode-only pipelines)
+    if (!opts?.skipClaudeCli) {
+        try {
+            execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
+        }
+        catch {
+            errors.push('Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code');
+        }
     }
     if (errors.length > 0) {
         console.error('Preflight check failed:\n');
@@ -55,8 +57,8 @@ async function askConfirmation(prompt) {
     const trimmed = answer.trim().toLowerCase();
     return trimmed === '' || trimmed === 'y' || trimmed === 'yes';
 }
-export async function run(targetDir) {
-    preflight();
+export async function run(targetDir, opts) {
+    preflight({ skipClaudeCli: opts?.skipPreflight });
     const projectDir = path.resolve(targetDir);
     const artDirName = '__art__';
     const artDir = path.join(projectDir, artDirName);
@@ -95,7 +97,15 @@ export async function run(targetDir) {
     // Generate run ID for this execution
     const runId = generateRunId();
     // Ensure Claude authentication is available (before any engine imports)
-    await ensureAuth();
+    if (opts?.skipPreflight) {
+        // Set placeholder so credential proxy can start without real auth
+        if (!process.env.ANTHROPIC_API_KEY && !process.env._ART_OAUTH_TOKEN) {
+            process.env.ANTHROPIC_API_KEY = 'placeholder';
+        }
+    }
+    else {
+        await ensureAuth();
+    }
     // Setup engine (paths, runtime, images, IPC dirs)
     const { folderName } = await setupEngine({
         projectDir,

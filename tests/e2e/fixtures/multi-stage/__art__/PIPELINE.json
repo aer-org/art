@@ -1,0 +1,34 @@
+{
+  "stages": [
+    {
+      "name": "stage-a",
+      "prompt": "",
+      "command": "echo '[A_DONE]'",
+      "image": "node:22-slim",
+      "mounts": {},
+      "transitions": [
+        { "marker": "A_DONE", "next": "stage-b" }
+      ]
+    },
+    {
+      "name": "stage-b",
+      "prompt": "",
+      "command": "echo '[B_DONE]'",
+      "image": "node:22-slim",
+      "mounts": {},
+      "transitions": [
+        { "marker": "B_DONE", "next": "stage-c" }
+      ]
+    },
+    {
+      "name": "stage-c",
+      "prompt": "",
+      "command": "echo '[COMPLETE]'",
+      "image": "node:22-slim",
+      "mounts": {},
+      "transitions": [
+        { "marker": "COMPLETE", "next": null }
+      ]
+    }
+  ]
+}

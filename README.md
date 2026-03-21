@@ -205,9 +205,11 @@ ln -s ~/.art/dist/cli/index.js ~/.local/bin/art
 ## CLI Reference
 
 ```bash
-art compose <path>    # Open visual pipeline editor
-art run <path>        # Execute pipeline
-art update            # Rebuild all images in the registry
+art compose <path>              # Open visual pipeline editor
+art compose --headless <path>   # One-shot planning agent (no browser, CI-friendly)
+art run <path>                  # Execute pipeline
+art run --skip-preflight <path> # Skip Claude CLI/auth check (command-mode only)
+art update                      # Rebuild all images in the registry
 ```
 
 ---
@@ -230,7 +232,7 @@ ART is under active development. Core pipeline execution, the visual editor, and
 | `docs/ARCHITECTURE.md` | System architecture — pipeline FSM, container runtime, mount isolation |
 | `docs/REQUIREMENTS.md` | Design philosophy and decisions |
 | `docs/SECURITY.md` | Trust model, mount isolation, credential proxy |
-| `docs/TESTING.md` | Test files, mocking patterns, CI configuration |
+| `docs/TESTING.md` | Test files, mocking patterns, E2E tests, CI configuration |
 
 ---
 
@@ -243,6 +245,8 @@ npm install
 npm run build        # Compile TypeScript
 npm run dev          # Watch mode
 ./container/build.sh # Rebuild agent container
+npm test             # Unit tests
+npm run test:e2e     # E2E tests (Docker required)
 ```
 
 ---
