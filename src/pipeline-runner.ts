@@ -402,14 +402,23 @@ export class PipelineRunner {
     }> = [];
 
     // Reserved keys that conflict with /workspace/* system paths
-    const RESERVED_KEYS = new Set(['project', 'ipc', 'global', 'extra', 'conversations']);
+    const RESERVED_KEYS = new Set([
+      'project',
+      'ipc',
+      'global',
+      'extra',
+      'conversations',
+    ]);
 
     // Stage mounts (e.g. "src": "rw" → /workspace/src)
     for (const [key, policy] of Object.entries(stageConfig.mounts)) {
       if (key.startsWith('project:')) continue;
       if (!policy) continue;
       if (RESERVED_KEYS.has(key)) {
-        logger.warn({ key }, `mount key "${key}" conflicts with reserved /workspace/${key} — skipped`);
+        logger.warn(
+          { key },
+          `mount key "${key}" conflicts with reserved /workspace/${key} — skipped`,
+        );
         continue;
       }
 
@@ -554,7 +563,15 @@ export class PipelineRunner {
 
     // Create onOutput callback that resolves the pending deferred
     const onOutput = async (output: ContainerOutput) => {
-      logger.info({ stage: stageConfig.name, hasResult: !!output.result, hasPending: !!handle.pendingResult, textsLen: handle.resultTexts.length }, 'onOutput called');
+      logger.info(
+        {
+          stage: stageConfig.name,
+          hasResult: !!output.result,
+          hasPending: !!handle.pendingResult,
+          textsLen: handle.resultTexts.length,
+        },
+        'onOutput called',
+      );
       // result=null means query ended (agent entering IPC wait).
       // If we have accumulated text with no marker, resolve as no-match
       // so the FSM can send a retry prompt via IPC.
@@ -583,14 +600,23 @@ export class PipelineRunner {
         handle.resultTexts,
         stageConfig.transitions,
       );
-      logger.info({ stage: stageConfig.name, matched: markers.matched?.marker ?? null }, 'parseStageMarkers result');
+      logger.info(
+        { stage: stageConfig.name, matched: markers.matched?.marker ?? null },
+        'parseStageMarkers result',
+      );
       if (markers.matched) {
         if (handle.pendingResult) {
-          logger.info({ stage: stageConfig.name, marker: markers.matched.marker }, 'Resolving pendingResult');
+          logger.info(
+            { stage: stageConfig.name, marker: markers.matched.marker },
+            'Resolving pendingResult',
+          );
           handle.pendingResult.resolve(markers);
           handle.pendingResult = null;
         } else {
-          logger.warn({ stage: stageConfig.name, marker: markers.matched.marker }, 'Marker matched but no pendingResult!');
+          logger.warn(
+            { stage: stageConfig.name, marker: markers.matched.marker },
+            'Marker matched but no pendingResult!',
+          );
         }
         handle.resultTexts = [];
       }
@@ -1156,7 +1182,10 @@ ${markerLines.join('\n')}`;
             await this.closeAndWait(handle);
             const containerResult = await handle.containerPromise;
             if (containerResult.newSessionId) {
-              this.stageSessionIds.set(currentStageName!, containerResult.newSessionId);
+              this.stageSessionIds.set(
+                currentStageName!,
+                containerResult.newSessionId,
+              );
             }
             this.currentHandle = null;
 

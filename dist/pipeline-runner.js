@@ -253,7 +253,13 @@ export class PipelineRunner {
     buildStageMounts(stageConfig) {
         const mounts = [];
         // Reserved keys that conflict with /workspace/* system paths
-        const RESERVED_KEYS = new Set(['project', 'ipc', 'global', 'extra', 'conversations']);
+        const RESERVED_KEYS = new Set([
+            'project',
+            'ipc',
+            'global',
+            'extra',
+            'conversations',
+        ]);
         // Stage mounts (e.g. "src": "rw" → /workspace/src)
         for (const [key, policy] of Object.entries(stageConfig.mounts)) {
             if (key.startsWith('project:'))
@@ -381,7 +387,12 @@ export class PipelineRunner {
         };
         // Create onOutput callback that resolves the pending deferred
         const onOutput = async (output) => {
-            logger.info({ stage: stageConfig.name, hasResult: !!output.result, hasPending: !!handle.pendingResult, textsLen: handle.resultTexts.length }, 'onOutput called');
+            logger.info({
+                stage: stageConfig.name,
+                hasResult: !!output.result,
+                hasPending: !!handle.pendingResult,
+                textsLen: handle.resultTexts.length,
+            }, 'onOutput called');
             // result=null means query ended (agent entering IPC wait).
             // If we have accumulated text with no marker, resolve as no-match
             // so the FSM can send a retry prompt via IPC.

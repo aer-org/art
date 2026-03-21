@@ -290,8 +290,20 @@ export function buildContainerArgs(
     const gitEmail = execSync('git config --global user.email', {
       encoding: 'utf-8',
     }).trim();
-    if (gitName) args.push('-e', `GIT_AUTHOR_NAME=${gitName}`, '-e', `GIT_COMMITTER_NAME=${gitName}`);
-    if (gitEmail) args.push('-e', `GIT_AUTHOR_EMAIL=${gitEmail}`, '-e', `GIT_COMMITTER_EMAIL=${gitEmail}`);
+    if (gitName)
+      args.push(
+        '-e',
+        `GIT_AUTHOR_NAME=${gitName}`,
+        '-e',
+        `GIT_COMMITTER_NAME=${gitName}`,
+      );
+    if (gitEmail)
+      args.push(
+        '-e',
+        `GIT_AUTHOR_EMAIL=${gitEmail}`,
+        '-e',
+        `GIT_COMMITTER_EMAIL=${gitEmail}`,
+      );
   } catch {
     // No global git config — containers will need their own
   }
