@@ -7,9 +7,13 @@
 Turn any existing project into a self-improving pipeline. Draw your own harness for agentic loops.
 
 🤖 **Auto Mode** — Full auto 24/7, agents set up their own intuition into next experiment plan
+
 🧑‍🔬 **Manual Mode** — Human can interfere via chat and instill their intuition for next trial
+
 📊 **Automated Experiment Tracking** via Git
+
 🔒 **Isolated containers** for each agent, for proper sandboxing during evaluation
+
 🔄 **Agentic loop customizable** via `art compose /my/project`
 
 ### Install
