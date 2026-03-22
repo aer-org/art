@@ -50,7 +50,7 @@ jobs:
       - name: Smoke test - TypeScript compiles in container
         run: |
           docker run --rm --entrypoint sh ${{ steps.image.outputs.name }} -c \
-            'cd /app && node node_modules/typescript/bin/tsc --outDir /tmp/dist 2>&1 && echo TS_COMPILE_OK' \
+            'cd /app && node node_modules/typescript/bin/tsc -p tsconfig.json --outDir /tmp/dist 2>&1 && echo TS_COMPILE_OK' \
             | grep -q TS_COMPILE_OK
 
       - name: Smoke test - agent-runner loads

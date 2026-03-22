@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 
 import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
 import {
@@ -899,6 +899,26 @@ export class PipelineRunner {
         '⚠️ PLAN.md가 없습니다. 먼저 구현 계획을 작성해주세요.',
       );
       return 'error';
+    }
+
+    // Ensure project directory is a git repo (containers need it for branching/committing)
+    const projectRoot = path.dirname(this.groupDir);
+    const dotGit = path.join(projectRoot, '.git');
+    if (!fs.existsSync(dotGit)) {
+      logger.info({ projectRoot }, 'Project is not a git repo, initializing');
+      const gitEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'AerArt',
+        GIT_AUTHOR_EMAIL: 'art-agent@local',
+        GIT_COMMITTER_NAME: 'AerArt',
+        GIT_COMMITTER_EMAIL: 'art-agent@local',
+      };
+      execSync('git init -b main', { cwd: projectRoot, stdio: 'pipe' });
+      execSync('git commit --allow-empty -m "art: initial baseline"', {
+        cwd: projectRoot,
+        stdio: 'pipe',
+        env: gitEnv,
+      });
     }
 
     // Write _current.json and initial manifest
