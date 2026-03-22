@@ -1,5 +1,7 @@
 # 🎨 ART: Agent Runtime
 
+![ART Teaser](art_teaser.png)
+
 Turn any existing project into a self-improving pipeline. Draw your own harness for agentic loops.
 
 > **Alpha release** — expect rough edges. We're iterating fast and would love your feedback.
