@@ -39,7 +39,7 @@
     {
       "name": "git-commit",
       "prompt": "",
-      "command": "git config --global --add safe.directory /workspace/project && cd /workspace/project && git add -A && (git diff --cached --quiet && echo 'Nothing to commit' || git commit -m \"$(cat /workspace/msg/commit-msg.txt 2>/dev/null || echo 'experiment iteration')\") && echo '[STAGE_COMPLETE]'",
+      "command": "git config --global --add safe.directory /workspace/project && git config --global user.email 'art-agent@local' && git config --global user.name 'AerArt Agent' && cd /workspace/project && git add -A && (git diff --cached --quiet && echo 'Nothing to commit' || git commit -m \"$(cat /workspace/msg/commit-msg.txt 2>/dev/null || echo 'experiment iteration')\") && echo '[STAGE_COMPLETE]'",
       "image": "alpine/git",
       "mounts": {
         "project": "rw",
