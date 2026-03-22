@@ -1,5 +1,5 @@
 """
-Autoresearch pretraining script. CPU-only, single-file.
+Autoresearch pretraining script. Single-GPU, single-file.
 Cherry-picked and simplified from nanochat.
 Usage: uv run train.py
 """
@@ -9,6 +9,7 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import gc
+import math
 import time
 from dataclasses import dataclass, asdict
 
@@ -16,6 +17,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kernels import get_kernel
+cap = torch.cuda.get_device_capability()
+# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
+repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+fa3 = get_kernel(repo).flash_attn_interface
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -84,11 +90,8 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        q = q.transpose(1, 2)  # (B, n_head, T, head_dim)
-        k = k.transpose(1, 2)  # (B, n_kv_head, T, head_dim)
-        v = v.transpose(1, 2)  # (B, n_kv_head, T, head_dim)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        y = y.transpose(1, 2).contiguous().view(B, T, -1)
+        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
 
@@ -288,7 +291,7 @@ class GPT(nn.Module):
         return logits
 
 # ---------------------------------------------------------------------------
-# Optimizer (MuonAdamW)
+# Optimizer (MuonAdamW, single GPU only)
 # ---------------------------------------------------------------------------
 
 polar_express_coeffs = [
@@ -299,6 +302,7 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
+@torch.compile(dynamic=False, fullgraph=True)
 def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_t, eps_t, wd_t):
     p.mul_(1 - lr_t * wd_t)
     exp_avg.lerp_(grad, 1 - beta1_t)
@@ -309,6 +313,7 @@ def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_
     step_size = lr_t / bias1
     p.add_(exp_avg / denom, alpha=-step_size)
 
+@torch.compile(dynamic=False, fullgraph=True)
 def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momentum_buffer,
                     momentum_t, lr_t, wd_t, beta2_t, ns_steps, red_dim):
     # Nesterov momentum
@@ -430,7 +435,7 @@ HEAD_DIM = 128          # target head dimension for attention
 WINDOW_PATTERN = "SSSL" # sliding window pattern: L=full, S=half context
 
 # Optimization
-TOTAL_BATCH_SIZE = 2**13 # ~8K tokens per optimizer step (halved for 2x more steps)
+TOTAL_BATCH_SIZE = 2**19 # ~524K tokens per optimizer step
 EMBEDDING_LR = 0.6      # learning rate for token embeddings (Adam)
 UNEMBEDDING_LR = 0.004  # learning rate for lm_head (Adam)
 MATRIX_LR = 0.04        # learning rate for matrix parameters (Muon)
@@ -442,8 +447,8 @@ WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
 FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 
 # Model size
-DEPTH = 4               # number of transformer layers (CPU: small for speed)
-DEVICE_BATCH_SIZE = 4   # per-device batch size (halved to double optimizer steps)
+DEPTH = 8               # number of transformer layers
+DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
@@ -451,9 +456,11 @@ DEVICE_BATCH_SIZE = 4   # per-device batch size (halved to double optimizer step
 
 t_start = time.time()
 torch.manual_seed(42)
+torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
-device = torch.device("cpu")
-autocast_ctx = torch.amp.autocast(device_type="cpu", dtype=torch.bfloat16)
+device = torch.device("cuda")
+autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+H100_BF16_PEAK_FLOPS = 989.5e12
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
@@ -498,7 +505,7 @@ optimizer = model.setup_optimizer(
     weight_decay=WEIGHT_DECAY,
 )
 
-model = model  # torch.compile disabled: no C++ compiler (inductor) on CPU
+model = torch.compile(model, dynamic=False)
 
 train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -534,6 +541,7 @@ total_training_time = 0
 step = 0
 
 while True:
+    torch.cuda.synchronize()
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
@@ -558,11 +566,12 @@ while True:
 
     train_loss_f = train_loss.item()
 
-    # Fast fail: abort if loss is exploding
-    if train_loss_f > 100:
+    # Fast fail: abort if loss is exploding or NaN
+    if math.isnan(train_loss_f) or train_loss_f > 100:
         print("FAIL")
         exit(1)
 
+    torch.cuda.synchronize()
     t1 = time.time()
     dt = t1 - t0
 
@@ -575,7 +584,7 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
     pct_done = 100 * progress
     tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 0.0  # MFU not applicable on CPU
+    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
     remaining = max(0, TIME_BUDGET - total_training_time)
 
     print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
@@ -606,8 +615,8 @@ with autocast_ctx:
 # Final summary
 t_end = time.time()
 startup_time = t_start_training - t_start
-steady_state_mfu = 0.0  # MFU not applicable on CPU
-peak_vram_mb = 0.0  # VRAM not applicable on CPU
+steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
+peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
 print("---")
 print(f"val_bpb:          {val_bpb:.6f}")

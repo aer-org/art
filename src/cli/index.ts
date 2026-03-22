@@ -8,7 +8,9 @@ async function main(): Promise<void> {
     const { resolve, dirname } = await import('path');
     const { fileURLToPath } = await import('url');
     const dir = dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(readFileSync(resolve(dir, '../../package.json'), 'utf-8'));
+    const pkg = JSON.parse(
+      readFileSync(resolve(dir, '../../package.json'), 'utf-8'),
+    );
     console.log(pkg.version);
     return;
   }

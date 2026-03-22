@@ -258,6 +258,7 @@ def _document_batches(split, tokenizer_batch_size=128):
     val_path = os.path.join(DATA_DIR, VAL_FILENAME)
     if split == "train":
         parquet_paths = [p for p in parquet_paths if p != val_path]
+        assert len(parquet_paths) > 0, "No training shards found."
     else:
         parquet_paths = [val_path]
     epoch = 1
@@ -294,9 +295,12 @@ def make_dataloader(tokenizer, B, T, split, buffer_size=1000):
 
     # Pre-allocate buffers: [inputs (B*T) | targets (B*T)]
     row_buffer = torch.empty((B, row_capacity), dtype=torch.long)
-    buffer = torch.empty(2 * B * T, dtype=torch.long)
-    inputs = buffer[:B * T].view(B, T)
-    targets = buffer[B * T:].view(B, T)
+    cpu_buffer = torch.empty(2 * B * T, dtype=torch.long, pin_memory=True)
+    gpu_buffer = torch.empty(2 * B * T, dtype=torch.long, device="cuda")
+    cpu_inputs = cpu_buffer[:B * T].view(B, T)
+    cpu_targets = cpu_buffer[B * T:].view(B, T)
+    inputs = gpu_buffer[:B * T].view(B, T)
+    targets = gpu_buffer[B * T:].view(B, T)
 
     while True:
         for row_idx in range(B):
@@ -327,8 +331,9 @@ def make_dataloader(tokenizer, B, T, split, buffer_size=1000):
                     row_buffer[row_idx, pos:pos + remaining] = torch.tensor(doc[:remaining], dtype=torch.long)
                     pos += remaining
 
-        inputs.copy_(row_buffer[:, :-1])
-        targets.copy_(row_buffer[:, 1:])
+        cpu_inputs.copy_(row_buffer[:, :-1])
+        cpu_targets.copy_(row_buffer[:, 1:])
+        gpu_buffer.copy_(cpu_buffer, non_blocking=True)
         yield inputs, targets, epoch
 
 # ---------------------------------------------------------------------------
@@ -344,7 +349,7 @@ def evaluate_bpb(model, tokenizer, batch_size):
     are excluded from both sums.
     Uses fixed MAX_SEQ_LEN so results are comparable across configs.
     """
-    token_bytes = get_token_bytes(device="cpu")
+    token_bytes = get_token_bytes(device="cuda")
     val_loader = make_dataloader(tokenizer, batch_size, MAX_SEQ_LEN, "val")
     steps = EVAL_TOKENS // (batch_size * MAX_SEQ_LEN)
     total_nats = 0.0
