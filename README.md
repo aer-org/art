@@ -17,7 +17,7 @@ Prerequisites: **Docker**, **Git**, **Node.js ≥ 20**, **Claude Code CLI**
 npm install -g @aer-org/art
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 
-# Try the example
+# Try the example (requires NVIDIA Ampere+ GPU)
 git clone https://github.com/aer-org/art
 cd art/examples/autoresearch
 art run .
