@@ -1,11 +1,12 @@
-# ART — Agent Runtime
+# 🎨 ART: Agent Runtime
 
 Turn any existing project into a self-improving pipeline. Draw your own harness for agentic loops.
 
 > **Alpha release** — expect rough edges. We're iterating fast and would love your feedback.
 
 ```bash
-# Install
+# Install (pick one)
+npm install -g @aer-org/art
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 
 # Run on your project
@@ -14,11 +15,11 @@ art run /my/project
 
 Requires **Node.js ≥ 20** and **Docker** (or Podman).
 
-If you want to customize your agentic loop for your specific project:
-
-```bash
-art compose /my/project
-```
+🤖 **Auto Mode** — Full auto 24/7, agents set up their own intuition into next experiment plan
+🧑‍🔬 **Manual Mode** — Human can interfere via chat and instill their intuition for next trial
+📊 **Automated Experiment Tracking** via Git
+🔒 **Isolated containers** for each agent, for proper sandboxing during evaluation
+🔄 **Agentic loop customizable** via `art compose /my/project`
 
 ---
 
@@ -31,7 +32,6 @@ art compose /my/project
 | No structure between steps | Stage boundaries with transitions and retry logic |
 | Can't resume after failure | Checkpointed stages, resume from where you left off |
 | Secrets leak into agent context | Credential proxy + `.env` shadowed with `/dev/null` |
-| Manual experiment tracking | Automated experiment tracking via Git — every run logged |
 
 ---
 
