@@ -6,13 +6,26 @@ Turn any existing project into a self-improving pipeline. Draw your own harness 
 
 > **Alpha release** — expect rough edges. We're iterating fast and would love your feedback.
 
+### Quick demo — Karpathy's autoresearch as a pipeline
+
+ART can harness [karpathy/autoresearch](https://github.com/karpathy/autoresearch) with clear stage separation: the **build** stage modifies `train.py`, a separate **test** stage runs the experiment, and a **review** stage decides whether to keep or revert — all in isolated containers.
+
+Prerequisites: **Docker**, **Git**, **Node.js ≥ 20**, **Claude Code CLI**
+
 ```bash
-# Install (pick one)
+# Install ART (pick one)
 npm install -g @aer-org/art
-# or, for direct install
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 
-# Run on your project
+# Try the example
+git clone https://github.com/aer-org/art
+cd art/examples/autoresearch
+art run .
+```
+
+For your own projects, just point ART at any directory:
+
+```bash
 art run /my/project
 ```
 
