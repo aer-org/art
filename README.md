@@ -2,13 +2,17 @@
 
 ![ART Teaser](art_teaser.png)
 
-Turn any existing project into a self-improving pipeline. Draw your own harness for agentic loops.
-
 > **Alpha release** — expect rough edges. We're iterating fast and would love your feedback.
 
-### Quick demo — Karpathy's autoresearch as a pipeline
+Turn any existing project into a self-improving pipeline. Draw your own harness for agentic loops.
 
-ART can harness [karpathy/autoresearch](https://github.com/karpathy/autoresearch) with clear stage separation: the **build** stage modifies `train.py`, a separate **test** stage runs the experiment, and a **review** stage decides whether to keep or revert — all in isolated containers.
+🤖 **Auto Mode** — Full auto 24/7, agents set up their own intuition into next experiment plan
+🧑‍🔬 **Manual Mode** — Human can interfere via chat and instill their intuition for next trial
+📊 **Automated Experiment Tracking** via Git
+🔒 **Isolated containers** for each agent, for proper sandboxing during evaluation
+🔄 **Agentic loop customizable** via `art compose /my/project`
+
+### Install
 
 Prerequisites: **Docker**, **Git**, **Node.js ≥ 20**, **Claude Code CLI**
 
@@ -16,11 +20,6 @@ Prerequisites: **Docker**, **Git**, **Node.js ≥ 20**, **Claude Code CLI**
 # Install ART (pick one)
 npm install -g @aer-org/art
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
-
-# Try the example (requires NVIDIA Ampere+ GPU)
-git clone https://github.com/aer-org/art
-cd art/examples/autoresearch
-art run .
 ```
 
 For your own projects, just point ART at any directory:
@@ -31,11 +30,15 @@ art run /my/project
 
 Requires **Node.js ≥ 20** and **Docker** (or Podman).
 
-🤖 **Auto Mode** — Full auto 24/7, agents set up their own intuition into next experiment plan
-🧑‍🔬 **Manual Mode** — Human can interfere via chat and instill their intuition for next trial
-📊 **Automated Experiment Tracking** via Git
-🔒 **Isolated containers** for each agent, for proper sandboxing during evaluation
-🔄 **Agentic loop customizable** via `art compose /my/project`
+## Quick example demo: [autoresearch](https://github.com/karpathy/autoresearch) as a pipeline
+
+ART can harness [karpathy/autoresearch](https://github.com/karpathy/autoresearch) with clear stage separation: **build** stage modifies `train.py`, a separate **test** stage runs the experiment, and a **review** stage decides whether to keep or revert, all in isolated containers.
+
+```bash
+git clone https://github.com/aer-org/art
+cd art/examples/autoresearch
+art run .  # requires NVIDIA Ampere+ GPU
+```
 
 ---
 
