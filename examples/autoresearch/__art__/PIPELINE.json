@@ -55,8 +55,8 @@
     {
       "name": "test",
       "prompt": "",
-      "command": "mkdir -p /workspace/cache && ln -sfn /workspace/cache /root/.cache && cd /workspace/project && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/prepare.py && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/train.py > /workspace/results/run.log 2>&1; grep '^val_bpb:\\|^peak_rss_mb:' /workspace/results/run.log > /workspace/results/metrics.txt 2>/dev/null; echo '[STAGE_COMPLETE]'",
-      "image": "ghcr.io/astral-sh/uv:python3.10-bookworm-slim",
+      "command": "apt-get update -qq && apt-get install -y -qq curl > /dev/null && curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1 && export PATH=\"$HOME/.local/bin:$PATH\" && mkdir -p /workspace/cache && ln -sfn /workspace/cache /root/.cache && cd /workspace/project && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/prepare.py && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/train.py > /workspace/results/run.log 2>&1; grep '^val_bpb:\\|^peak_rss_mb:' /workspace/results/run.log > /workspace/results/metrics.txt 2>/dev/null; echo '[STAGE_COMPLETE]'",
+      "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04",
       "gpu": true,
       "mounts": {
         "project": "ro",
