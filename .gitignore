@@ -39,3 +39,4 @@ agents-sdk-docs
 
 # Runtime output
 __art__/
+!examples/**/__art__/

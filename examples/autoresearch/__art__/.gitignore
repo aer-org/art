@@ -1,0 +1,4 @@
+logs/
+sessions/
+PIPELINE_STATE.json
+.tmp/

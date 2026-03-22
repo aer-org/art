@@ -3,6 +3,16 @@
 const [command, ...args] = process.argv.slice(2);
 
 async function main(): Promise<void> {
+  if (command === '--version' || command === '-v') {
+    const { readFileSync } = await import('fs');
+    const { resolve, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(resolve(dir, '../../package.json'), 'utf-8'));
+    console.log(pkg.version);
+    return;
+  }
+
   switch (command) {
     case 'init': {
       console.log(

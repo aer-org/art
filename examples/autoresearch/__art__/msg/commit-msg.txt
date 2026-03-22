@@ -1,0 +1,1 @@
+Fix crash: remove torch.compile (no C++ compiler on CPU) and set CPU-appropriate DEPTH=4, DEVICE_BATCH_SIZE=8, TOTAL_BATCH_SIZE=2^14 for ~150-200 optimizer steps
