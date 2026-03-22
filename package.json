@@ -6,7 +6,7 @@
     "type": "git",
     "url": "https://github.com/aer-org/art.git"
   },
-  "license": "AGPL-3.0",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/run-engine.js",
   "bin": {

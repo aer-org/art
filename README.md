@@ -215,4 +215,4 @@ npm run test:e2e     # E2E tests (Docker required)
 
 ## License
 
-Released under **AGPL-3.0**. Commercial licensing is available for teams that need different terms.
+Released under **Apache-2.0**.
