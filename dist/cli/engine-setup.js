@@ -10,9 +10,12 @@ import { fileURLToPath } from 'url';
 import { saveImageRegistry } from '../image-registry.js';
 export async function setupEngine(opts) {
     const { projectDir, artDir, credentialProxyPort = 3002, ensureImages = false, } = opts;
-    // Set env vars for TUI-mode logging
-    process.env.ART_TUI_MODE = 'true';
-    process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
+    // Ensure TUI env vars are set (callers should set these before importing engine modules,
+    // but set here as fallback so logger always routes to file)
+    if (!process.env.ART_TUI_MODE) {
+        process.env.ART_TUI_MODE = 'true';
+        process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
+    }
     const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
     // Import engine modules (logger will see ART_TUI_LOG_DIR)
     const { setEngineRoot, setDataDir, setCredentialProxyPort } = await import('../config.js');

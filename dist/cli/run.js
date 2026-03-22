@@ -66,6 +66,9 @@ export async function run(targetDir, opts) {
         console.error(`No ${artDirName}/ found in ${projectDir}. Run 'art compose .' first.`);
         process.exit(1);
     }
+    // Set TUI env vars before any engine import so logger routes to file
+    process.env.ART_TUI_MODE = 'true';
+    process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
     // Check for existing run (_current.json)
     const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } = await import('../pipeline-runner.js');
     const { cleanupRunContainers } = await import('../container-runtime.js');
