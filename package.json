@@ -1,6 +1,6 @@
 {
   "name": "@aer-org/art",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "ART — Agent Runtime for software projects",
   "repository": {
     "type": "git",

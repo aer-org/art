@@ -115,6 +115,58 @@ export async function run(targetDir, opts) {
         artDir,
         ensureImages: true,
     });
+    // Pre-pull missing pipeline stage images
+    const { loadPipelineConfig } = await import('../pipeline-runner.js');
+    const { getRuntime } = await import('../container-runtime.js');
+    const { CONTAINER_IMAGE } = await import('../config.js');
+    const { getImageForStage } = await import('../image-registry.js');
+    const pipelineConfig = loadPipelineConfig('', artDir);
+    if (pipelineConfig) {
+        const rt = getRuntime();
+        const images = new Set();
+        for (const stage of pipelineConfig.stages) {
+            if (stage.command) {
+                images.add(stage.image || CONTAINER_IMAGE);
+            }
+            else {
+                try {
+                    images.add(getImageForStage(stage.image, false));
+                }
+                catch {
+                    // Registry key not found — treat as direct image name
+                    if (stage.image)
+                        images.add(stage.image);
+                }
+            }
+        }
+        const missing = [];
+        for (const img of images) {
+            try {
+                execSync(`${rt.bin} image inspect ${img}`, {
+                    stdio: 'pipe',
+                    timeout: 10000,
+                });
+            }
+            catch {
+                missing.push(img);
+            }
+        }
+        if (missing.length > 0) {
+            console.log('\n다음 이미지가 로컬에 없습니다:');
+            for (const img of missing)
+                console.log(`  - ${img}`);
+            const confirmed = await askConfirmation('미리 다운로드하시겠습니까? [Y/n] ');
+            if (confirmed) {
+                for (const img of missing) {
+                    console.log(`\nPulling ${img}...`);
+                    execSync(`${rt.bin} pull ${img}`, {
+                        stdio: 'inherit',
+                        timeout: 600000,
+                    });
+                }
+            }
+        }
+    }
     // Import manifest functions ahead of signal handler registration
     const { readRunManifest, writeRunManifest } = await import('../pipeline-runner.js');
     // Register SIGINT/SIGTERM handlers to clean up _current.json

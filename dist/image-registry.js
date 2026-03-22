@@ -33,7 +33,7 @@ export function getImageForStage(stageImage, isCommandMode = false) {
     const entry = registry[stageImage];
     if (entry)
         return entry.image;
-    // Not in registry — error for agent mode
-    throw new Error(`Image "${stageImage}" not registered. Run init to register custom images.`);
+    // Not in registry — treat as direct Docker image name
+    return stageImage;
 }
 //# sourceMappingURL=image-registry.js.map
