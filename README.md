@@ -7,6 +7,7 @@ Turn any existing project into a self-improving pipeline. Draw your own harness 
 ```bash
 # Install (pick one)
 npm install -g @aer-org/art
+# or, for direct install
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 
 # Run on your project
