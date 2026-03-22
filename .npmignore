@@ -22,5 +22,5 @@ groups/
 .idea/
 .vscode/
 /src/
-tsconfig.json
+/tsconfig.json
 vitest.config.ts
