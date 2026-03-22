@@ -20,12 +20,13 @@ export function StageNode({ data, selected }: NodeProps<StageNodeType>) {
       {stage.devices && stage.devices.length > 0 && (
         <span className="flag-badge device">USB</span>
       )}
+      {stage.gpu && <span className="flag-badge gpu">GPU</span>}
       {stage.runAsRoot && <span className="flag-badge root">root</span>}
       {stage.exclusive && <span className="flag-badge exclusive">{stage.exclusive}</span>}
     </>
   );
 
-  const hasFooter = mountBadges.length > 0 || stage.devices?.length || stage.runAsRoot || stage.exclusive;
+  const hasFooter = mountBadges.length > 0 || stage.devices?.length || stage.gpu || stage.runAsRoot || stage.exclusive;
 
   // Build source handles from non-retry transitions
   const sourceTransitions = (stage.transitions || []).filter((t) => !t.retry);

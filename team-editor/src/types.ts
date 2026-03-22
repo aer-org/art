@@ -14,6 +14,7 @@ export interface PipelineStage {
   command?: string; // Shell command mode (runs sh -c, no agent)
   mounts: Record<string, 'ro' | 'rw' | null | undefined>;
   devices?: string[];
+  gpu?: boolean;
   runAsRoot?: boolean;
   exclusive?: string;
   transitions: PipelineTransition[];

@@ -364,6 +364,7 @@ export class PipelineRunner {
                 image: resolvedImage,
                 additionalMounts: parentMounts,
                 additionalDevices: stageConfig.devices || [],
+                gpu: stageConfig.gpu === true,
                 runAsRoot: stageConfig.runAsRoot === true,
                 internalMounts,
             },
@@ -492,8 +493,9 @@ export class PipelineRunner {
         const containerName = `aer-art-cmd-${safeName}-${Date.now()}`;
         const image = stageConfig.image || CONTAINER_IMAGE;
         const devices = stageConfig.devices || [];
+        const gpu = stageConfig.gpu === true;
         const runAsRoot = stageConfig.runAsRoot === true;
-        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, runAsRoot, image, 'sh', this.runId);
+        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, gpu, runAsRoot, image, 'sh', this.runId);
         containerArgs.push('-c', stageConfig.command);
         logger.info({ stage: stageConfig.name, image, command: stageConfig.command }, 'Running command-mode stage');
         if (logStream) {

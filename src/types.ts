@@ -31,6 +31,7 @@ export interface ContainerConfig {
   image?: string; // Override container image for this group/stage
   additionalMounts?: AdditionalMount[];
   additionalDevices?: string[];
+  gpu?: boolean;
   runAsRoot?: boolean;
   timeout?: number; // Default: 300000 (5 minutes)
   internalMounts?: Array<{

@@ -22,6 +22,7 @@ export interface ContainerConfig {
     image?: string;
     additionalMounts?: AdditionalMount[];
     additionalDevices?: string[];
+    gpu?: boolean;
     runAsRoot?: boolean;
     timeout?: number;
     internalMounts?: Array<{

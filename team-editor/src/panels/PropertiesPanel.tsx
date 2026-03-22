@@ -301,6 +301,15 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
       <label className="checkbox-row">
         <input
           type="checkbox"
+          checked={stage.gpu ?? false}
+          onChange={(e) => update({ gpu: e.target.checked || undefined })}
+        />
+        Enable GPU (--gpus all)
+      </label>
+
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
           checked={stage.runAsRoot ?? false}
           onChange={(e) => update({ runAsRoot: e.target.checked || undefined })}
         />

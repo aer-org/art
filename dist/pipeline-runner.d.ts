@@ -42,6 +42,7 @@ export interface PipelineStage {
     command?: string;
     mounts: Record<string, 'ro' | 'rw' | null | undefined>;
     devices?: string[];
+    gpu?: boolean;
     runAsRoot?: boolean;
     exclusive?: string;
     transitions: PipelineTransition[];

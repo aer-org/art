@@ -145,7 +145,7 @@ function buildVolumeMounts(group, isMain) {
     }
     return mounts;
 }
-export function buildContainerArgs(mounts, containerName, devices = [], runAsRoot = false, image, entrypoint, runId) {
+export function buildContainerArgs(mounts, containerName, devices = [], gpu = false, runAsRoot = false, image, entrypoint, runId) {
     const rt = getRuntime();
     const args = ['run'];
     if (rt.capabilities.supportsStdin)
@@ -236,6 +236,14 @@ export function buildContainerArgs(mounts, containerName, devices = [], runAsRoo
         }
         args.push('--device', `${device}:${device}`);
     }
+    if (gpu) {
+        if (rt.kind === 'udocker') {
+            logger.warn('GPU passthrough not supported on udocker, skipping');
+        }
+        else {
+            args.push('--gpus', 'all');
+        }
+    }
     if (entrypoint) {
         args.push('--entrypoint', entrypoint);
     }
@@ -254,11 +262,12 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
     fs.mkdirSync(groupDir, { recursive: true });
     const mounts = buildVolumeMounts(group, input.isMain);
     const devices = group.containerConfig?.additionalDevices || [];
+    const gpu = group.containerConfig?.gpu === true;
     const runAsRoot = group.containerConfig?.runAsRoot === true;
     const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
     const containerName = `aer-art-${safeName}-${Date.now()}`;
     const image = group.containerConfig?.image || CONTAINER_IMAGE;
-    const containerArgs = buildContainerArgs(mounts, containerName, devices, runAsRoot, image, undefined, input.runId);
+    const containerArgs = buildContainerArgs(mounts, containerName, devices, gpu, runAsRoot, image, undefined, input.runId);
     logger.debug({
         group: group.name,
         containerName,

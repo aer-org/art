@@ -57,6 +57,7 @@
       "prompt": "",
       "command": "mkdir -p /workspace/cache && ln -sfn /workspace/cache /root/.cache && cd /workspace/project && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/prepare.py && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/train.py > /workspace/results/run.log 2>&1; grep '^val_bpb:\\|^peak_rss_mb:' /workspace/results/run.log > /workspace/results/metrics.txt 2>/dev/null; echo '[STAGE_COMPLETE]'",
       "image": "ghcr.io/astral-sh/uv:python3.10-bookworm-slim",
+      "gpu": true,
       "mounts": {
         "project": "ro",
         "results": "rw",
