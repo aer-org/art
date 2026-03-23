@@ -26,7 +26,9 @@ vi.mock('pino', () => {
 // --- Helpers ---
 
 interface AllowlistOptions {
-  allowedRoots?: Array<{ path: string; allowReadWrite: boolean; description?: string } | string>;
+  allowedRoots?: Array<
+    { path: string; allowReadWrite: boolean; description?: string } | string
+  >;
   blockedPatterns?: string[];
   nonMainReadOnly?: boolean;
 }
@@ -124,7 +126,11 @@ describe('mount-security', () => {
     it('returns null when allowedRoots is not an array', () => {
       fs.writeFileSync(
         allowlistPath,
-        JSON.stringify({ allowedRoots: 'nope', blockedPatterns: [], nonMainReadOnly: false }),
+        JSON.stringify({
+          allowedRoots: 'nope',
+          blockedPatterns: [],
+          nonMainReadOnly: false,
+        }),
       );
       const result = loadMountAllowlist();
       expect(result).toBeNull();
@@ -133,7 +139,11 @@ describe('mount-security', () => {
     it('returns null when blockedPatterns is not an array', () => {
       fs.writeFileSync(
         allowlistPath,
-        JSON.stringify({ allowedRoots: [], blockedPatterns: 'nope', nonMainReadOnly: false }),
+        JSON.stringify({
+          allowedRoots: [],
+          blockedPatterns: 'nope',
+          nonMainReadOnly: false,
+        }),
       );
       const result = loadMountAllowlist();
       expect(result).toBeNull();
@@ -142,7 +152,11 @@ describe('mount-security', () => {
     it('returns null when nonMainReadOnly is not a boolean', () => {
       fs.writeFileSync(
         allowlistPath,
-        JSON.stringify({ allowedRoots: [], blockedPatterns: [], nonMainReadOnly: 'yes' }),
+        JSON.stringify({
+          allowedRoots: [],
+          blockedPatterns: [],
+          nonMainReadOnly: 'yes',
+        }),
       );
       const result = loadMountAllowlist();
       expect(result).toBeNull();
@@ -168,7 +182,10 @@ describe('mount-security', () => {
 
     it('rejects absolute container path', () => {
       const result = validateMount(
-        { hostPath: path.join(tmpDir, 'data'), containerPath: '/absolute/path' },
+        {
+          hostPath: path.join(tmpDir, 'data'),
+          containerPath: '/absolute/path',
+        },
         true,
       );
       expect(result.allowed).toBe(false);
@@ -212,21 +229,30 @@ describe('mount-security', () => {
 
     it('rejects path matching .ssh', () => {
       fs.mkdirSync(path.join(tmpDir, '.ssh'));
-      const result = validateMount({ hostPath: path.join(tmpDir, '.ssh') }, true);
+      const result = validateMount(
+        { hostPath: path.join(tmpDir, '.ssh') },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.ssh');
     });
 
     it('rejects path matching .env', () => {
       fs.writeFileSync(path.join(tmpDir, '.env'), '');
-      const result = validateMount({ hostPath: path.join(tmpDir, '.env') }, true);
+      const result = validateMount(
+        { hostPath: path.join(tmpDir, '.env') },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.env');
     });
 
     it('rejects path matching .aws', () => {
       fs.mkdirSync(path.join(tmpDir, '.aws'));
-      const result = validateMount({ hostPath: path.join(tmpDir, '.aws') }, true);
+      const result = validateMount(
+        { hostPath: path.join(tmpDir, '.aws') },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.aws');
     });
@@ -253,34 +279,48 @@ describe('mount-security', () => {
 
     it('rejects path matching .docker', () => {
       fs.mkdirSync(path.join(tmpDir, '.docker'));
-      const result = validateMount({ hostPath: path.join(tmpDir, '.docker') }, true);
+      const result = validateMount(
+        { hostPath: path.join(tmpDir, '.docker') },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.docker');
     });
 
     it('rejects path matching .gnupg', () => {
       fs.mkdirSync(path.join(tmpDir, '.gnupg'));
-      const result = validateMount({ hostPath: path.join(tmpDir, '.gnupg') }, true);
+      const result = validateMount(
+        { hostPath: path.join(tmpDir, '.gnupg') },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.gnupg');
     });
 
     it('rejects path matching .kube', () => {
       fs.mkdirSync(path.join(tmpDir, '.kube'));
-      const result = validateMount({ hostPath: path.join(tmpDir, '.kube') }, true);
+      const result = validateMount(
+        { hostPath: path.join(tmpDir, '.kube') },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.kube');
     });
 
     it('rejects path matching .secret', () => {
       fs.mkdirSync(path.join(tmpDir, '.secret'));
-      const result = validateMount({ hostPath: path.join(tmpDir, '.secret') }, true);
+      const result = validateMount(
+        { hostPath: path.join(tmpDir, '.secret') },
+        true,
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('.secret');
     });
 
     it('rejects path containing blocked pattern in parent directory', () => {
-      fs.mkdirSync(path.join(tmpDir, '.ssh', 'authorized_keys'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, '.ssh', 'authorized_keys'), {
+        recursive: true,
+      });
       const result = validateMount(
         { hostPath: path.join(tmpDir, '.ssh', 'authorized_keys') },
         true,
@@ -376,7 +416,10 @@ describe('mount-security', () => {
     });
 
     it('rejects broken symlink (target does not exist)', () => {
-      fs.symlinkSync(path.join(tmpDir, 'nonexistent'), path.join(tmpDir, 'broken-link'));
+      fs.symlinkSync(
+        path.join(tmpDir, 'nonexistent'),
+        path.join(tmpDir, 'broken-link'),
+      );
 
       const result = validateMount(
         { hostPath: path.join(tmpDir, 'broken-link'), containerPath: 'data' },
@@ -450,7 +493,10 @@ describe('mount-security', () => {
       const dir = path.join(tmpDir, 'data');
       fs.mkdirSync(dir);
 
-      const result = validateMount({ hostPath: dir, containerPath: 'data' }, true);
+      const result = validateMount(
+        { hostPath: dir, containerPath: 'data' },
+        true,
+      );
       expect(result.reason).toContain('Test root');
     });
 
@@ -459,13 +505,19 @@ describe('mount-security', () => {
       const deep = path.join(tmpDir, 'a', 'b', 'c');
       fs.mkdirSync(deep, { recursive: true });
 
-      const result = validateMount({ hostPath: deep, containerPath: 'nested' }, true);
+      const result = validateMount(
+        { hostPath: deep, containerPath: 'nested' },
+        true,
+      );
       expect(result.allowed).toBe(true);
     });
 
     it('allows mount at the exact allowed root path', () => {
       writeAllowlist(tmpDir);
-      const result = validateMount({ hostPath: tmpDir, containerPath: 'root' }, true);
+      const result = validateMount(
+        { hostPath: tmpDir, containerPath: 'root' },
+        true,
+      );
       expect(result.allowed).toBe(true);
     });
 
@@ -481,7 +533,10 @@ describe('mount-security', () => {
         const dir = path.join(secondRoot, 'data');
         fs.mkdirSync(dir);
 
-        const result = validateMount({ hostPath: dir, containerPath: 'data' }, true);
+        const result = validateMount(
+          { hostPath: dir, containerPath: 'data' },
+          true,
+        );
         expect(result.allowed).toBe(true);
       } finally {
         fs.rmSync(secondRoot, { recursive: true, force: true });
@@ -501,7 +556,10 @@ describe('mount-security', () => {
 
     it('defaults to readonly when mount.readonly is not specified', () => {
       writeAllowlist(tmpDir);
-      const result = validateMount({ hostPath: dataDir, containerPath: 'data' }, true);
+      const result = validateMount(
+        { hostPath: dataDir, containerPath: 'data' },
+        true,
+      );
       expect(result.allowed).toBe(true);
       expect(result.effectiveReadonly).toBe(true);
     });
@@ -705,9 +763,23 @@ describe('mount-security', () => {
 
   describe('default blocked patterns', () => {
     const ALL_DEFAULT_BLOCKED = [
-      '.ssh', '.gnupg', '.gpg', '.aws', '.azure', '.gcloud', '.kube',
-      '.docker', 'credentials', '.env', '.netrc', '.npmrc', '.pypirc',
-      'id_rsa', 'id_ed25519', 'private_key', '.secret',
+      '.ssh',
+      '.gnupg',
+      '.gpg',
+      '.aws',
+      '.azure',
+      '.gcloud',
+      '.kube',
+      '.docker',
+      'credentials',
+      '.env',
+      '.netrc',
+      '.npmrc',
+      '.pypirc',
+      'id_rsa',
+      'id_ed25519',
+      'private_key',
+      '.secret',
     ];
 
     it('all 17 default patterns are present in loaded allowlist', () => {
