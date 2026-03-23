@@ -9,24 +9,24 @@ import type { RuntimeKind } from '../../src/container-runtime.js';
 export const ALPINE_IMAGE = 'alpine:latest';
 
 /**
+ * Docker/Podman runtimes that share full capabilities.
+ * Used to parameterize common tests across both runtimes.
+ */
+export const FULL_RUNTIMES: Array<{ kind: RuntimeKind; bin: string }> = [
+  { kind: 'docker', bin: 'docker' },
+  { kind: 'podman', bin: 'podman' },
+];
+
+/**
  * Check if a container runtime binary is available and functional.
+ * For docker: accepts podman-docker alias (tests docker CLI compatibility).
  */
 export function isRuntimeAvailable(kind: RuntimeKind): boolean {
   try {
     switch (kind) {
       case 'docker':
         execSync('docker info', { stdio: 'pipe', timeout: 10_000 });
-        // Ensure it's actual docker, not podman alias
-        try {
-          const info = execSync('docker info', {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            encoding: 'utf-8',
-            timeout: 10_000,
-          });
-          return !info.toLowerCase().includes('podman');
-        } catch {
-          return false;
-        }
+        return true;
       case 'podman':
         execSync('podman info', { stdio: 'pipe', timeout: 10_000 });
         return true;
@@ -34,6 +34,39 @@ export function isRuntimeAvailable(kind: RuntimeKind): boolean {
         execSync('udocker version', { stdio: 'pipe', timeout: 10_000 });
         return true;
     }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if the docker binary is actually podman (podman-docker alias).
+ */
+export function isDockerActuallyPodman(): boolean {
+  try {
+    const info = execSync('docker info', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10_000,
+    });
+    return info.toLowerCase().includes('podman');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect if SELinux is enforcing on this system.
+ */
+export function detectSystemSELinux(): boolean {
+  if (os.platform() !== 'linux') return false;
+  try {
+    const out = execSync('getenforce', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3_000,
+    }).trim();
+    return out !== 'Disabled';
   } catch {
     return false;
   }

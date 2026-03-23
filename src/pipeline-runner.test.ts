@@ -189,16 +189,6 @@ vi.mock('child_process', async () => {
 });
 
 import {
-  generateRunId,
-  writeRunManifest,
-  readRunManifest,
-  writeCurrentRun,
-  readCurrentRun,
-  removeCurrentRun,
-  type RunManifest,
-  type CurrentRunInfo,
-} from './run-manifest.js';
-import {
   parseStageMarkers,
   loadPipelineConfig,
   loadAgentTeamConfig,
@@ -266,17 +256,7 @@ describe('parseStageMarkers', () => {
   });
 });
 
-describe('generateRunId', () => {
-  it('matches run-{timestamp}-{hex} pattern', () => {
-    const id = generateRunId();
-    expect(id).toMatch(/^run-\d+-[a-f0-9]{6}$/);
-  });
-
-  it('generates unique IDs', () => {
-    const ids = new Set(Array.from({ length: 10 }, () => generateRunId()));
-    expect(ids.size).toBe(10);
-  });
-});
+// generateRunId tests are in run-manifest.test.ts
 
 describe('loadPipelineConfig', () => {
   let tmpDir: string;
@@ -402,67 +382,8 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
   });
 });
 
-describe('writeRunManifest / readRunManifest round-trip', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-manifest-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('saves and loads manifest correctly', () => {
-    const manifest: RunManifest = {
-      runId: 'run-123-abc',
-      pid: 9999,
-      startTime: new Date().toISOString(),
-      status: 'running',
-      stages: [{ name: 'build', status: 'success', duration: 1000 }],
-    };
-    writeRunManifest(tmpDir, manifest);
-    const loaded = readRunManifest(tmpDir, 'run-123-abc');
-    expect(loaded).toEqual(manifest);
-  });
-
-  it('returns null for nonexistent run', () => {
-    const loaded = readRunManifest(tmpDir, 'run-nonexistent');
-    expect(loaded).toBeNull();
-  });
-});
-
-describe('writeCurrentRun / readCurrentRun / removeCurrentRun', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-current-run-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('writes, reads, and removes current run info', () => {
-    const info: CurrentRunInfo = {
-      runId: 'run-test-abc',
-      pid: 1234,
-      startTime: new Date().toISOString(),
-    };
-    writeCurrentRun(tmpDir, info);
-    const loaded = readCurrentRun(tmpDir);
-    expect(loaded).toEqual(info);
-
-    removeCurrentRun(tmpDir);
-    const afterRemove = readCurrentRun(tmpDir);
-    expect(afterRemove).toBeNull();
-  });
-
-  it('returns null when no current run exists', () => {
-    const loaded = readCurrentRun(tmpDir);
-    expect(loaded).toBeNull();
-  });
-});
+// writeRunManifest/readRunManifest and writeCurrentRun/readCurrentRun/removeCurrentRun
+// tests are in run-manifest.test.ts
 
 // ============================================================
 // Group B: PipelineRunner FSM (runContainerAgent mock)

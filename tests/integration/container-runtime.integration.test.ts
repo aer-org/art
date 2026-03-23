@@ -28,6 +28,8 @@ import {
 import {
   describeRuntime,
   ensureAlpineImage,
+  detectSystemSELinux,
+  isDockerActuallyPodman,
   ALPINE_IMAGE,
 } from './helpers.js';
 
@@ -151,14 +153,15 @@ describeRuntime('docker', () => {
     ).toThrow();
   });
 
-  it('SELinux detection matches system', () => {
+  it('SELinux detection matches system state', () => {
     const rt = getRuntime();
-    // Docker doesn't use SELinux labels
+    // Docker kind doesn't apply SELinux labels (only podman does in our code)
     expect(rt.selinux).toBe(false);
   });
 
-  it('rootless is false for docker', () => {
+  it('rootless is false for docker kind', () => {
     const rt = getRuntime();
+    // Our code only detects rootless for podman — docker always reports false
     expect(rt.rootless).toBe(false);
   });
 
@@ -255,6 +258,12 @@ describeRuntime('podman', () => {
   it('proxy bind host is valid', () => {
     const host = getProxyBindHost();
     expect(host).toBeTruthy();
+  });
+
+  it('SELinux detection matches system state', () => {
+    const rt = getRuntime();
+    const systemSELinux = detectSystemSELinux();
+    expect(rt.selinux).toBe(systemSELinux);
   });
 
   it('readonlyMountArgs respects SELinux state', () => {
@@ -370,13 +379,15 @@ describeRuntime('udocker', () => {
     expect(() => cleanupRunContainers('any-id')).not.toThrow();
   });
 
-  it('SELinux is false', () => {
+  it('SELinux is false for udocker', () => {
     const rt = getRuntime();
+    // udocker doesn't use SELinux labels regardless of system state
     expect(rt.selinux).toBe(false);
   });
 
-  it('rootless is false', () => {
+  it('rootless is false for udocker kind', () => {
     const rt = getRuntime();
+    // Our code only detects rootless for podman — udocker always reports false
     expect(rt.rootless).toBe(false);
   });
 

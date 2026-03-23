@@ -4,7 +4,8 @@
  * Run with: npm run test:integration
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execSync, spawnSync } from 'child_process';
+import { execSync, spawn as cpSpawn } from 'child_process';
+import http from 'http';
 import fs from 'fs';
 import path from 'path';
 
@@ -18,6 +19,7 @@ import {
   readonlyMountArgs,
   writableMountArgs,
   hostGatewayArgs,
+  getProxyBindHost,
 } from '../../src/container-runtime.js';
 
 import { buildContainerArgs } from '../../src/container-runner.js';
@@ -28,350 +30,398 @@ import {
   createTempDir,
   cleanupTempDir,
   runContainer,
+  FULL_RUNTIMES,
   ALPINE_IMAGE,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
-// Docker
+// Docker & Podman — shared tests (parameterized)
 // ---------------------------------------------------------------------------
 
-describeRuntime('docker', () => {
-  beforeAll(async () => {
-    _resetRuntime();
-    process.env.CONTAINER_RUNTIME = 'docker';
-    await initRuntime();
-    ensureAlpineImage('docker');
-  });
-
-  afterAll(() => {
-    delete process.env.CONTAINER_RUNTIME;
-    _resetRuntime();
-  });
-
-  describe('basic execution', () => {
-    it('runs echo and captures stdout', () => {
-      const result = runContainer('docker', [
-        'run',
-        '--rm',
-        ALPINE_IMAGE,
-        'echo',
-        'hello-docker',
-      ]);
-      expect(result.code).toBe(0);
-      expect(result.stdout.trim()).toBe('hello-docker');
+for (const { kind, bin } of FULL_RUNTIMES) {
+  describeRuntime(kind, () => {
+    beforeAll(async () => {
+      _resetRuntime();
+      process.env.CONTAINER_RUNTIME = kind;
+      await initRuntime();
+      ensureAlpineImage(bin);
     });
 
-    it('captures exit code 0', () => {
-      const result = runContainer('docker', [
-        'run',
-        '--rm',
-        ALPINE_IMAGE,
-        'true',
-      ]);
-      expect(result.code).toBe(0);
+    afterAll(() => {
+      delete process.env.CONTAINER_RUNTIME;
+      _resetRuntime();
     });
 
-    it('captures non-zero exit code', () => {
-      const result = runContainer('docker', [
-        'run',
-        '--rm',
-        ALPINE_IMAGE,
-        'sh',
-        '-c',
-        'exit 42',
-      ]);
-      expect(result.code).toBe(42);
+    describe('basic execution', () => {
+      it('runs echo and captures stdout', () => {
+        const result = runContainer(bin, [
+          'run',
+          '--rm',
+          ALPINE_IMAGE,
+          'echo',
+          `hello-${kind}`,
+        ]);
+        expect(result.code).toBe(0);
+        expect(result.stdout.trim()).toBe(`hello-${kind}`);
+      });
+
+      it('captures exit code 0', () => {
+        const result = runContainer(bin, [
+          'run',
+          '--rm',
+          ALPINE_IMAGE,
+          'true',
+        ]);
+        expect(result.code).toBe(0);
+      });
+
+      it('captures non-zero exit code', () => {
+        const result = runContainer(bin, [
+          'run',
+          '--rm',
+          ALPINE_IMAGE,
+          'sh',
+          '-c',
+          'exit 42',
+        ]);
+        expect(result.code).toBe(42);
+      });
     });
-  });
 
-  describe('buildContainerArgs', () => {
-    it('includes expected flags', () => {
-      const args = buildContainerArgs(
-        [{ hostPath: '/tmp', containerPath: '/workspace', readonly: true }],
-        'art-integration-test-args',
-        [],
-        false,
-        false,
-        ALPINE_IMAGE,
-      );
-
-      expect(args).toContain('run');
-      expect(args).toContain('-i');
-      expect(args).toContain('--rm');
-      expect(args).toContain(ALPINE_IMAGE);
-      expect(args.join(' ')).toContain('--name');
-      expect(args.join(' ')).toContain('art-integration-test-args');
-      expect(args.join(' ')).toContain('/tmp:/workspace:ro');
-    });
-
-    it('includes --user for non-root non-1000 uid', () => {
-      const uid = process.getuid?.();
-      const gid = process.getgid?.();
-      if (uid != null && uid !== 0 && uid !== 1000) {
+    describe('buildContainerArgs', () => {
+      it('includes expected flags', () => {
         const args = buildContainerArgs(
-          [],
-          'art-test-user',
+          [{ hostPath: '/tmp', containerPath: '/workspace', readonly: true }],
+          `art-integration-${kind}-args`,
           [],
           false,
           false,
           ALPINE_IMAGE,
         );
-        expect(args).toContain('--user');
-        expect(args).toContain(`${uid}:${gid}`);
-      }
-    });
 
-    it('includes --user 0:0 for runAsRoot', () => {
-      const args = buildContainerArgs(
-        [],
-        'art-test-root',
-        [],
-        false,
-        true,
-        ALPINE_IMAGE,
-      );
-      expect(args).toContain('--user');
-      expect(args).toContain('0:0');
-    });
+        expect(args).toContain('run');
+        expect(args).toContain('-i');
+        expect(args).toContain('--rm');
+        expect(args).toContain(ALPINE_IMAGE);
+        expect(args.join(' ')).toContain('--name');
+        expect(args.join(' ')).toContain(`art-integration-${kind}-args`);
+        expect(args.join(' ')).toContain('/tmp:/workspace:ro');
+      });
 
-    it('includes host gateway args on Linux', () => {
-      const gwArgs = hostGatewayArgs();
-      const args = buildContainerArgs(
-        [],
-        'art-test-gw',
-        [],
-        false,
-        false,
-        ALPINE_IMAGE,
-      );
-      for (const gw of gwArgs) {
-        expect(args).toContain(gw);
-      }
-    });
-
-    it('includes --gpus all when gpu=true', () => {
-      const args = buildContainerArgs(
-        [],
-        'art-test-gpu',
-        [],
-        true,
-        false,
-        ALPINE_IMAGE,
-      );
-      expect(args).toContain('--gpus');
-      expect(args).toContain('all');
-    });
-
-    it('includes device passthrough', () => {
-      const args = buildContainerArgs(
-        [],
-        'art-test-dev',
-        ['/dev/null'],
-        false,
-        false,
-        ALPINE_IMAGE,
-      );
-      expect(args).toContain('--device');
-      expect(args).toContain('/dev/null:/dev/null');
-    });
-
-    it('includes USB cgroup rule for /dev/bus/usb', () => {
-      const args = buildContainerArgs(
-        [],
-        'art-test-usb',
-        ['/dev/bus/usb'],
-        false,
-        false,
-        ALPINE_IMAGE,
-      );
-      expect(args.join(' ')).toContain('/dev/bus/usb:/dev/bus/usb');
-      expect(args).toContain('--device-cgroup-rule');
-    });
-
-    it('includes run-id label', () => {
-      const args = buildContainerArgs(
-        [],
-        'art-test-label',
-        [],
-        false,
-        false,
-        ALPINE_IMAGE,
-        undefined,
-        'test-run-123',
-      );
-      expect(args).toContain('--label');
-      expect(args).toContain('art-run-id=test-run-123');
-    });
-  });
-
-  describe('mount verification', () => {
-    let tmpDir: string;
-
-    beforeAll(() => {
-      tmpDir = createTempDir('docker-mount');
-      fs.writeFileSync(path.join(tmpDir, 'testfile.txt'), 'read-me');
-    });
-
-    afterAll(() => {
-      cleanupTempDir(tmpDir);
-    });
-
-    it('readonly mount: can read, cannot write', () => {
-      const roArgs = readonlyMountArgs(tmpDir, '/mnt/test');
-      const result = runContainer('docker', [
-        'run',
-        '--rm',
-        ...roArgs,
-        ALPINE_IMAGE,
-        'sh',
-        '-c',
-        'cat /mnt/test/testfile.txt && touch /mnt/test/newfile.txt 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL',
-      ]);
-      expect(result.stdout).toContain('read-me');
-      expect(result.stdout).toContain('WRITE_FAIL');
-      expect(result.stdout).not.toContain('WRITE_OK');
-    });
-
-    it('writable mount: can read and write, persists on host', () => {
-      const rwArgs = writableMountArgs(tmpDir, '/mnt/test');
-      const result = runContainer('docker', [
-        'run',
-        '--rm',
-        ...rwArgs,
-        ALPINE_IMAGE,
-        'sh',
-        '-c',
-        'echo "written-by-docker" > /mnt/test/docker-output.txt && echo WRITE_OK',
-      ]);
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain('WRITE_OK');
-
-      // Verify persistence on host
-      const outputFile = path.join(tmpDir, 'docker-output.txt');
-      expect(fs.existsSync(outputFile)).toBe(true);
-      expect(fs.readFileSync(outputFile, 'utf-8').trim()).toBe(
-        'written-by-docker',
-      );
-    });
-  });
-
-  describe('stdin', () => {
-    it('accepts JSON via stdin', () => {
-      const input = JSON.stringify({ prompt: 'hello' });
-      const result = runContainer(
-        'docker',
-        ['run', '--rm', '-i', ALPINE_IMAGE, 'cat'],
-        { stdin: input },
-      );
-      expect(result.code).toBe(0);
-      expect(result.stdout.trim()).toBe(input);
-    });
-  });
-
-  describe('timeout and stop', () => {
-    it('container can be stopped by name', () => {
-      const name = `art-integration-stop-${Date.now()}`;
-      // Start a sleeping container in background
-      execSync(
-        `docker run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
-        { stdio: 'pipe', timeout: 10_000 },
-      );
-
-      try {
-        // Stop it
-        const cmd = stopContainer(name);
-        execSync(cmd, { stdio: 'pipe', timeout: 15_000 });
-
-        // Verify it's gone
-        const ps = execSync(
-          `docker ps --filter name=${name} --format '{{.Names}}'`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-        );
-        expect(ps.trim()).toBe('');
-      } finally {
-        // Cleanup just in case
-        try {
-          execSync(`docker rm -f ${name}`, { stdio: 'pipe' });
-        } catch {
-          /* already removed */
+      it('includes --user 0:0 for runAsRoot', () => {
+        const rt = getRuntime();
+        if (!rt.rootless) {
+          const args = buildContainerArgs(
+            [],
+            `art-test-${kind}-root`,
+            [],
+            false,
+            true,
+            ALPINE_IMAGE,
+          );
+          expect(args).toContain('--user');
+          expect(args).toContain('0:0');
         }
-      }
-    });
-  });
+      });
 
-  describe('output marker parsing', () => {
-    it('markers are captured in stdout', () => {
-      const payload = JSON.stringify({ status: 'success', result: 'test' });
-      const markerLine = `---AER_ART_OUTPUT_START---${payload}---AER_ART_OUTPUT_END---`;
-      const result = runContainer('docker', [
-        'run',
-        '--rm',
-        ALPINE_IMAGE,
-        'sh',
-        '-c',
-        `printf '%s\\n' '${markerLine}'`,
-      ]);
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain('---AER_ART_OUTPUT_START---');
-      expect(result.stdout).toContain('---AER_ART_OUTPUT_END---');
-      expect(result.stdout).toContain(payload);
-    });
-  });
-
-  describe('orphan cleanup', () => {
-    it('cleanupOrphans stops aer-art-* containers', () => {
-      const name = `aer-art-integration-orphan-${Date.now()}`;
-      execSync(
-        `docker run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
-        { stdio: 'pipe', timeout: 10_000 },
-      );
-
-      try {
-        cleanupOrphans();
-
-        const ps = execSync(
-          `docker ps --filter name=${name} --format '{{.Names}}'`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      it('includes host gateway args on Linux', () => {
+        const gwArgs = hostGatewayArgs();
+        const args = buildContainerArgs(
+          [],
+          `art-test-${kind}-gw`,
+          [],
+          false,
+          false,
+          ALPINE_IMAGE,
         );
-        expect(ps.trim()).toBe('');
-      } finally {
-        try {
-          execSync(`docker rm -f ${name}`, { stdio: 'pipe' });
-        } catch {
-          /* already cleaned */
+        for (const gw of gwArgs) {
+          expect(args).toContain(gw);
         }
-      }
+      });
+
+      it('includes run-id label', () => {
+        const args = buildContainerArgs(
+          [],
+          `art-test-${kind}-label`,
+          [],
+          false,
+          false,
+          ALPINE_IMAGE,
+          undefined,
+          'test-run-123',
+        );
+        expect(args).toContain('--label');
+        expect(args).toContain('art-run-id=test-run-123');
+      });
     });
 
-    it('cleanupRunContainers stops labeled containers', () => {
-      const runId = `integration-test-${Date.now()}`;
-      const name = `art-integration-labeled-${Date.now()}`;
-      execSync(
-        `docker run -d --name ${name} --label art-run-id=${runId} ${ALPINE_IMAGE} sleep 300`,
-        { stdio: 'pipe', timeout: 10_000 },
-      );
+    describe('mount verification', () => {
+      let tmpDir: string;
 
-      try {
-        cleanupRunContainers(runId);
+      beforeAll(() => {
+        tmpDir = createTempDir(`${kind}-mount`);
+        fs.writeFileSync(path.join(tmpDir, 'testfile.txt'), `read-me-${kind}`);
+      });
 
-        const ps = execSync(
-          `docker ps --filter label=art-run-id=${runId} --format '{{.Names}}'`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      afterAll(() => {
+        cleanupTempDir(tmpDir);
+      });
+
+      it('readonly mount: can read, cannot write', () => {
+        const roArgs = readonlyMountArgs(tmpDir, '/mnt/test');
+        const result = runContainer(bin, [
+          'run',
+          '--rm',
+          ...roArgs,
+          ALPINE_IMAGE,
+          'sh',
+          '-c',
+          'cat /mnt/test/testfile.txt && touch /mnt/test/newfile.txt 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL',
+        ]);
+        expect(result.stdout).toContain(`read-me-${kind}`);
+        expect(result.stdout).toContain('WRITE_FAIL');
+        expect(result.stdout).not.toContain('WRITE_OK');
+      });
+
+      it('writable mount: can read and write, persists on host', () => {
+        const rwArgs = writableMountArgs(tmpDir, '/mnt/test');
+        const result = runContainer(bin, [
+          'run',
+          '--rm',
+          ...rwArgs,
+          ALPINE_IMAGE,
+          'sh',
+          '-c',
+          `echo "written-by-${kind}" > /mnt/test/${kind}-output.txt && echo WRITE_OK`,
+        ]);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('WRITE_OK');
+
+        const outputFile = path.join(tmpDir, `${kind}-output.txt`);
+        expect(fs.existsSync(outputFile)).toBe(true);
+        expect(fs.readFileSync(outputFile, 'utf-8').trim()).toBe(
+          `written-by-${kind}`,
         );
-        expect(ps.trim()).toBe('');
-      } finally {
+      });
+
+      it('mounted files are accessible with correct uid mapping', () => {
+        const rwDir = createTempDir(`${kind}-uid`);
         try {
-          execSync(`docker rm -f ${name}`, { stdio: 'pipe' });
-        } catch {
-          /* already cleaned */
+          // Write a file as host user
+          const testFile = path.join(rwDir, 'host-file.txt');
+          fs.writeFileSync(testFile, 'host-owned');
+
+          const rwArgs = writableMountArgs(rwDir, '/mnt/uid-test');
+          const rt = getRuntime();
+          const uid = process.getuid?.() ?? 0;
+          const gid = process.getgid?.() ?? 0;
+
+          // Build user args matching actual container-runner logic
+          const userArgs: string[] = [];
+          if (rt.kind === 'podman' && rt.rootless) {
+            userArgs.push('--userns=keep-id');
+          } else if (uid !== 0 && uid !== 1000) {
+            userArgs.push('--user', `${uid}:${gid}`);
+          }
+
+          const result = runContainer(bin, [
+            'run',
+            '--rm',
+            ...rwArgs,
+            ...userArgs,
+            ALPINE_IMAGE,
+            'sh',
+            '-c',
+            'cat /mnt/uid-test/host-file.txt && echo "container-wrote" > /mnt/uid-test/container-file.txt && id -u',
+          ]);
+          expect(result.stdout).toContain('host-owned');
+
+          // Verify the container-written file exists on host
+          const containerFile = path.join(rwDir, 'container-file.txt');
+          expect(fs.existsSync(containerFile)).toBe(true);
+
+          // Verify ownership matches the UID the container ran as
+          const stat = fs.statSync(containerFile);
+          if (userArgs.includes('--userns=keep-id') || userArgs.includes(`${uid}:${gid}`)) {
+            // Container ran as host uid → file should be owned by host uid
+            expect(stat.uid).toBe(uid);
+          } else {
+            // Container ran as default user (root=0 or node=1000)
+            // Just verify file was created successfully
+            expect(fs.readFileSync(containerFile, 'utf-8').trim()).toBe('container-wrote');
+          }
+        } finally {
+          cleanupTempDir(rwDir);
         }
-      }
+      });
+    });
+
+    describe('stdin', () => {
+      it('accepts JSON via stdin', () => {
+        const input = JSON.stringify({ prompt: `hello-${kind}` });
+        const result = runContainer(
+          bin,
+          ['run', '--rm', '-i', ALPINE_IMAGE, 'cat'],
+          { stdin: input },
+        );
+        expect(result.code).toBe(0);
+        expect(result.stdout.trim()).toBe(input);
+      });
+    });
+
+    describe('host gateway connectivity', () => {
+      it('container can reach host via gateway', async () => {
+        const rt = getRuntime();
+        const bindHost = getProxyBindHost();
+        const gwArgs = hostGatewayArgs();
+
+        // Start a temporary HTTP server on the proxy bind address
+        const server = http.createServer((_req, res) => {
+          res.writeHead(200, { Connection: 'close' });
+          res.end('GATEWAY_OK');
+        });
+        server.unref();
+
+        await new Promise<void>((resolve) => {
+          server.listen(0, bindHost, () => resolve());
+        });
+        const port = (server.address() as { port: number }).port;
+
+        try {
+          // Must use async spawn — spawnSync blocks the event loop,
+          // preventing the HTTP server from handling requests.
+          const stdout = await new Promise<string>((resolve, reject) => {
+            const proc = cpSpawn(bin, [
+              'run',
+              '--rm',
+              ...gwArgs,
+              ALPINE_IMAGE,
+              'wget',
+              '-q',
+              '-O-',
+              '-T',
+              '5',
+              `http://${rt.hostGateway}:${port}/`,
+            ]);
+            let out = '';
+            proc.stdout.on('data', (d: Buffer) => {
+              out += d.toString();
+            });
+            proc.on('close', () => resolve(out));
+            proc.on('error', reject);
+            setTimeout(() => {
+              proc.kill();
+              reject(new Error('gateway test timed out'));
+            }, 15_000);
+          });
+          expect(stdout).toContain('GATEWAY_OK');
+        } finally {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      });
+    });
+
+    describe('timeout and stop', () => {
+      it('container can be stopped by name', () => {
+        const name = `art-integration-${kind}-stop-${Date.now()}`;
+        execSync(
+          `${bin} run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
+          { stdio: 'pipe', timeout: 10_000 },
+        );
+
+        try {
+          const cmd = stopContainer(name);
+          execSync(cmd, { stdio: 'pipe', timeout: 15_000 });
+
+          const ps = execSync(
+            `${bin} ps --filter name=${name} --format '{{.Names}}'`,
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+          );
+          expect(ps.trim()).toBe('');
+        } finally {
+          try {
+            execSync(`${bin} rm -f ${name}`, { stdio: 'pipe' });
+          } catch {
+            /* already removed */
+          }
+        }
+      });
+    });
+
+    describe('output marker parsing', () => {
+      it('markers are captured in stdout', () => {
+        const payload = JSON.stringify({ status: 'success', result: 'test' });
+        const markerLine = `---AER_ART_OUTPUT_START---${payload}---AER_ART_OUTPUT_END---`;
+        const result = runContainer(bin, [
+          'run',
+          '--rm',
+          ALPINE_IMAGE,
+          'sh',
+          '-c',
+          `printf '%s\\n' '${markerLine}'`,
+        ]);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('---AER_ART_OUTPUT_START---');
+        expect(result.stdout).toContain('---AER_ART_OUTPUT_END---');
+        expect(result.stdout).toContain(payload);
+      });
+    });
+
+    describe('orphan cleanup', () => {
+      it('cleanupOrphans stops aer-art-* containers', () => {
+        const name = `aer-art-integration-${kind}-orphan-${Date.now()}`;
+        execSync(
+          `${bin} run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
+          { stdio: 'pipe', timeout: 10_000 },
+        );
+
+        try {
+          cleanupOrphans();
+
+          const ps = execSync(
+            `${bin} ps --filter name=${name} --format '{{.Names}}'`,
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+          );
+          expect(ps.trim()).toBe('');
+        } finally {
+          try {
+            execSync(`${bin} rm -f ${name}`, { stdio: 'pipe' });
+          } catch {
+            /* already cleaned */
+          }
+        }
+      });
+
+      it('cleanupRunContainers stops labeled containers', () => {
+        const runId = `integration-${kind}-${Date.now()}`;
+        const name = `art-integration-${kind}-labeled-${Date.now()}`;
+        execSync(
+          `${bin} run -d --name ${name} --label art-run-id=${runId} ${ALPINE_IMAGE} sleep 300`,
+          { stdio: 'pipe', timeout: 10_000 },
+        );
+
+        try {
+          cleanupRunContainers(runId);
+
+          const ps = execSync(
+            `${bin} ps --filter label=art-run-id=${runId} --format '{{.Names}}'`,
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+          );
+          expect(ps.trim()).toBe('');
+        } finally {
+          try {
+            execSync(`${bin} rm -f ${name}`, { stdio: 'pipe' });
+          } catch {
+            /* already cleaned */
+          }
+        }
+      });
     });
   });
-});
+}
 
 // ---------------------------------------------------------------------------
-// Podman
+// Podman-specific tests
 // ---------------------------------------------------------------------------
 
 describeRuntime('podman', () => {
@@ -387,237 +437,94 @@ describeRuntime('podman', () => {
     _resetRuntime();
   });
 
-  describe('basic execution', () => {
-    it('runs echo and captures stdout', () => {
-      const result = runContainer('podman', [
-        'run',
-        '--rm',
-        ALPINE_IMAGE,
-        'echo',
-        'hello-podman',
-      ]);
-      expect(result.code).toBe(0);
-      expect(result.stdout.trim()).toBe('hello-podman');
-    });
-
-    it('captures non-zero exit code', () => {
-      const result = runContainer('podman', [
-        'run',
-        '--rm',
-        ALPINE_IMAGE,
-        'sh',
-        '-c',
-        'exit 42',
-      ]);
-      expect(result.code).toBe(42);
-    });
-  });
-
-  describe('buildContainerArgs', () => {
-    it('includes expected flags', () => {
-      const args = buildContainerArgs(
-        [{ hostPath: '/tmp', containerPath: '/workspace', readonly: true }],
-        'art-integration-podman-args',
-        [],
-        false,
-        false,
-        ALPINE_IMAGE,
-      );
-
-      expect(args).toContain('run');
-      expect(args).toContain('-i');
-      expect(args).toContain('--rm');
-      expect(args).toContain(ALPINE_IMAGE);
-    });
-
-    it('includes --userns=keep-id for rootless podman', () => {
-      const rt = getRuntime();
-      if (rt.rootless) {
-        const args = buildContainerArgs(
-          [],
-          'art-test-podman-rootless',
-          [],
-          false,
-          false,
-          ALPINE_IMAGE,
-        );
-        expect(args).toContain('--userns=keep-id');
-        // Should NOT contain --user when rootless
-        expect(args).not.toContain('--user');
-      }
-    });
-
-    it('includes --user 0:0 for runAsRoot', () => {
-      const rt = getRuntime();
-      // runAsRoot bypasses rootless check
+  it('includes --userns=keep-id for rootless podman', () => {
+    const rt = getRuntime();
+    if (rt.rootless) {
       const args = buildContainerArgs(
         [],
-        'art-test-podman-root',
+        'art-test-podman-rootless',
         [],
         false,
-        true,
+        false,
         ALPINE_IMAGE,
       );
-      if (!rt.rootless) {
-        expect(args).toContain('--user');
-        expect(args).toContain('0:0');
-      }
-    });
+      expect(args).toContain('--userns=keep-id');
+      expect(args).not.toContain('--user');
+    }
+  });
+});
 
-    it('includes podman host gateway', () => {
-      const gwArgs = hostGatewayArgs();
+// ---------------------------------------------------------------------------
+// Docker-specific tests
+// ---------------------------------------------------------------------------
+
+describeRuntime('docker', () => {
+  beforeAll(async () => {
+    _resetRuntime();
+    process.env.CONTAINER_RUNTIME = 'docker';
+    await initRuntime();
+    ensureAlpineImage('docker');
+  });
+
+  afterAll(() => {
+    delete process.env.CONTAINER_RUNTIME;
+    _resetRuntime();
+  });
+
+  it('includes --user for non-root non-1000 uid', () => {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+    if (uid != null && uid !== 0 && uid !== 1000) {
       const args = buildContainerArgs(
         [],
-        'art-test-podman-gw',
+        'art-test-docker-user',
         [],
         false,
         false,
         ALPINE_IMAGE,
       );
-      for (const gw of gwArgs) {
-        expect(args).toContain(gw);
-      }
-    });
+      expect(args).toContain('--user');
+      expect(args).toContain(`${uid}:${gid}`);
+    }
   });
 
-  describe('mount verification', () => {
-    let tmpDir: string;
-
-    beforeAll(() => {
-      tmpDir = createTempDir('podman-mount');
-      fs.writeFileSync(path.join(tmpDir, 'testfile.txt'), 'read-me-podman');
-    });
-
-    afterAll(() => {
-      cleanupTempDir(tmpDir);
-    });
-
-    it('readonly mount: can read, cannot write', () => {
-      const roArgs = readonlyMountArgs(tmpDir, '/mnt/test');
-      const result = runContainer('podman', [
-        'run',
-        '--rm',
-        ...roArgs,
-        ALPINE_IMAGE,
-        'sh',
-        '-c',
-        'cat /mnt/test/testfile.txt && touch /mnt/test/newfile.txt 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL',
-      ]);
-      expect(result.stdout).toContain('read-me-podman');
-      expect(result.stdout).toContain('WRITE_FAIL');
-    });
-
-    it('writable mount: can read and write, persists on host', () => {
-      const rwArgs = writableMountArgs(tmpDir, '/mnt/test');
-      const result = runContainer('podman', [
-        'run',
-        '--rm',
-        ...rwArgs,
-        ALPINE_IMAGE,
-        'sh',
-        '-c',
-        'echo "written-by-podman" > /mnt/test/podman-output.txt && echo WRITE_OK',
-      ]);
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain('WRITE_OK');
-
-      const outputFile = path.join(tmpDir, 'podman-output.txt');
-      expect(fs.existsSync(outputFile)).toBe(true);
-      expect(fs.readFileSync(outputFile, 'utf-8').trim()).toBe(
-        'written-by-podman',
-      );
-    });
+  it('includes --gpus all when gpu=true', () => {
+    const args = buildContainerArgs(
+      [],
+      'art-test-docker-gpu',
+      [],
+      true,
+      false,
+      ALPINE_IMAGE,
+    );
+    expect(args).toContain('--gpus');
+    expect(args).toContain('all');
   });
 
-  describe('stdin', () => {
-    it('accepts JSON via stdin', () => {
-      const input = JSON.stringify({ prompt: 'hello-podman' });
-      const result = runContainer(
-        'podman',
-        ['run', '--rm', '-i', ALPINE_IMAGE, 'cat'],
-        { stdin: input },
-      );
-      expect(result.code).toBe(0);
-      expect(result.stdout.trim()).toBe(input);
-    });
+  it('includes device passthrough', () => {
+    const args = buildContainerArgs(
+      [],
+      'art-test-docker-dev',
+      ['/dev/null'],
+      false,
+      false,
+      ALPINE_IMAGE,
+    );
+    expect(args).toContain('--device');
+    expect(args).toContain('/dev/null:/dev/null');
   });
 
-  describe('timeout and stop', () => {
-    it('container can be stopped by name', () => {
-      const name = `art-integration-podman-stop-${Date.now()}`;
-      execSync(
-        `podman run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
-        { stdio: 'pipe', timeout: 10_000 },
-      );
-
-      try {
-        const cmd = stopContainer(name);
-        execSync(cmd, { stdio: 'pipe', timeout: 15_000 });
-
-        const ps = execSync(
-          `podman ps --filter name=${name} --format '{{.Names}}'`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-        );
-        expect(ps.trim()).toBe('');
-      } finally {
-        try {
-          execSync(`podman rm -f ${name}`, { stdio: 'pipe' });
-        } catch {
-          /* already removed */
-        }
-      }
-    });
-  });
-
-  describe('orphan cleanup', () => {
-    it('cleanupOrphans stops aer-art-* containers', () => {
-      const name = `aer-art-integration-podman-orphan-${Date.now()}`;
-      execSync(
-        `podman run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
-        { stdio: 'pipe', timeout: 10_000 },
-      );
-
-      try {
-        cleanupOrphans();
-
-        const ps = execSync(
-          `podman ps --filter name=${name} --format '{{.Names}}'`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-        );
-        expect(ps.trim()).toBe('');
-      } finally {
-        try {
-          execSync(`podman rm -f ${name}`, { stdio: 'pipe' });
-        } catch {
-          /* already cleaned */
-        }
-      }
-    });
-
-    it('cleanupRunContainers stops labeled containers', () => {
-      const runId = `integration-podman-${Date.now()}`;
-      const name = `art-integration-podman-labeled-${Date.now()}`;
-      execSync(
-        `podman run -d --name ${name} --label art-run-id=${runId} ${ALPINE_IMAGE} sleep 300`,
-        { stdio: 'pipe', timeout: 10_000 },
-      );
-
-      try {
-        cleanupRunContainers(runId);
-
-        const ps = execSync(
-          `podman ps --filter label=art-run-id=${runId} --format '{{.Names}}'`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-        );
-        expect(ps.trim()).toBe('');
-      } finally {
-        try {
-          execSync(`podman rm -f ${name}`, { stdio: 'pipe' });
-        } catch {
-          /* already cleaned */
-        }
-      }
-    });
+  it('includes USB cgroup rule for /dev/bus/usb', () => {
+    const args = buildContainerArgs(
+      [],
+      'art-test-docker-usb',
+      ['/dev/bus/usb'],
+      false,
+      false,
+      ALPINE_IMAGE,
+    );
+    expect(args.join(' ')).toContain('/dev/bus/usb:/dev/bus/usb');
+    expect(args).toContain('--device-cgroup-rule');
   });
 });
 
@@ -630,7 +537,6 @@ describeRuntime('udocker', () => {
     _resetRuntime();
     process.env.CONTAINER_RUNTIME = 'udocker';
     await initRuntime();
-    // Pull alpine for udocker
     try {
       execSync(`udocker pull ${ALPINE_IMAGE}`, {
         stdio: 'pipe',
@@ -659,7 +565,6 @@ describeRuntime('udocker', () => {
 
       expect(args).not.toContain('--rm');
       expect(args).not.toContain('-i');
-      // udocker uses container name directly instead of image
       expect(args).toContain('art-udocker-test');
       expect(args).not.toContain(ALPINE_IMAGE);
     });
@@ -715,7 +620,6 @@ describeRuntime('udocker', () => {
     });
 
     it('runs echo via udocker after prepare', () => {
-      // Create and setup container
       execSync(`udocker create --name=${containerName} ${ALPINE_IMAGE}`, {
         stdio: 'pipe',
         timeout: 30_000,
@@ -725,7 +629,6 @@ describeRuntime('udocker', () => {
         timeout: 30_000,
       });
 
-      // Run command
       const result = runContainer('udocker', [
         'run',
         containerName,
