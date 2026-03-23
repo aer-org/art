@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { ART_DIR_NAME } from '../config.js';
 import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
-import { readCurrentRun, removeCurrentRun, listRunManifests, readRunManifest, isPidAlive, } from '../pipeline-runner.js';
+import { readCurrentRun, removeCurrentRun, listRunManifests, readRunManifest, isPidAlive, } from '../run-manifest.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';

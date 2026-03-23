@@ -1,34 +1,4 @@
 import { RegisteredGroup } from './types.js';
-export declare function generateRunId(): string;
-export interface RunManifest {
-    runId: string;
-    pid: number;
-    startTime: string;
-    endTime?: string;
-    status: 'running' | 'success' | 'error' | 'cancelled';
-    stages: Array<{
-        name: string;
-        status: string;
-        duration?: number;
-    }>;
-    logFile?: string;
-    outputLogFile?: string;
-}
-export interface CurrentRunInfo {
-    runId: string;
-    pid: number;
-    startTime: string;
-}
-export declare function writeCurrentRun(groupDir: string, info: CurrentRunInfo): void;
-export declare function readCurrentRun(groupDir: string): CurrentRunInfo | null;
-export declare function removeCurrentRun(groupDir: string): void;
-export declare function writeRunManifest(groupDir: string, manifest: RunManifest): void;
-export declare function readRunManifest(groupDir: string, runId: string): RunManifest | null;
-export declare function listRunManifests(groupDir: string): RunManifest[];
-/**
- * Check if a PID is alive.
- */
-export declare function isPidAlive(pid: number): boolean;
 export interface PipelineTransition {
     marker: string;
     next?: string | null;
@@ -105,6 +75,28 @@ export declare class PipelineRunner {
      * Close a stage container and wait for it to exit (with timeout).
      */
     private closeAndWait;
+    /**
+     * Build commonRules dynamically from a stage's transitions.
+     */
+    private buildCommonRules;
+    /**
+     * Validate plan, initialize git if needed, write manifest, create log stream.
+     * Returns null on validation failure.
+     */
+    private initRun;
+    /**
+     * Determine entry stage and resume from previous state if applicable.
+     */
+    private resolveEntryStage;
+    /**
+     * Handle stage result: no-match → retry prompt, retry → re-send,
+     * transition → close container and advance FSM.
+     */
+    private handleStageResult;
+    /**
+     * Save final pipeline state, close manifest and log stream.
+     */
+    private finalizeRun;
     /**
      * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
      */

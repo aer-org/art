@@ -18,8 +18,8 @@ import {
   loadAgentTeamConfig,
   loadPipelineConfig,
   PipelineRunner,
-  writeCurrentRun,
 } from './pipeline-runner.js';
+import { writeCurrentRun } from './run-manifest.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';

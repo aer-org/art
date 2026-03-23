@@ -162,6 +162,91 @@ The E2E suite installs the package globally via `npm pack → npm install -g` to
 | `mount-hidden/` | Hidden (null) mount verification |
 | `mount-project-sub/` | Project mount with sub-path override |
 
+## Integration Tests
+
+No mocks — calls real Docker/Podman/udocker binaries. Not included in CI; must be run explicitly on local machines.
+
+```bash
+npm run test:integration                        # All (runs only available runtimes, skips the rest)
+npm run test:integration -- --grep "Docker"     # Docker only
+npm run test:integration -- --grep "Podman"     # Podman only
+npm run test:integration -- --grep "udocker"    # udocker only
+```
+
+**Prerequisites:** The target runtime must be installed. Unavailable runtimes are automatically skipped.
+
+### `tests/integration/container-runtime.integration.test.ts`
+
+**Target:** `container-runtime.ts` — runtime detection, config, capabilities, mount args, and lifecycle verified against real binaries.
+
+| Runtime | Tests | Verified |
+|---------|-------|----------|
+| Docker | 15 | initRuntime, capabilities, bridge detection, proxy bind host, hostGatewayArgs, mount args, stopContainer, cleanupOrphans, cleanupRunContainers, ensureImage, SELinux/rootless state |
+| Podman | 16 | All of the above + rootless detection (`podman info --format json`), SELinux system state match, bridge interface (`podman0`/`cni-podman0`) |
+| udocker | 12 | Restricted capabilities, hostGateway=localhost, bridge=null, proxy=127.0.0.1, prepareContainer(F1)/cleanupContainer lifecycle |
+
+### `tests/integration/container-runner.integration.test.ts`
+
+**Target:** `container-runner.ts` — real container spawn, mount, stdin, gateway connectivity, UID mapping, and orphan cleanup.
+
+Docker/Podman common tests are parameterized in a loop; runtime-specific differences are in separate blocks.
+
+**Common (runs for both Docker & Podman)**
+
+| Test | Description |
+|------|-------------|
+| basic execution (3) | echo stdout capture, exit code 0, exit code 42 |
+| buildContainerArgs (4) | --rm/--name/-i flags, --user 0:0 (runAsRoot), host gateway args, run-id label |
+| mount verification (3) | ro mount: read OK / write denied, rw mount: write OK + host persistence, UID-mapped file access and ownership |
+| stdin (1) | JSON via stdin → container receives via cat |
+| host gateway connectivity (1) | HTTP server on host → container wget via gateway → response received |
+| timeout and stop (1) | `sleep 300` container stopped via stopContainer() |
+| output marker parsing (1) | `---AER_ART_OUTPUT_START---{json}---AER_ART_OUTPUT_END---` captured |
+| orphan cleanup (2) | cleanupOrphans: stops `aer-art-*` containers, cleanupRunContainers: label-based cleanup |
+
+**Podman-specific**
+
+| Test | Description |
+|------|-------------|
+| --userns=keep-id | Rootless podman includes `--userns=keep-id`, excludes `--user` |
+
+**Docker-specific**
+
+| Test | Description |
+|------|-------------|
+| --user uid:gid | Includes `--user` for non-root non-1000 uid |
+| --gpus all | gpu=true includes `--gpus all` |
+| --device | Device passthrough args included |
+| USB cgroup rule | `/dev/bus/usb` includes `--device-cgroup-rule` |
+
+**udocker**
+
+| Test | Description |
+|------|-------------|
+| buildContainerArgs (4) | --rm/--name/-i excluded, device/GPU/label skipped |
+| lifecycle (1) | `udocker create` + `setup --execmode=F1` → echo → cleanup |
+
+### Test helpers (`tests/integration/helpers.ts`)
+
+| Export | Purpose |
+|--------|---------|
+| `FULL_RUNTIMES` | Parameterized array of Docker/Podman `[{ kind, bin }]` |
+| `ALPINE_IMAGE` | Lightweight test image (`alpine:latest`) |
+| `isRuntimeAvailable(kind)` | Checks binary existence and functionality |
+| `isDockerActuallyPodman()` | Detects podman-docker alias |
+| `detectSystemSELinux()` | Detects SELinux enforcing state |
+| `describeRuntime(kind, fn)` | Runs describe if runtime available, skips otherwise |
+| `ensureAlpineImage(bin)` | Pulls alpine image if not present |
+| `createTempDir(prefix)` / `cleanupTempDir(dir)` | Temp directory create/cleanup |
+| `runContainer(bin, args, opts?)` | spawnSync wrapper returning code/stdout/stderr |
+
+### Design principles
+
+- **Environment-adaptive:** SELinux, rootless, bridge interface, etc. are never hardcoded — tests query actual system state and compare
+- **Parameterized:** Docker/Podman common behavior runs in a shared loop; only differences are split out
+- **Real behavior verification:** Tests verify actual gateway connectivity, UID file access, and mount enforcement — not just arg generation
+- **podman-docker alias support:** Tests work even when the `docker` binary is actually podman
+
 ## CI Configuration
 
 ### `.github/workflows/ci.yml`
@@ -198,6 +283,14 @@ Steps: checkout → build via `./container/build.sh` → smoke test (TypeScript 
 3. Mock external dependencies (`config.js`, `logger.js`, etc.) at the top of the file using `vi.mock()`.
 4. Use real filesystem (`os.tmpdir()`) for state file tests instead of mocking `fs`.
 5. Clean up temp dirs in `afterEach`.
+
+### Integration tests
+
+1. Add common behavior inside the `for (const { kind, bin } of FULL_RUNTIMES)` loop.
+2. Add runtime-specific differences in separate `describeRuntime(kind, ...)` blocks.
+3. Never hardcode environment-specific values (SELinux, rootless, etc.) — query actual system state and compare.
+4. When async resources are needed (e.g., HTTP server), use `server.unref()` + async `spawn` — `spawnSync` blocks the event loop and prevents the server from responding.
+5. In `beforeAll`, follow this order: `_resetRuntime()` → set `process.env.CONTAINER_RUNTIME` → `initRuntime()`.
 
 ### E2E tests
 

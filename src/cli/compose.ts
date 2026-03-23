@@ -13,7 +13,7 @@ import {
   listRunManifests,
   readRunManifest,
   isPidAlive,
-} from '../pipeline-runner.js';
+} from '../run-manifest.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
