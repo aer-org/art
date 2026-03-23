@@ -8,7 +8,8 @@ import path from 'path';
 import { setCredentialProxyPort } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
-import { loadAgentTeamConfig, loadPipelineConfig, PipelineRunner, writeCurrentRun, } from './pipeline-runner.js';
+import { loadAgentTeamConfig, loadPipelineConfig, PipelineRunner, } from './pipeline-runner.js';
+import { writeCurrentRun } from './run-manifest.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 export async function runPipeline(opts) {

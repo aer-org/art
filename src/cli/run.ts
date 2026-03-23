@@ -93,7 +93,7 @@ export async function run(
 
   // Check for existing run (_current.json)
   const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } =
-    await import('../pipeline-runner.js');
+    await import('../run-manifest.js');
   const { cleanupRunContainers } = await import('../container-runtime.js');
 
   const currentRun = readCurrentRun(artDir);
@@ -199,7 +199,7 @@ export async function run(
 
   // Import manifest functions ahead of signal handler registration
   const { readRunManifest, writeRunManifest } =
-    await import('../pipeline-runner.js');
+    await import('../run-manifest.js');
 
   // Register SIGINT/SIGTERM handlers to clean up _current.json
   const cleanupOnSignal = () => {

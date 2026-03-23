@@ -141,7 +141,8 @@ vi.mock('child_process', async () => {
         spawn: vi.fn(() => fakeProc),
     };
 });
-import { parseStageMarkers, generateRunId, loadPipelineConfig, loadAgentTeamConfig, savePipelineState, loadPipelineState, writeRunManifest, readRunManifest, writeCurrentRun, readCurrentRun, removeCurrentRun, PipelineRunner, } from './pipeline-runner.js';
+import { generateRunId, writeRunManifest, readRunManifest, writeCurrentRun, readCurrentRun, removeCurrentRun, } from './run-manifest.js';
+import { parseStageMarkers, loadPipelineConfig, loadAgentTeamConfig, savePipelineState, loadPipelineState, PipelineRunner, } from './pipeline-runner.js';
 // ============================================================
 // Group A: Pure functions (no mocks needed)
 // ============================================================

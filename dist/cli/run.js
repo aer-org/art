@@ -70,7 +70,7 @@ export async function run(targetDir, opts) {
     process.env.ART_TUI_MODE = 'true';
     process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
     // Check for existing run (_current.json)
-    const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } = await import('../pipeline-runner.js');
+    const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } = await import('../run-manifest.js');
     const { cleanupRunContainers } = await import('../container-runtime.js');
     const currentRun = readCurrentRun(artDir);
     if (currentRun) {
@@ -168,7 +168,7 @@ export async function run(targetDir, opts) {
         }
     }
     // Import manifest functions ahead of signal handler registration
-    const { readRunManifest, writeRunManifest } = await import('../pipeline-runner.js');
+    const { readRunManifest, writeRunManifest } = await import('../run-manifest.js');
     // Register SIGINT/SIGTERM handlers to clean up _current.json
     const cleanupOnSignal = () => {
         try {

@@ -21,122 +21,16 @@ import { getRuntime } from './container-runtime.js';
 import { getImageForStage, loadImageRegistry } from './image-registry.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import {
+  generateRunId,
+  writeCurrentRun,
+  removeCurrentRun,
+  writeRunManifest,
+  type RunManifest,
+  type CurrentRunInfo,
+} from './run-manifest.js';
 import { RegisteredGroup } from './types.js';
 
-// --- Run ID + Manifest ---
-
-export function generateRunId(): string {
-  return `run-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-}
-
-export interface RunManifest {
-  runId: string;
-  pid: number;
-  startTime: string;
-  endTime?: string;
-  status: 'running' | 'success' | 'error' | 'cancelled';
-  stages: Array<{ name: string; status: string; duration?: number }>;
-  logFile?: string;
-  outputLogFile?: string;
-}
-
-export interface CurrentRunInfo {
-  runId: string;
-  pid: number;
-  startTime: string;
-}
-
-function runsDir(groupDir: string): string {
-  return path.join(groupDir, 'runs');
-}
-
-export function writeCurrentRun(groupDir: string, info: CurrentRunInfo): void {
-  const dir = runsDir(groupDir);
-  fs.mkdirSync(dir, { recursive: true });
-  const tmpPath = path.join(dir, '_current.json.tmp');
-  const filePath = path.join(dir, '_current.json');
-  fs.writeFileSync(tmpPath, JSON.stringify(info, null, 2));
-  fs.renameSync(tmpPath, filePath);
-}
-
-export function readCurrentRun(groupDir: string): CurrentRunInfo | null {
-  try {
-    const raw = fs.readFileSync(
-      path.join(runsDir(groupDir), '_current.json'),
-      'utf-8',
-    );
-    return JSON.parse(raw) as CurrentRunInfo;
-  } catch {
-    return null;
-  }
-}
-
-export function removeCurrentRun(groupDir: string): void {
-  try {
-    fs.unlinkSync(path.join(runsDir(groupDir), '_current.json'));
-  } catch {
-    /* file may not exist */
-  }
-}
-
-export function writeRunManifest(
-  groupDir: string,
-  manifest: RunManifest,
-): void {
-  const dir = runsDir(groupDir);
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `${manifest.runId}.json`);
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(manifest, null, 2));
-  fs.renameSync(tmpPath, filePath);
-}
-
-export function readRunManifest(
-  groupDir: string,
-  runId: string,
-): RunManifest | null {
-  try {
-    const raw = fs.readFileSync(
-      path.join(runsDir(groupDir), `${runId}.json`),
-      'utf-8',
-    );
-    return JSON.parse(raw) as RunManifest;
-  } catch {
-    return null;
-  }
-}
-
-export function listRunManifests(groupDir: string): RunManifest[] {
-  const dir = runsDir(groupDir);
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
-    .sort()
-    .reverse()
-    .map((f) => {
-      try {
-        return JSON.parse(
-          fs.readFileSync(path.join(dir, f), 'utf-8'),
-        ) as RunManifest;
-      } catch {
-        return null;
-      }
-    })
-    .filter((m): m is RunManifest => m !== null);
-}
-
-/**
- * Check if a PID is alive.
- */
-export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // --- Pipeline JSON Schema ---
 
@@ -893,16 +787,45 @@ export class PipelineRunner {
   }
 
   /**
-   * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
+   * Build commonRules dynamically from a stage's transitions.
    */
-  async run(): Promise<'success' | 'error'> {
+  private buildCommonRules(stageConfig: PipelineStage): string {
+    const markerLines = stageConfig.transitions.map((t) => {
+      const desc = t.prompt || t.marker;
+      if (t.retry) {
+        return `- ${desc} → [${t.marker}: brief description]`;
+      }
+      return `- ${desc} → [${t.marker}]`;
+    });
+
+    return `
+RULES:
+- Do NOT ask questions. Always assume "yes" and proceed autonomously.
+- Read files before editing. Use tools freely.
+- Do not stop until this stage is complete or you hit a blocking error.
+- 프로젝트 소스는 /workspace/project/ 에서 읽기 전용으로 볼 수 있다.
+- 스테이지 작업 디렉토리는 /workspace/ 아래에 마운트되어 있다 (plan/, src/, tb/, build/, sim/ 등). 반드시 이 경로에서 파일을 읽고 작업하라.
+
+STAGE MARKERS — use the correct one:
+${markerLines.join('\n')}`;
+  }
+
+  /**
+   * Validate plan, initialize git if needed, write manifest, create log stream.
+   * Returns null on validation failure.
+   */
+  private async initRun(): Promise<{
+    planContent: string;
+    stagesByName: Map<string, PipelineStage>;
+    pipelineLogStream: fs.WriteStream;
+  } | null> {
     const planPath = path.join(this.groupDir, 'plan', 'PLAN.md');
 
     if (!fs.existsSync(planPath)) {
       await this.notify(
         '⚠️ PLAN.md가 없습니다. 먼저 구현 계획을 작성해주세요.',
       );
-      return 'error';
+      return null;
     }
 
     // Ensure project directory is a git repo (containers need it for branching/committing)
@@ -947,7 +870,7 @@ export class PipelineRunner {
     const stageNames = this.config.stages.map((s) => s.name).join(' → ');
     await this.notifyBanner(`🚀 파이프라인 시작. 스테이지: ${stageNames}`);
 
-    // Pipeline-wide log file: all stage container output in one file
+    // Pipeline-wide log file
     const logsDir = path.join(this.groupDir, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -968,43 +891,20 @@ export class PipelineRunner {
       stagesByName.set(s.name, s);
     }
 
-    /**
-     * Build commonRules dynamically from a stage's transitions.
-     */
-    function buildCommonRules(stageConfig: PipelineStage): string {
-      const markerLines = stageConfig.transitions.map((t) => {
-        const desc = t.prompt || t.marker;
-        if (t.retry) {
-          return `- ${desc} → [${t.marker}: brief description]`;
-        }
-        return `- ${desc} → [${t.marker}]`;
-      });
+    return { planContent, stagesByName, pipelineLogStream };
+  }
 
-      return `
-RULES:
-- Do NOT ask questions. Always assume "yes" and proceed autonomously.
-- Read files before editing. Use tools freely.
-- Do not stop until this stage is complete or you hit a blocking error.
-- 프로젝트 소스는 /workspace/project/ 에서 읽기 전용으로 볼 수 있다.
-- 스테이지 작업 디렉토리는 /workspace/ 아래에 마운트되어 있다 (plan/, src/, tb/, build/, sim/ 등). 반드시 이 경로에서 파일을 읽고 작업하라.
-
-STAGE MARKERS — use the correct one:
-${markerLines.join('\n')}`;
-    }
-
-    // FSM loop — spawn each stage on-demand
-    let currentStageName: string | null;
-    let completedStages: string[];
-    let nextInitialPrompt: string | null = null; // Set by code-error transitions
-    let turnCount = 0;
-    let lastResult: 'success' | 'error' = 'success';
-
+  /**
+   * Determine entry stage and resume from previous state if applicable.
+   */
+  private async resolveEntryStage(
+    stagesByName: Map<string, PipelineStage>,
+  ): Promise<{ currentStageName: string; completedStages: string[] }> {
     // Determine entry stage: explicit > heuristic (prefer nodes with outgoing edges) > stages[0]
     const resolveEntry = (): string => {
       if (this.config.entryStage && stagesByName.has(this.config.entryStage)) {
         return this.config.entryStage;
       }
-      // Heuristic: prefer stages with outgoing non-retry transitions that aren't dead-ends
       const hasIncoming = new Set<string>();
       const hasOutgoing = new Set<string>();
       for (const s of this.config.stages) {
@@ -1019,7 +919,9 @@ ${markerLines.join('\n')}`;
         (s) => !hasIncoming.has(s.name) && hasOutgoing.has(s.name),
       );
       if (preferred) return preferred.name;
-      const fallback = this.config.stages.find((s) => !hasIncoming.has(s.name));
+      const fallback = this.config.stages.find(
+        (s) => !hasIncoming.has(s.name),
+      );
       if (fallback) return fallback.name;
       const loopFallback = this.config.stages.find((s) =>
         hasOutgoing.has(s.name),
@@ -1036,212 +938,163 @@ ${markerLines.join('\n')}`;
       existingState.completedStages.length > 0
     ) {
       const lastCompleted =
-        existingState.completedStages[existingState.completedStages.length - 1];
+        existingState.completedStages[
+          existingState.completedStages.length - 1
+        ];
       const lastConfig = stagesByName.get(lastCompleted);
       const completeTransition = lastConfig?.transitions.find(
         (t) => !t.retry && t.next,
       );
-      currentStageName = completeTransition?.next ?? resolveEntry();
-      completedStages = [...existingState.completedStages];
+      const currentStageName = completeTransition?.next ?? resolveEntry();
+      const completedStages = [...existingState.completedStages];
       await this.notifyBanner(
         `🔄 ${currentStageName}부터 재개 (이전 완료: ${existingState.completedStages.join(' → ')})`,
       );
-    } else {
-      currentStageName = resolveEntry();
-      completedStages = [];
+      return { currentStageName, completedStages };
     }
 
+    return { currentStageName: resolveEntry(), completedStages: [] };
+  }
+
+  /**
+   * Handle stage result: no-match → retry prompt, retry → re-send,
+   * transition → close container and advance FSM.
+   */
+  private async handleStageResult(
+    result: StageMarkerResult,
+    ctx: {
+      handle: StageHandle;
+      stageConfig: PipelineStage;
+      currentStageName: string;
+      turnCount: number;
+      stageStartTime: number;
+      completedStages: string[];
+      commonRules: string;
+      planContent: string;
+      stagesByName: Map<string, PipelineStage>;
+    },
+  ): Promise<{
+    stageResolved: boolean;
+    nextStageName: string | null;
+    nextInitialPrompt: string | null;
+    lastResult: 'success' | 'error' | null;
+  }> {
+    const { matched, payload } = result;
+    const {
+      handle,
+      stageConfig,
+      currentStageName,
+      turnCount,
+      stageStartTime,
+      completedStages,
+      commonRules,
+      planContent,
+      stagesByName,
+    } = ctx;
+
+    if (!matched) {
+      // No markers found — retry
+      logger.warn(
+        { stage: currentStageName, turn: turnCount },
+        'No stage markers found',
+      );
+      handle.pendingResult = createDeferred();
+      sendToStage(
+        handle,
+        `이전 응답에 스테이지 마커가 없었습니다. 작업을 계속하고 완료 시 적절한 마커를 출력하세요.\n\n${stageConfig.prompt}\n${commonRules}`,
+      );
+      return {
+        stageResolved: false,
+        nextStageName: null,
+        nextInitialPrompt: null,
+        lastResult: null,
+      };
+    }
+
+    if (matched.retry) {
+      // Retry transition — re-send the stage prompt
+      const errorDesc = payload || matched.marker;
+      await this.notify(
+        `⚠️ [턴 ${turnCount}] ${currentStageName} 에러: ${errorDesc}`,
+      );
+      handle.pendingResult = createDeferred();
+      sendToStage(
+        handle,
+        `이전 시도에서 에러가 발생했습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
+      );
+      return {
+        stageResolved: false,
+        nextStageName: null,
+        nextInitialPrompt: null,
+        lastResult: null,
+      };
+    }
+
+    // Non-retry transition — move to next stage or end pipeline
+    const targetName = matched.next ?? null;
+    const isErrorTransition = matched.marker.includes('ERROR');
+    if (isErrorTransition) {
+      await this.notifyBanner(
+        targetName
+          ? `⚠️ 주의: ${payload || matched.marker}\n🔄 ${targetName}으로 복귀`
+          : `⚠️ 주의: ${payload || matched.marker}`,
+      );
+    } else {
+      await this.notifyBanner(
+        targetName
+          ? `✅ ${currentStageName} → ${targetName} (${matched.marker})`
+          : `✅ ${currentStageName} 완료! (${matched.marker})`,
+      );
+    }
+
+    // Track completed stage
+    completedStages.push(currentStageName);
+    this.manifest.stages.push({
+      name: currentStageName,
+      status: isErrorTransition ? 'error' : 'success',
+      duration: Date.now() - stageStartTime,
+    });
+    writeRunManifest(this.groupDir, this.manifest);
     savePipelineState(this.groupDir, {
-      currentStage: currentStageName,
+      currentStage: targetName,
       completedStages,
       lastUpdated: new Date().toISOString(),
       status: 'running',
     });
 
-    while (currentStageName !== null) {
-      if (this.aborted) break;
+    // Close the container first, then retrieve session ID
+    await this.closeAndWait(handle);
+    const containerResult = await handle.containerPromise;
+    if (containerResult.newSessionId) {
+      this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
+    }
+    this.currentHandle = null;
 
-      const stageConfig = stagesByName.get(currentStageName);
-      if (!stageConfig) {
-        logger.error({ stage: currentStageName }, 'Stage config not found');
-        lastResult = 'error';
-        break;
-      }
-
-      // Exclusive lock: wait for shared resource (e.g. Vivado memory, FPGA board)
-      let exclusiveLock: ExclusiveLock | null = null;
-      if (stageConfig.exclusive) {
-        exclusiveLock = getExclusiveLock(stageConfig.exclusive);
-        logger.info(
-          { stage: currentStageName, key: stageConfig.exclusive },
-          'Waiting for exclusive lock',
-        );
-        await this.notify(
-          `🔒 ${currentStageName}: 대기 중 (${stageConfig.exclusive} lock)...`,
-        );
-        await exclusiveLock.acquire();
-        logger.info(
-          { stage: currentStageName, key: stageConfig.exclusive },
-          'Exclusive lock acquired',
-        );
-      }
-
-      try {
-        const commonRules = buildCommonRules(stageConfig);
-
-        // Spawn container for this stage
-        const initialPrompt =
-          nextInitialPrompt ||
-          `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
-        nextInitialPrompt = null;
-
-        const stageStartTime = Date.now();
-        const handle = this.spawnStageContainer(
-          stageConfig,
-          initialPrompt,
-          pipelineLogStream,
-        );
-        this.currentHandle = handle;
-
-        logger.info(
-          { stage: currentStageName },
-          'Stage container spawned (on-demand)',
-        );
-        logger.info({ stage: currentStageName }, 'Entering stage');
-        await this.notifyBanner(`📌 Stage: ${currentStageName} 시작`);
-
-        let isFirstTurn = true;
-        let stageResolved = false;
-
-        while (!stageResolved) {
-          turnCount++;
-
-          // Set up deferred if not already set
-          if (!handle.pendingResult) {
-            handle.pendingResult = createDeferred();
-          }
-
-          // Send work prompt to stage (unless first turn, which got it at spawn)
-          if (!isFirstTurn) {
-            const prompt = `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
-            sendToStage(handle, prompt);
-          }
-          isFirstTurn = false;
-
-          logger.debug(
-            { stage: currentStageName, turn: turnCount },
-            'Waiting for stage result',
-          );
-          await this.notify(
-            `🔧 [턴 ${turnCount}] ${currentStageName} 진행 중...`,
-          );
-
-          // Wait for the stage to produce a result
-          const result = await handle.pendingResult.promise;
-          handle.pendingResult = null;
-
-          logger.info(
-            { stage: currentStageName, turn: turnCount, result },
-            'Stage result received',
-          );
-
-          const { matched, payload } = result;
-
-          if (!matched) {
-            // No markers found — retry
-            logger.warn(
-              { stage: currentStageName, turn: turnCount },
-              'No stage markers found',
-            );
-            handle.pendingResult = createDeferred();
-            sendToStage(
-              handle,
-              `이전 응답에 스테이지 마커가 없었습니다. 작업을 계속하고 완료 시 적절한 마커를 출력하세요.\n\n${stageConfig.prompt}\n${commonRules}`,
-            );
-          } else if (matched.retry) {
-            // Retry transition — re-send the stage prompt
-            const errorDesc = payload || matched.marker;
-            await this.notify(
-              `⚠️ [턴 ${turnCount}] ${currentStageName} 에러: ${errorDesc}`,
-            );
-            handle.pendingResult = createDeferred();
-            sendToStage(
-              handle,
-              `이전 시도에서 에러가 발생했습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
-            );
-          } else {
-            // Non-retry transition — move to next stage or end pipeline
-            const targetName = matched.next ?? null;
-            const isErrorTransition = matched.marker.includes('ERROR');
-            if (isErrorTransition) {
-              await this.notifyBanner(
-                targetName
-                  ? `⚠️ 주의: ${payload || matched.marker}\n🔄 ${targetName}으로 복귀`
-                  : `⚠️ 주의: ${payload || matched.marker}`,
-              );
-            } else {
-              await this.notifyBanner(
-                targetName
-                  ? `✅ ${currentStageName} → ${targetName} (${matched.marker})`
-                  : `✅ ${currentStageName} 완료! (${matched.marker})`,
-              );
-            }
-
-            // Track completed stage
-            completedStages.push(currentStageName!);
-            this.manifest.stages.push({
-              name: currentStageName!,
-              status: isErrorTransition ? 'error' : 'success',
-              duration: Date.now() - stageStartTime,
-            });
-            writeRunManifest(this.groupDir, this.manifest);
-            savePipelineState(this.groupDir, {
-              currentStage: targetName,
-              completedStages,
-              lastUpdated: new Date().toISOString(),
-              status: 'running',
-            });
-
-            // Close the container first, then retrieve session ID
-            await this.closeAndWait(handle);
-            const containerResult = await handle.containerPromise;
-            if (containerResult.newSessionId) {
-              this.stageSessionIds.set(
-                currentStageName!,
-                containerResult.newSessionId,
-              );
-            }
-            this.currentHandle = null;
-
-            if (targetName) {
-              // Inject payload as context for the next stage
-              if (payload) {
-                const targetConfig = stagesByName.get(targetName);
-                const targetRules = targetConfig
-                  ? buildCommonRules(targetConfig)
-                  : commonRules;
-                nextInitialPrompt = `이전 스테이지(${currentStageName})에서 전달된 내용:\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}\n\n## Plan\n\n${planContent}`;
-              }
-            } else {
-              lastResult = 'success';
-            }
-            currentStageName = targetName;
-            stageResolved = true;
-          }
-        }
-      } finally {
-        // Release exclusive lock after stage completes (any exit path, including exceptions)
-        if (exclusiveLock) {
-          exclusiveLock.release();
-          logger.info(
-            { stage: currentStageName, key: stageConfig.exclusive },
-            'Exclusive lock released',
-          );
-        }
-      }
+    let nextInitialPrompt: string | null = null;
+    if (targetName && payload) {
+      const targetConfig = stagesByName.get(targetName);
+      const targetRules = targetConfig
+        ? this.buildCommonRules(targetConfig)
+        : commonRules;
+      nextInitialPrompt = `이전 스테이지(${currentStageName})에서 전달된 내용:\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}\n\n## Plan\n\n${planContent}`;
     }
 
-    // Save final pipeline state
+    return {
+      stageResolved: true,
+      nextStageName: targetName,
+      nextInitialPrompt,
+      lastResult: targetName ? null : 'success',
+    };
+  }
+
+  /**
+   * Save final pipeline state, close manifest and log stream.
+   */
+  private async finalizeRun(
+    completedStages: string[],
+    lastResult: 'success' | 'error',
+    pipelineLogStream: fs.WriteStream,
+  ): Promise<void> {
     savePipelineState(this.groupDir, {
       currentStage: null,
       completedStages,
@@ -1249,7 +1102,6 @@ ${markerLines.join('\n')}`;
       status: lastResult,
     });
 
-    // Finalize run manifest and remove _current.json
     this.manifest.endTime = new Date().toISOString();
     this.manifest.status = lastResult;
     writeRunManifest(this.groupDir, this.manifest);
@@ -1265,7 +1117,143 @@ ${markerLines.join('\n')}`;
         ? '🏁 전체 파이프라인 완료!'
         : '❌ 파이프라인이 에러로 종료되었습니다.',
     );
+  }
 
+  /**
+   * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
+   */
+  async run(): Promise<'success' | 'error'> {
+    const init = await this.initRun();
+    if (!init) return 'error';
+
+    const { planContent, stagesByName, pipelineLogStream } = init;
+    let { currentStageName, completedStages } =
+      await this.resolveEntryStage(stagesByName);
+
+    savePipelineState(this.groupDir, {
+      currentStage: currentStageName,
+      completedStages,
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    let currentStage: string | null = currentStageName;
+    let nextInitialPrompt: string | null = null;
+    let turnCount = 0;
+    let lastResult: 'success' | 'error' = 'success';
+
+    while (currentStage !== null) {
+      if (this.aborted) break;
+
+      const stageConfig = stagesByName.get(currentStage);
+      if (!stageConfig) {
+        logger.error({ stage: currentStage }, 'Stage config not found');
+        lastResult = 'error';
+        break;
+      }
+
+      // Exclusive lock: wait for shared resource
+      let exclusiveLock: ExclusiveLock | null = null;
+      if (stageConfig.exclusive) {
+        exclusiveLock = getExclusiveLock(stageConfig.exclusive);
+        logger.info(
+          { stage: currentStage, key: stageConfig.exclusive },
+          'Waiting for exclusive lock',
+        );
+        await this.notify(
+          `🔒 ${currentStage}: 대기 중 (${stageConfig.exclusive} lock)...`,
+        );
+        await exclusiveLock.acquire();
+        logger.info(
+          { stage: currentStage, key: stageConfig.exclusive },
+          'Exclusive lock acquired',
+        );
+      }
+
+      try {
+        const commonRules = this.buildCommonRules(stageConfig);
+        const initialPrompt =
+          nextInitialPrompt ||
+          `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
+        nextInitialPrompt = null;
+
+        const stageStartTime = Date.now();
+        const handle = this.spawnStageContainer(
+          stageConfig,
+          initialPrompt,
+          pipelineLogStream,
+        );
+        this.currentHandle = handle;
+
+        logger.info({ stage: currentStage }, 'Stage container spawned (on-demand)');
+        logger.info({ stage: currentStage }, 'Entering stage');
+        await this.notifyBanner(`📌 Stage: ${currentStage} 시작`);
+
+        let isFirstTurn = true;
+        let stageResolved = false;
+
+        while (!stageResolved) {
+          turnCount++;
+
+          if (!handle.pendingResult) {
+            handle.pendingResult = createDeferred();
+          }
+
+          if (!isFirstTurn) {
+            const prompt = `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
+            sendToStage(handle, prompt);
+          }
+          isFirstTurn = false;
+
+          logger.debug(
+            { stage: currentStage, turn: turnCount },
+            'Waiting for stage result',
+          );
+          await this.notify(
+            `🔧 [턴 ${turnCount}] ${currentStage} 진행 중...`,
+          );
+
+          const result = await handle.pendingResult.promise;
+          handle.pendingResult = null;
+
+          logger.info(
+            { stage: currentStage, turn: turnCount, result },
+            'Stage result received',
+          );
+
+          const outcome = await this.handleStageResult(result, {
+            handle,
+            stageConfig,
+            currentStageName: currentStage!,
+            turnCount,
+            stageStartTime,
+            completedStages,
+            commonRules,
+            planContent,
+            stagesByName,
+          });
+
+          stageResolved = outcome.stageResolved;
+          if (outcome.stageResolved) {
+            currentStage = outcome.nextStageName;
+            nextInitialPrompt = outcome.nextInitialPrompt;
+            if (outcome.lastResult) {
+              lastResult = outcome.lastResult;
+            }
+          }
+        }
+      } finally {
+        if (exclusiveLock) {
+          exclusiveLock.release();
+          logger.info(
+            { stage: currentStage, key: stageConfig.exclusive },
+            'Exclusive lock released',
+          );
+        }
+      }
+    }
+
+    await this.finalizeRun(completedStages, lastResult, pipelineLogStream);
     return lastResult;
   }
 }

@@ -189,23 +189,25 @@ vi.mock('child_process', async () => {
 });
 
 import {
-  parseStageMarkers,
   generateRunId,
-  loadPipelineConfig,
-  loadAgentTeamConfig,
-  savePipelineState,
-  loadPipelineState,
   writeRunManifest,
   readRunManifest,
   writeCurrentRun,
   readCurrentRun,
   removeCurrentRun,
+  type RunManifest,
+  type CurrentRunInfo,
+} from './run-manifest.js';
+import {
+  parseStageMarkers,
+  loadPipelineConfig,
+  loadAgentTeamConfig,
+  savePipelineState,
+  loadPipelineState,
   PipelineRunner,
   type PipelineTransition,
   type PipelineConfig,
   type PipelineState,
-  type RunManifest,
-  type CurrentRunInfo,
 } from './pipeline-runner.js';
 import type { RegisteredGroup } from './types.js';
 
