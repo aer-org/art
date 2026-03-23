@@ -31,7 +31,6 @@ import {
 } from './run-manifest.js';
 import { RegisteredGroup } from './types.js';
 
-
 // --- Pipeline JSON Schema ---
 
 export interface PipelineTransition {
@@ -919,9 +918,7 @@ ${markerLines.join('\n')}`;
         (s) => !hasIncoming.has(s.name) && hasOutgoing.has(s.name),
       );
       if (preferred) return preferred.name;
-      const fallback = this.config.stages.find(
-        (s) => !hasIncoming.has(s.name),
-      );
+      const fallback = this.config.stages.find((s) => !hasIncoming.has(s.name));
       if (fallback) return fallback.name;
       const loopFallback = this.config.stages.find((s) =>
         hasOutgoing.has(s.name),
@@ -938,9 +935,7 @@ ${markerLines.join('\n')}`;
       existingState.completedStages.length > 0
     ) {
       const lastCompleted =
-        existingState.completedStages[
-          existingState.completedStages.length - 1
-        ];
+        existingState.completedStages[existingState.completedStages.length - 1];
       const lastConfig = stagesByName.get(lastCompleted);
       const completeTransition = lastConfig?.transitions.find(
         (t) => !t.retry && t.next,
@@ -1185,7 +1180,10 @@ ${markerLines.join('\n')}`;
         );
         this.currentHandle = handle;
 
-        logger.info({ stage: currentStage }, 'Stage container spawned (on-demand)');
+        logger.info(
+          { stage: currentStage },
+          'Stage container spawned (on-demand)',
+        );
         logger.info({ stage: currentStage }, 'Entering stage');
         await this.notifyBanner(`📌 Stage: ${currentStage} 시작`);
 
@@ -1209,9 +1207,7 @@ ${markerLines.join('\n')}`;
             { stage: currentStage, turn: turnCount },
             'Waiting for stage result',
           );
-          await this.notify(
-            `🔧 [턴 ${turnCount}] ${currentStage} 진행 중...`,
-          );
+          await this.notify(`🔧 [턴 ${turnCount}] ${currentStage} 진행 중...`);
 
           const result = await handle.pendingResult.promise;
           handle.pendingResult = null;

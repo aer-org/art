@@ -21,7 +21,8 @@
     "prepare": "npm run build && node -e \"try{require('husky')}catch{process.exit(0)}\" && husky || true",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
