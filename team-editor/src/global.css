@@ -80,13 +80,261 @@ body {
   font-size: 14px;
 }
 
-/* Agent list panel (left) */
-.agent-list-panel {
+/* Left sidebar */
+.left-sidebar {
   width: 200px;
   background: #181825;
   border-right: 1px solid #313244;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+}
+
+/* Templates panel */
+.templates-panel {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid #313244;
+}
+
+.tpl-header {
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #a6adc8;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid #313244;
+}
+
+.tpl-list {
+  padding: 4px;
+}
+
+.tpl-category {
+  margin-bottom: 2px;
+}
+
+.tpl-category-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: #a6adc8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.tpl-category-toggle:hover {
+  background: #313244;
+}
+
+.tpl-category-arrow {
+  width: 10px;
+  font-size: 10px;
+}
+
+.tpl-category-label {
+  flex: 1;
+  text-align: left;
+}
+
+.tpl-category-count {
+  font-size: 10px;
+  color: #6c7086;
+}
+
+.tpl-category-items {
+  padding-left: 6px;
+}
+
+.tpl-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 8px;
+  margin: 1px 0;
+  border-radius: 4px;
+  cursor: grab;
+  transition: background 0.15s;
+  border: 1px solid transparent;
+}
+
+.tpl-item:hover {
+  background: #313244;
+  border-color: #45475a;
+}
+
+.tpl-item:active {
+  cursor: grabbing;
+}
+
+.tpl-item-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #cdd6f4;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.tpl-item-desc {
+  font-size: 9px;
+  color: #6c7086;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tpl-item.selected {
+  background: #313244;
+  border-color: #89b4fa;
+}
+
+.tpl-hint {
+  padding: 6px 12px;
+  font-size: 10px;
+  color: #45475a;
+  text-align: center;
+}
+
+/* Template preview */
+.tpl-preview {
+  border-top: 1px solid #313244;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 300px;
+}
+
+.tpl-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tpl-preview-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #cdd6f4;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.tpl-preview-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tpl-badge-agent {
+  background: rgba(137, 180, 250, 0.15);
+  color: #89b4fa;
+}
+
+.tpl-badge-command {
+  background: rgba(249, 226, 175, 0.15);
+  color: #f9e2af;
+}
+
+.tpl-preview-desc {
+  font-size: 10px;
+  color: #a6adc8;
+}
+
+.tpl-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+}
+
+.tpl-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tpl-preview-key {
+  font-size: 9px;
+  font-weight: 700;
+  color: #6c7086;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tpl-preview-val {
+  font-size: 10px;
+  color: #cdd6f4;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.tpl-preview-mounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.tpl-mount-tag {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #cdd6f4;
+  background: #11111b;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #313244;
+}
+
+.tpl-mount-mode {
+  color: #6c7086;
+  margin-left: 2px;
+  font-size: 9px;
+}
+
+.tpl-preview-transitions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tpl-transition-tag {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #a6e3a1;
+  background: #11111b;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #313244;
+}
+
+.tpl-preview-cmd {
+  font-size: 9px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #cdd6f4;
+  background: #11111b;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid #313244;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+/* Agent list panel (left) */
+.agent-list-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   overflow-y: auto;
 }
 
@@ -526,6 +774,11 @@ body {
   color: #6c7086;
   font-size: 11px;
   font-style: italic;
+}
+
+.mount-overlay-file-hint {
+  min-width: 65px;
+  text-align: center;
 }
 
 .mount-overlay-loading {

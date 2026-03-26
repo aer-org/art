@@ -518,7 +518,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
         const entries = fs.readdirSync(targetDir, { withFileTypes: true });
         const files = entries
           .filter((e) => {
-            if (e.name.startsWith('.')) return false;
+            if (e.name.startsWith('.') && !e.isDirectory()) return false;
             // Hide __art__/ dir only at project root level
             if (!subPath && e.name === artDirName) return false;
             // Skip symlinks to prevent escaping project root
@@ -1209,7 +1209,7 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
   const onListening = () => {
     const addr = server.address() as import('net').AddressInfo;
     const port = addr.port;
-    const url = `http://localhost:${port}?mode=${mode}`;
+    const url = `http://localhost:${port}`;
     console.log(`Opening pipeline editor for ${path.dirname(artDir)}`);
     console.log(`  ${url}\n`);
 
