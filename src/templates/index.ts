@@ -22,7 +22,16 @@ import { gitPr } from './command/git/pr.js';
 import { run } from './command/run.js';
 
 export { plan, build, test, review, history, deploy, git };
-export { gitInit, gitBranch, gitCommit, gitReset, gitKeep, gitPush, gitPr, run };
+export {
+  gitInit,
+  gitBranch,
+  gitCommit,
+  gitReset,
+  gitKeep,
+  gitPush,
+  gitPr,
+  run,
+};
 
 import type { StageTemplate } from './base.js';
 

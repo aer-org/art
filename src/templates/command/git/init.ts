@@ -6,14 +6,13 @@ const GIT_CONFIG =
 export const gitInit: StageTemplate = {
   name: 'git-init',
   type: 'command',
-  description: 'Initialize git repo if not already initialized, configure identity.',
+  description:
+    'Initialize git repo if not already initialized, configure identity.',
   prompt: '',
   command: `${GIT_CONFIG} && cd /workspace/project && if [ -d .git ]; then echo 'Already initialized'; else git init; fi && echo '[STAGE_COMPLETE]'`,
   image: 'alpine/git',
   mounts: {
     project: 'rw',
   },
-  transitions: [
-    { marker: '[STAGE_COMPLETE]', next: null },
-  ],
+  transitions: [{ marker: '[STAGE_COMPLETE]', next: null }],
 };

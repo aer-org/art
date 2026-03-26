@@ -13,7 +13,5 @@ export const gitBranch: StageTemplate = {
   mounts: {
     project: 'rw',
   },
-  transitions: [
-    { marker: '[STAGE_COMPLETE]', next: null },
-  ],
+  transitions: [{ marker: '[STAGE_COMPLETE]', next: null }],
 };

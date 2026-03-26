@@ -15,6 +15,10 @@ export const gitPush: StageTemplate = {
   },
   transitions: [
     { marker: '[STAGE_COMPLETE]', next: null },
-    { marker: '[STAGE_ERROR]', next: null, prompt: 'Push failed — check remote access' },
+    {
+      marker: '[STAGE_ERROR]',
+      next: null,
+      prompt: 'Push failed — check remote access',
+    },
   ],
 };
