@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "typescript": "^5.7.0",
+    "typescript": "^6.0.2",
     "@vitest/coverage-v8": "^4.0.18",
     "husky": "^9.1.7",
     "prettier": "^3.8.1",
