@@ -202,7 +202,9 @@ function TreeNodeRow({
           )}
           {node.name}{node.isDirectory ? '/' : ''}
         </span>
-        {isDisabledByParent ? (
+        {!node.isDirectory ? (
+          <span className="mount-overlay-dim mount-overlay-file-hint">({effective})</span>
+        ) : isDisabledByParent ? (
           <span className="mount-overlay-dim">disabled</span>
         ) : (
           <>
@@ -283,7 +285,17 @@ export function MountOverlay({ mode, title, mounts: initialMounts, onApply, onCl
   }, []);
 
   const handleApply = () => {
-    onApply(mounts);
+    // Strip file-level project: keys (UI no longer creates them, but saved configs may have them)
+    const cleaned: Record<string, MountPolicy> = {};
+    for (const [key, value] of Object.entries(mounts)) {
+      if (key.startsWith(prefix) && key !== rootKey) {
+        const subPath = key.slice(prefix.length);
+        const matchingNode = findNode(nodes, subPath);
+        if (matchingNode && !matchingNode.isDirectory) continue;
+      }
+      cleaned[key] = value;
+    }
+    onApply(cleaned);
     onClose();
   };
 
@@ -364,6 +376,17 @@ function insertChildren(
     }
     return node;
   });
+}
+
+function findNode(nodes: TreeNode[], targetPath: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.path === targetPath) return node;
+    if (node.children) {
+      const found = findNode(node.children, targetPath);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function toggleExpanded(nodes: TreeNode[], targetPath: string): TreeNode[] {

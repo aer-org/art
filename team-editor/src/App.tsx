@@ -15,32 +15,28 @@ import {
   type Connection,
   BackgroundVariant,
   MarkerType,
+  useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 import { StageNode } from './nodes/StageNode';
 import { PropertiesPanel } from './panels/PropertiesPanel';
-import { AgentListPanel } from './panels/AgentListPanel';
+// AgentListPanel removed — templates panel replaces it
 import { FilesPanel, type ProjectFile } from './panels/FilesPanel';
 import { ImagesPanel, type ImageRegistry } from './panels/ImagesPanel';
 import { useRunControls, RunOutputPanel } from './panels/RunPanel';
-import { Onboarding } from './components/Onboarding';
+import { TemplatesPanel } from './panels/TemplatesPanel';
+import type { TemplateEntry } from './templates';
 import { AgentChat } from './components/AgentChat';
 import { useAgentChat } from './hooks/useAgentChat';
 import { FileEditor } from './components/FileEditor';
 import { TextEditor } from './components/TextEditor';
 import { deserialize } from './utils/deserialize';
 import { serialize, validate } from './utils/serialize';
-import { exportTeamZip, importTeamZip, importTeamFolder } from './utils/zip';
 import type { PipelineConfig, PipelineStage, AgentConfig, AgentFiles } from './types';
 import { DEFAULT_STAGE, DEFAULT_PIPELINE, DEFAULT_AGENT_FILES } from './types';
 
 const nodeTypes = { stageNode: StageNode };
-
-const params = new URLSearchParams(window.location.search);
-const mode = params.get('mode') || 'single';
-const isSingleMode = mode === 'single' || mode === 'init';
-const isInitMode = mode === 'init';
 
 export default function App() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -51,9 +47,7 @@ export default function App() {
   const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
   const [dirsVersion, setDirsVersion] = useState(0);
   const [agentChatDone, setAgentChatDone] = useState(false);
-  // Hook is always called (React rules) but only connects SSE in single mode
-  const agentChatHook = useAgentChat();
-  const agentChat = isSingleMode ? agentChatHook : null;
+  const agentChat = useAgentChat();
   const [imageRegistry, setImageRegistry] = useState<ImageRegistry>({});
   const [pipelineState, setPipelineState] = useState<{
     currentStage: string | null;
@@ -66,14 +60,12 @@ export default function App() {
     value: string;
     onChange: (value: string) => void;
   } | null>(null);
-  const zipInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const reactFlowInstance = useReactFlow();
 
-  const agentRunning = agentChat?.agentRunning ?? false;
+  const agentRunning = agentChat.agentRunning;
 
   // Poll pipeline execution state for node highlighting
   useEffect(() => {
-    if (!isSingleMode) return;
     const poll = () => {
       fetch('/api/pipeline-state')
         .then((r) => r.json())
@@ -89,9 +81,8 @@ export default function App() {
 
   const refreshDirs = useCallback(() => setDirsVersion((v) => v + 1), []);
 
-  // Fetch __art__/ directory list in single mode
+  // Fetch __art__/ directory list
   useEffect(() => {
-    if (!isSingleMode) return;
     fetch('/api/dirs')
       .then((r) => r.json())
       .then((dirs: { name: string; files: string[] }[]) => setArtDirs(dirs))
@@ -108,9 +99,8 @@ export default function App() {
 
   const agent = agents[selectedAgentIdx] as AgentConfig | undefined;
 
-  // Single-pipeline mode: load from API on mount
+  // Load pipeline from API on mount
   useEffect(() => {
-    if (!isSingleMode) return;
     fetch('/api/pipeline')
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -342,41 +332,51 @@ export default function App() {
     syncPipeline(newNodes, edgesRef.current);
   }, [syncPipeline]);
 
-  const handleAddAgent = useCallback((name: string, folder: string) => {
-    setAgents((prev) => [
-      ...prev,
-      { name, folder, pipeline: { ...DEFAULT_PIPELINE }, files: { ...DEFAULT_AGENT_FILES } },
-    ]);
-    setSelectedAgentIdx(agents.length);
-    setSelectedNodeId(null);
-  }, [agents.length]);
-
-  const handleDeleteAgent = useCallback(
-    (idx: number) => {
-      setAgents((prev) => prev.filter((_, i) => i !== idx));
-      if (selectedAgentIdx >= agents.length - 1) {
-        setSelectedAgentIdx(Math.max(0, agents.length - 2));
-      }
-      setSelectedNodeId(null);
-    },
-    [selectedAgentIdx, agents.length],
-  );
-
-  const handleSelectAgent = useCallback((idx: number) => {
-    setSelectedAgentIdx(idx);
-    setSelectedNodeId(null);
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
   }, []);
 
-  const handleUpdateAgent = useCallback(
-    (idx: number, partial: Partial<AgentConfig>) => {
-      setAgents((prev) => {
-        const next = [...prev];
-        next[idx] = { ...next[idx], ...partial };
-        return next;
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const raw = e.dataTransfer.getData('application/aer-art-template');
+      if (!raw) return;
+
+      const entry: TemplateEntry = JSON.parse(raw);
+      const curNodes = nodesRef.current;
+      const existingNames = new Set(curNodes.map((n) => n.id));
+
+      let name = entry.name;
+      let i = 1;
+      while (existingNames.has(name)) name = `${entry.name}_${i++}`;
+
+      const position = reactFlowInstance.screenToFlowPosition({
+        x: e.clientX,
+        y: e.clientY,
       });
+
+      const stage: PipelineStage = {
+        ...entry.stage,
+        name,
+        transitions: entry.stage.transitions.map((t) => ({ ...t })),
+        mounts: { ...entry.stage.mounts },
+      };
+
+      const newNode: Node = {
+        id: name,
+        type: 'stageNode',
+        position,
+        data: { stage },
+      };
+
+      const newNodes = [...curNodes, newNode];
+      setSelectedNodeId(name);
+      syncPipeline(newNodes, edgesRef.current);
     },
-    [],
+    [syncPipeline, reactFlowInstance],
   );
+
 
   const handleUpdateFiles = useCallback(
     (files: AgentFiles) => {
@@ -392,7 +392,7 @@ export default function App() {
   );
 
   const handleSave = useCallback(async () => {
-    if (!isSingleMode || !agent) return;
+    if (!agent) return;
     const result_ = agent.pipeline.stages.length > 0
       ? deserialize(agent.pipeline)
       : null;
@@ -417,80 +417,22 @@ export default function App() {
     }
   }, [agent]);
 
-  const handleExport = useCallback(async () => {
-    // Validate all agents
-    for (const a of agents) {
-      if (a.pipeline.stages.length > 0) {
-        const result = deserialize(a.pipeline);
-        const errors = validate(result.nodes, result.edges);
-        if (errors.length > 0) {
-          alert(`Validation errors in "${a.name}":\n` + errors.map((e) => '- ' + e.message).join('\n'));
-          return;
-        }
-      }
-    }
-    if (agents.length === 0) {
-      alert('Add at least one agent before exporting.');
-      return;
-    }
-    await exportTeamZip(agents);
-  }, [agents]);
-
-  const handleLoadZip = useCallback(() => {
-    zipInputRef.current?.click();
-  }, []);
-
-  const handleLoadFolder = useCallback(() => {
-    folderInputRef.current?.click();
-  }, []);
-
-  const handleFolderChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    try {
-      const loaded = await importTeamFolder(files);
-      setAgents(loaded);
-      setSelectedAgentIdx(0);
-      setSelectedNodeId(null);
-    } catch (err) {
-      alert('Failed to load folder: ' + (err as Error).message);
-    }
-    e.target.value = '';
-  }, []);
-
-  const handleZipFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const loaded = await importTeamZip(file);
-      setAgents(loaded);
-      setSelectedAgentIdx(0);
-      setSelectedNodeId(null);
-    } catch (err) {
-      alert('Failed to load project: ' + (err as Error).message);
-    }
-    e.target.value = '';
-  }, []);
-
   const handleOpenChat = useCallback(() => {
     setAgentChatDone(false);
-    // If agent is not running but we have a session, restart it
-    if (agentChat && !agentChat.agentRunning) {
+    if (!agentChat.agentRunning) {
       agentChat.startAgent();
     }
   }, [agentChat]);
   const runControls = useRunControls();
 
-  const hasHistory = agentChat ? agentChat.segments.length > 0 : false;
-  const showAgentChat = isSingleMode && (agentRunning || hasHistory) && !agentChatDone;
-  const showStaticOnboarding = isInitMode && !agentRunning && !hasHistory;
+  const hasHistory = agentChat.segments.length > 0;
+  const showAgentChat = (agentRunning || hasHistory) && !agentChatDone;
 
   return (
     <div className="app">
-      {showAgentChat && agentChat && (
+      {showAgentChat && (
         <AgentChat onComplete={() => { setAgentChatDone(true); refreshDirs(); }} chat={agentChat} />
       )}
-      {showStaticOnboarding && <Onboarding onPlanSaved={refreshDirs} />}
       {promptEditor && (
         <TextEditor
           title={promptEditor.title}
@@ -507,55 +449,22 @@ export default function App() {
         />
       )}
       <div className="toolbar">
-        <span className="toolbar-title">{isSingleMode ? 'Pipeline Editor' : 'Team Editor'}</span>
+        <span className="toolbar-title">Pipeline Editor</span>
         {agent && <button onClick={handleAddStage}>+ Stage</button>}
-        {isSingleMode ? (
-          <>
-            <button onClick={handleSave}>Save</button>
-            {saveStatus && <span className="save-status">{saveStatus}</span>}
-            <button onClick={() => { runControls.setShowPanel((v) => !v); runControls.setInitialTab(null); }} style={{ background: '#313244', color: '#cdd6f4' }}>Terminal</button>
-            {runControls.isRunning ? (
-              <button onClick={runControls.stop} style={{ background: '#ef4444', color: '#fff' }}>Stop</button>
-            ) : (
-              <button onClick={async () => { await handleSave(); runControls.start(); }} style={{ background: '#22c55e', color: '#fff' }}>Run</button>
-            )}
-          </>
+        <button onClick={handleSave}>Save</button>
+        {saveStatus && <span className="save-status">{saveStatus}</span>}
+        <button onClick={() => { runControls.setShowPanel((v) => !v); runControls.setInitialTab(null); }} style={{ background: '#313244', color: '#cdd6f4' }}>Terminal</button>
+        {runControls.isRunning ? (
+          <button onClick={runControls.stop} style={{ background: '#ef4444', color: '#fff' }}>Stop</button>
         ) : (
-          <>
-            <button onClick={handleLoadZip}>Load ZIP</button>
-            <button onClick={handleLoadFolder}>Load Folder</button>
-            <button onClick={handleExport}>Export</button>
-            <input
-              ref={zipInputRef}
-              type="file"
-              accept=".zip"
-              style={{ display: 'none' }}
-              onChange={handleZipFileChange}
-            />
-            <input
-              ref={(el) => {
-                (folderInputRef as React.MutableRefObject<HTMLInputElement | null>).current = el;
-                if (el) el.setAttribute('webkitdirectory', '');
-              }}
-              type="file"
-              style={{ display: 'none' }}
-              onChange={handleFolderChange}
-            />
-          </>
+          <button onClick={async () => { await handleSave(); runControls.start(); }} style={{ background: '#22c55e', color: '#fff' }}>Run</button>
         )}
       </div>
 
       <div className="main">
-        {!isSingleMode && (
-          <AgentListPanel
-            agents={agents}
-            selectedIdx={selectedAgentIdx}
-            onSelect={handleSelectAgent}
-            onAdd={handleAddAgent}
-            onDelete={handleDeleteAgent}
-            onUpdate={handleUpdateAgent}
-          />
-        )}
+        <div className="left-sidebar">
+          <TemplatesPanel />
+        </div>
 
         <div className="canvas">
           {agent ? (
@@ -574,6 +483,8 @@ export default function App() {
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
+              onDrop={onDrop}
+              onDragOver={onDragOver}
               onNodeClick={(_, node) => setSelectedNodeId(node.id)}
               onPaneClick={() => setSelectedNodeId(null)}
               onInit={(instance) => {
@@ -593,7 +504,7 @@ export default function App() {
             </ReactFlow>
           ) : (
             <div className="empty-canvas">
-              {isSingleMode ? 'Add a stage to get started' : 'Add an agent to get started'}
+              Add a stage to get started
             </div>
           )}
         </div>
@@ -612,13 +523,13 @@ export default function App() {
           />
           {agent && (
             <>
-              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} projectFiles={isSingleMode ? projectFiles : undefined} onOpenChat={handleOpenChat} onOpenFile={isSingleMode ? setEditingFile : undefined} />
-              {isSingleMode && <ImagesPanel registry={imageRegistry} onRefresh={refreshDirs} />}
+              <FilesPanel files={agent.files} onChange={handleUpdateFiles} artDirs={artDirs} projectFiles={projectFiles} onOpenChat={handleOpenChat} onOpenFile={setEditingFile} />
+              <ImagesPanel registry={imageRegistry} onRefresh={refreshDirs} />
             </>
           )}
         </div>
       </div>
-      {isSingleMode && runControls.showPanel && (
+      {runControls.showPanel && (
         <RunOutputPanel
           isRunning={runControls.isRunning}
           onClose={() => { runControls.setShowPanel(false); runControls.setInitialTab(null); }}

@@ -1,15 +1,3 @@
-export interface StageTemplate {
-    name: string;
-    description: string;
-    prompt: string;
-    mounts: Record<string, 'ro' | 'rw' | null>;
-    transitions: Array<{
-        marker: string;
-        next: string | null;
-        prompt?: string;
-    }>;
-}
-export declare const STAGE_TEMPLATES: Record<string, StageTemplate>;
-export declare function getTemplate(name: string): StageTemplate | undefined;
-export declare function listTemplates(): StageTemplate[];
+export { STAGE_TEMPLATES, getTemplate, listTemplates, } from './templates/index.js';
+export type { StageTemplate } from './templates/base.js';
 //# sourceMappingURL=stage-templates.d.ts.map

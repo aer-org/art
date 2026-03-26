@@ -22,8 +22,6 @@ CLI tool (`art compose` + `art run`) that orchestrates multi-stage pipelines. Ea
 | Skill | When to Use |
 |-------|-------------|
 | `/debug` | Container issues, logs, troubleshooting |
-| `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
-| `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 
 ## Development
 
