@@ -17,7 +17,7 @@ import { gitPr } from './command/git/pr.js';
 // Command templates — general
 import { run } from './command/run.js';
 export { plan, build, test, review, history, deploy, git };
-export { gitInit, gitBranch, gitCommit, gitReset, gitKeep, gitPush, gitPr, run };
+export { gitInit, gitBranch, gitCommit, gitReset, gitKeep, gitPush, gitPr, run, };
 export const STAGE_TEMPLATES = {
     // Agent
     plan,

@@ -9,8 +9,6 @@ export const gitInit = {
     mounts: {
         project: 'rw',
     },
-    transitions: [
-        { marker: '[STAGE_COMPLETE]', next: null },
-    ],
+    transitions: [{ marker: '[STAGE_COMPLETE]', next: null }],
 };
 //# sourceMappingURL=init.js.map

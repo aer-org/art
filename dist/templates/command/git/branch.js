@@ -9,8 +9,6 @@ export const gitBranch = {
     mounts: {
         project: 'rw',
     },
-    transitions: [
-        { marker: '[STAGE_COMPLETE]', next: null },
-    ],
+    transitions: [{ marker: '[STAGE_COMPLETE]', next: null }],
 };
 //# sourceMappingURL=branch.js.map

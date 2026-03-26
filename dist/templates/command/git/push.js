@@ -11,7 +11,11 @@ export const gitPush = {
     },
     transitions: [
         { marker: '[STAGE_COMPLETE]', next: null },
-        { marker: '[STAGE_ERROR]', next: null, prompt: 'Push failed — check remote access' },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Push failed — check remote access',
+        },
     ],
 };
 //# sourceMappingURL=push.js.map

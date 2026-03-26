@@ -15,7 +15,7 @@ import { gitPush } from './command/git/push.js';
 import { gitPr } from './command/git/pr.js';
 import { run } from './command/run.js';
 export { plan, build, test, review, history, deploy, git };
-export { gitInit, gitBranch, gitCommit, gitReset, gitKeep, gitPush, gitPr, run };
+export { gitInit, gitBranch, gitCommit, gitReset, gitKeep, gitPush, gitPr, run, };
 import type { StageTemplate } from './base.js';
 export declare const STAGE_TEMPLATES: Record<string, StageTemplate>;
 export declare function getTemplate(name: string): StageTemplate | undefined;

@@ -1,1 +1,1 @@
-{"version":3,"file":"push.d.ts","sourceRoot":"","sources":["../../../../src/templates/command/git/push.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,MAAM,eAAe,CAAC;AAKnD,eAAO,MAAM,OAAO,EAAE,aAcrB,CAAC"}
+{"version":3,"file":"push.d.ts","sourceRoot":"","sources":["../../../../src/templates/command/git/push.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,MAAM,eAAe,CAAC;AAKnD,eAAO,MAAM,OAAO,EAAE,aAkBrB,CAAC"}

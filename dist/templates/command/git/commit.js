@@ -10,8 +10,6 @@ export const gitCommit = {
         project: 'rw',
         msg: 'ro',
     },
-    transitions: [
-        { marker: '[STAGE_COMPLETE]', next: null },
-    ],
+    transitions: [{ marker: '[STAGE_COMPLETE]', next: null }],
 };
 //# sourceMappingURL=commit.js.map
