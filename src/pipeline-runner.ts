@@ -50,7 +50,7 @@ export interface PipelineStage {
   gpu?: boolean;
   runAsRoot?: boolean;
   exclusive?: string;
-  resumeSession?: boolean;  // false = always start fresh session. default true = resume
+  resumeSession?: boolean; // false = always start fresh session. default true = resume
   transitions: PipelineTransition[];
 }
 
@@ -532,9 +532,10 @@ export class PipelineRunner {
         virtualGroup,
         {
           prompt: initialPrompt,
-          sessionId: stageConfig.resumeSession !== false
-            ? this.stageSessionIds.get(stageConfig.name)
-            : undefined,
+          sessionId:
+            stageConfig.resumeSession !== false
+              ? this.stageSessionIds.get(stageConfig.name)
+              : undefined,
           groupFolder: subFolder,
           chatJid: this.chatJid,
           isMain: false,
