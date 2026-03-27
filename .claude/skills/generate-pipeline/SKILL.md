@@ -16,7 +16,7 @@ interface PipelineTransition {
   marker: string;        // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
   next?: string | null;  // Target stage name, or null to end pipeline
   retry?: boolean;       // true = retry current stage on this marker
-  prompt?: string;       // Optional hint for the agent on when to use this marker
+  prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
 }
 
 interface PipelineStage {
@@ -29,6 +29,7 @@ interface PipelineStage {
   runAsRoot?: boolean;   // Run container as root
   devices?: string[];    // Device passthrough
   exclusive?: string;    // Mutex key — only one stage with same key runs at a time
+  resumeSession?: boolean; // false = fresh session every time. default true = resume previous session
   transitions: PipelineTransition[];
 }
 
@@ -193,6 +194,7 @@ When this skill is invoked:
    - At least one path reaches `next: null` (pipeline termination)
    - Loops have clear exit conditions
    - Error handling where appropriate
+   - **Every transition has a `prompt`** describing the condition under which the agent should emit that marker (e.g., "All tests pass and code is ready for review", "Recoverable error — retry with different approach"). Write these as conditions: "when X", "if Y", or declarative descriptions of the trigger scenario.
 
 5. **Choose images** for command stages. Common choices:
    - `alpine/git` — git operations

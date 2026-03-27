@@ -316,6 +316,17 @@ export function PropertiesPanel({ node, onUpdate, onDelete, onSetEntry, artDirs,
         Run as root
       </label>
 
+      {!isCommandMode && (
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={stage.resumeSession !== false}
+            onChange={(e) => update({ resumeSession: e.target.checked ? undefined : false })}
+          />
+          Resume session
+        </label>
+      )}
+
       {!isEntry && (
         <button className="btn-entry" onClick={() => onSetEntry(node.id)}>
           Set as Entry

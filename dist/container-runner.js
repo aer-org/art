@@ -68,6 +68,8 @@ function buildVolumeMounts(group, isMain) {
                 // Enable Claude's memory feature (persists user preferences between sessions)
                 // https://code.claude.com/docs/en/memory#manage-auto-memory
                 CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+                // Increase max output tokens (default 32000 is too small for complex tasks)
+                CLAUDE_CODE_MAX_OUTPUT_TOKENS: '65536',
             },
         }, null, 2) + '\n');
     }

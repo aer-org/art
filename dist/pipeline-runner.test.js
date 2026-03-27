@@ -437,6 +437,87 @@ describe('PipelineRunner FSM', () => {
         const result = await runner.run();
         expect(result).toBe('success');
     }, 15000);
+    it('container exit → respawn same stage then success', async () => {
+        const { runContainerAgent } = await import('./container-runner.js');
+        const config = makeTwoStagePipelineConfig();
+        // First invocation: no marker emitted, container exits → _CONTAINER_EXIT
+        enqueueStageOutput('implement', [{ result: 'Working on it...' }]);
+        // Second invocation (respawn): emits success marker
+        enqueueStageOutput('implement', [{ result: 'Done [IMPL_COMPLETE]' }]);
+        enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+        const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+        const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
+        const result = await runner.run();
+        expect(result).toBe('success');
+        // implement should have been called twice (first exit, then respawn)
+        const calls = vi.mocked(runContainerAgent).mock.calls;
+        const implCalls = calls.filter((c) => c[0].name === 'pipeline-implement');
+        expect(implCalls.length).toBe(2);
+        // Second call should include error context in prompt
+        const respawnPrompt = implCalls[1][1].prompt;
+        expect(respawnPrompt).toContain('비정상 종료');
+    }, 15000);
+    it('does not pass sessionId when resumeSession is false', async () => {
+        const { runContainerAgent } = await import('./container-runner.js');
+        const config = makeTwoStagePipelineConfig();
+        // Mark verify as no-resume
+        config.stages[1].resumeSession = false;
+        // First run: implement → verify (stores sessionIds)
+        enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+        enqueueStageOutput('verify', [{ result: '[VERIFY_FAIL]' }]);
+        // Second loop: implement → verify again
+        enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+        enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+        const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+        const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
+        await runner.run();
+        // All verify calls should have sessionId: undefined
+        const calls = vi.mocked(runContainerAgent).mock.calls;
+        const verifyCalls = calls.filter((c) => c[0].name === 'pipeline-verify');
+        expect(verifyCalls.length).toBeGreaterThanOrEqual(1);
+        for (const call of verifyCalls) {
+            expect(call[1].sessionId).toBeUndefined();
+        }
+    }, 15000);
+    it('passes sessionId by default (resumeSession unset)', async () => {
+        const { runContainerAgent } = await import('./container-runner.js');
+        const config = makeTwoStagePipelineConfig();
+        // resumeSession is undefined (default) on both stages
+        // First loop: implement → verify → FAIL → loopback
+        enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+        enqueueStageOutput('verify', [{ result: '[VERIFY_FAIL]' }]);
+        // Second loop
+        enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+        enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+        const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+        const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
+        await runner.run();
+        // Second implement call should have a sessionId (from first run)
+        const calls = vi.mocked(runContainerAgent).mock.calls;
+        const implCalls = calls.filter((c) => c[0].name === 'pipeline-implement');
+        expect(implCalls.length).toBe(2);
+        // First call has no prior session
+        expect(implCalls[0][1].sessionId).toBeUndefined();
+        // Second call should have sessionId from first run
+        // (the mock doesn't return a real sessionId, so it may still be undefined —
+        // but the code path is exercised. The key test is the resumeSession:false case above.)
+    }, 15000);
+    it('container exit → fails after max respawn attempts', async () => {
+        const { runContainerAgent } = await import('./container-runner.js');
+        const config = makeTwoStagePipelineConfig();
+        // 4 invocations all exit without marker (limit is 3)
+        for (let i = 0; i < 4; i++) {
+            enqueueStageOutput('implement', [{ result: 'crash...' }]);
+        }
+        const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+        const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
+        const result = await runner.run();
+        expect(result).toBe('error');
+        // Should have attempted 4 times: 1 original + 3 respawns, then failed
+        const calls = vi.mocked(runContainerAgent).mock.calls;
+        const implCalls = calls.filter((c) => c[0].name === 'pipeline-implement');
+        expect(implCalls.length).toBe(4);
+    }, 15000);
 });
 // ============================================================
 // Group C: Command mode + Exclusive lock

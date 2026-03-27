@@ -15,6 +15,7 @@ export interface PipelineStage {
     gpu?: boolean;
     runAsRoot?: boolean;
     exclusive?: string;
+    resumeSession?: boolean;
     transitions: PipelineTransition[];
 }
 export interface PipelineConfig {

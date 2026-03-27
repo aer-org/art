@@ -359,7 +359,9 @@ export class PipelineRunner {
             // Resume previous session if available (preserves context across loop iterations)
             handle.containerPromise = runContainerAgent(virtualGroup, {
                 prompt: initialPrompt,
-                sessionId: this.stageSessionIds.get(stageConfig.name),
+                sessionId: stageConfig.resumeSession !== false
+                    ? this.stageSessionIds.get(stageConfig.name)
+                    : undefined,
                 groupFolder: subFolder,
                 chatJid: this.chatJid,
                 isMain: false,
@@ -705,9 +707,28 @@ ${markerLines.join('\n')}`;
             };
         }
         if (matched.retry) {
-            // Retry transition — re-send the stage prompt
             const errorDesc = payload || matched.marker;
             await this.notify(`⚠️ [턴 ${turnCount}] ${currentStageName} 에러: ${errorDesc}`);
+            // Synthetic container exit/error — container is dead, must respawn
+            if (matched.marker.startsWith('_CONTAINER')) {
+                if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
+                    await this.notify(`❌ [턴 ${turnCount}] ${currentStageName} 컨테이너 재시작 ${ctx.maxContainerRespawns}회 초과 — 스테이지 실패`);
+                    return {
+                        stageResolved: true,
+                        nextStageName: null,
+                        nextInitialPrompt: null,
+                        lastResult: 'error',
+                    };
+                }
+                await this.notify(`🔄 [턴 ${turnCount}] ${currentStageName} 컨테이너 재시작 (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`);
+                return {
+                    stageResolved: true,
+                    nextStageName: currentStageName,
+                    nextInitialPrompt: `이전 시도에서 컨테이너가 비정상 종료되었습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
+                    lastResult: null,
+                };
+            }
+            // Normal retry — container is still alive, re-send prompt via IPC
             handle.pendingResult = createDeferred();
             sendToStage(handle, `이전 시도에서 에러가 발생했습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`);
             return {
@@ -805,6 +826,8 @@ ${markerLines.join('\n')}`;
         let nextInitialPrompt = null;
         let turnCount = 0;
         let lastResult = 'success';
+        let containerRespawnCount = 0;
+        const MAX_CONTAINER_RESPAWNS = 3;
         while (currentStage !== null) {
             if (this.aborted)
                 break;
@@ -861,9 +884,18 @@ ${markerLines.join('\n')}`;
                         commonRules,
                         planContent,
                         stagesByName,
+                        containerRespawnCount,
+                        maxContainerRespawns: MAX_CONTAINER_RESPAWNS,
                     });
                     stageResolved = outcome.stageResolved;
                     if (outcome.stageResolved) {
+                        // Respawn same stage → increment; advance to different stage → reset
+                        if (outcome.nextStageName === currentStage) {
+                            containerRespawnCount++;
+                        }
+                        else {
+                            containerRespawnCount = 0;
+                        }
                         currentStage = outcome.nextStageName;
                         nextInitialPrompt = outcome.nextInitialPrompt;
                         if (outcome.lastResult) {
