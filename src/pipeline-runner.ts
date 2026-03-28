@@ -19,6 +19,7 @@ import {
 } from './container-runner.js';
 import { getRuntime } from './container-runtime.js';
 import { getImageForStage, loadImageRegistry } from './image-registry.js';
+import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -29,7 +30,7 @@ import {
   type RunManifest,
   type CurrentRunInfo,
 } from './run-manifest.js';
-import { RegisteredGroup } from './types.js';
+import { AdditionalMount, RegisteredGroup } from './types.js';
 
 // --- Pipeline JSON Schema ---
 
@@ -50,7 +51,8 @@ export interface PipelineStage {
   gpu?: boolean;
   runAsRoot?: boolean;
   exclusive?: string;
-  resumeSession?: boolean;  // false = always start fresh session. default true = resume
+  hostMounts?: AdditionalMount[]; // Host path mounts validated against allowlist
+  resumeSession?: boolean; // false = always start fresh session. default true = resume
   transitions: PipelineTransition[];
 }
 
@@ -385,6 +387,16 @@ export class PipelineRunner {
       }
     }
 
+    // Host path mounts (validated against external allowlist)
+    if (stageConfig.hostMounts && stageConfig.hostMounts.length > 0) {
+      const validated = validateAdditionalMounts(
+        stageConfig.hostMounts,
+        `pipeline-${stageConfig.name}`,
+        this.group.isMain ?? false,
+      );
+      mounts.push(...validated);
+    }
+
     // Conversations archive directory (agent-runner writes transcripts here)
     const subFolder = `${this.group.folder}__pipeline_${stageConfig.name}`;
     const convDir = path.join(
@@ -421,8 +433,18 @@ export class PipelineRunner {
       resolvedImage = getImageForStage(stageConfig.image, false);
     }
 
-    // Parent's additional mounts stay in additionalMounts (security-validated)
+    // Parent's additional mounts stay in additionalMounts (security-validated).
+    // Filter out any that conflict with stage-level hostMounts (stage wins).
     const parentMounts = this.group.containerConfig?.additionalMounts || [];
+    const stageExtraPaths = new Set(
+      internalMounts
+        .filter((m) => m.containerPath.startsWith('/workspace/extra/'))
+        .map((m) => m.containerPath),
+    );
+    const filteredParentMounts = parentMounts.filter((m) => {
+      const cp = `/workspace/extra/${m.containerPath || path.basename(m.hostPath)}`;
+      return !stageExtraPaths.has(cp);
+    });
 
     const virtualGroup: RegisteredGroup = {
       name: `pipeline-${stageConfig.name}`,
@@ -431,7 +453,7 @@ export class PipelineRunner {
       added_at: new Date().toISOString(),
       containerConfig: {
         image: resolvedImage,
-        additionalMounts: parentMounts,
+        additionalMounts: filteredParentMounts,
         additionalDevices: stageConfig.devices || [],
         gpu: stageConfig.gpu === true,
         runAsRoot: stageConfig.runAsRoot === true,
@@ -532,9 +554,10 @@ export class PipelineRunner {
         virtualGroup,
         {
           prompt: initialPrompt,
-          sessionId: stageConfig.resumeSession !== false
-            ? this.stageSessionIds.get(stageConfig.name)
-            : undefined,
+          sessionId:
+            stageConfig.resumeSession !== false
+              ? this.stageSessionIds.get(stageConfig.name)
+              : undefined,
           groupFolder: subFolder,
           chatJid: this.chatJid,
           isMain: false,

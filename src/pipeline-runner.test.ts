@@ -744,7 +744,9 @@ describe('PipelineRunner FSM', () => {
     );
     expect(implCalls.length).toBe(2);
     // First call has no prior session
-    expect((implCalls[0][1] as { sessionId?: string }).sessionId).toBeUndefined();
+    expect(
+      (implCalls[0][1] as { sessionId?: string }).sessionId,
+    ).toBeUndefined();
     // Second call should have sessionId from first run
     // (the mock doesn't return a real sessionId, so it may still be undefined —
     // but the code path is exercised. The key test is the resumeSession:false case above.)
