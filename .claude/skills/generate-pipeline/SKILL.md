@@ -19,12 +19,19 @@ interface PipelineTransition {
   prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
 }
 
+interface AdditionalMount {
+  hostPath: string;      // Absolute path or ~ for home
+  containerPath?: string; // Mounted at /workspace/extra/{value}, default: basename(hostPath)
+  readonly?: boolean;    // Default: true
+}
+
 interface PipelineStage {
   name: string;          // Unique stage identifier
   prompt: string;        // Agent instructions (must be "" for command stages)
   command?: string;      // Shell command — presence makes this a command stage
   image?: string;        // Docker image (required for command stages, optional for agent)
   mounts: Record<string, "ro" | "rw" | null>;
+  hostMounts?: AdditionalMount[]; // Host path mounts (validated against allowlist)
   gpu?: boolean;         // Pass --gpus all
   runAsRoot?: boolean;   // Run container as root
   devices?: string[];    // Device passthrough
@@ -67,6 +74,23 @@ interface PipelineConfig {
 - `"rw"` — read-write
 - `null` — no access (hidden)
 
+### Host mounts
+
+Stages can mount host directories outside the project via `hostMounts`. Each mount is validated against `~/.config/aer-art/mount-allowlist.json`.
+
+```json
+"hostMounts": [
+  { "hostPath": "~/datasets/imagenet", "containerPath": "data", "readonly": true },
+  { "hostPath": "/opt/tools", "containerPath": "tools", "readonly": true }
+]
+```
+
+- Mounted at `/workspace/extra/{containerPath}` (defaults to basename of `hostPath`)
+- `readonly` defaults to `true` — only set `false` when the stage needs to write
+- Host path must be under an allowed root in the allowlist
+- Blocked patterns (`.ssh`, `.env`, `.aws`, etc.) are automatically rejected
+- If a `hostMounts` entry has the same container path as a parent group's `additionalMounts`, the stage-level mount takes precedence
+
 ### Rules
 
 - If `project` is `null`, all `project:*` overrides must also be `null` or omitted.
@@ -93,6 +117,13 @@ Each stage must have the **minimum permissions required** to do its job. A build
 
 // Reviewer: read everything, write metrics
 { "project": "ro", "results": "rw" }
+
+// ML training: read external dataset, write model cache
+"mounts": { "project": "ro", "results": "rw" },
+"hostMounts": [
+  { "hostPath": "~/datasets/imagenet", "containerPath": "data", "readonly": true },
+  { "hostPath": "~/model-cache", "containerPath": "cache", "readonly": false }
+]
 ```
 
 ---
@@ -226,4 +257,5 @@ Before writing the JSON, verify ALL of the following:
 - [ ] `project:*` overrides are absent when `project` is `null`
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
+- [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values
 - [ ] The JSON is valid and parseable
