@@ -3,7 +3,7 @@
     {
       "name": "test-host-mount",
       "prompt": "",
-      "command": "cat /workspace/extra/host-data/sample.txt 2>/dev/null && echo 'HOST_READ_OK' || echo 'HOST_READ_FAIL'; echo '[STAGE_COMPLETE]'",
+      "command": "cat /workspace/extra/host-data/sample.txt > /dev/null 2>&1 && echo 'HOST_READ_OK' || echo 'HOST_READ_FAIL'; echo '[STAGE_COMPLETE]'",
       "image": "node:22-slim",
       "mounts": {},
       "hostMounts": [

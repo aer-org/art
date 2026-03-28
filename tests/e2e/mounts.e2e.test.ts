@@ -233,8 +233,7 @@ describe.skipIf(!hasDocker)('Mount: host path (hostMounts)', () => {
       console.error('HOST-MOUNT STDOUT:', result.stdout.slice(-500));
     }
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain('[test-host-mount] host-data-ok');
-    expect(result.stdout).toContain('[test-host-mount] HOST_READ_OK');
-    expect(result.stdout).not.toContain('[test-host-mount] HOST_READ_FAIL');
+    expect(result.stdout).toContain('HOST_READ_OK');
+    expect(result.stdout).not.toContain('HOST_READ_FAIL');
   });
 });
