@@ -13,6 +13,7 @@ import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
 import { buildContainerArgs, runContainerAgent, } from './container-runner.js';
 import { getRuntime } from './container-runtime.js';
 import { getImageForStage } from './image-registry.js';
+import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { generateRunId, writeCurrentRun, removeCurrentRun, writeRunManifest, } from './run-manifest.js';
@@ -250,6 +251,11 @@ export class PipelineRunner {
                 }
             }
         }
+        // Host path mounts (validated against external allowlist)
+        if (stageConfig.hostMounts && stageConfig.hostMounts.length > 0) {
+            const validated = validateAdditionalMounts(stageConfig.hostMounts, `pipeline-${stageConfig.name}`, this.group.isMain ?? false);
+            mounts.push(...validated);
+        }
         // Conversations archive directory (agent-runner writes transcripts here)
         const subFolder = `${this.group.folder}__pipeline_${stageConfig.name}`;
         const convDir = path.join(resolveGroupFolderPath(subFolder), 'conversations');
@@ -274,8 +280,16 @@ export class PipelineRunner {
         if (!stageConfig.command) {
             resolvedImage = getImageForStage(stageConfig.image, false);
         }
-        // Parent's additional mounts stay in additionalMounts (security-validated)
+        // Parent's additional mounts stay in additionalMounts (security-validated).
+        // Filter out any that conflict with stage-level hostMounts (stage wins).
         const parentMounts = this.group.containerConfig?.additionalMounts || [];
+        const stageExtraPaths = new Set(internalMounts
+            .filter((m) => m.containerPath.startsWith('/workspace/extra/'))
+            .map((m) => m.containerPath));
+        const filteredParentMounts = parentMounts.filter((m) => {
+            const cp = `/workspace/extra/${m.containerPath || path.basename(m.hostPath)}`;
+            return !stageExtraPaths.has(cp);
+        });
         const virtualGroup = {
             name: `pipeline-${stageConfig.name}`,
             folder: subFolder, // Flat folder for IPC/sessions
@@ -283,7 +297,7 @@ export class PipelineRunner {
             added_at: new Date().toISOString(),
             containerConfig: {
                 image: resolvedImage,
-                additionalMounts: parentMounts,
+                additionalMounts: filteredParentMounts,
                 additionalDevices: stageConfig.devices || [],
                 gpu: stageConfig.gpu === true,
                 runAsRoot: stageConfig.runAsRoot === true,

@@ -1,4 +1,4 @@
-import { RegisteredGroup } from './types.js';
+import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
     marker: string;
     next?: string | null;
@@ -15,6 +15,7 @@ export interface PipelineStage {
     gpu?: boolean;
     runAsRoot?: boolean;
     exclusive?: string;
+    hostMounts?: AdditionalMount[];
     resumeSession?: boolean;
     transitions: PipelineTransition[];
 }

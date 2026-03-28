@@ -42,6 +42,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | `devices` | `string[]` | No | `[]` | Host devices to pass through (e.g., `"/dev/bus/usb"`) |
 | `runAsRoot` | `boolean` | No | `false` | Run this stage's container as root (`--user 0:0`) |
 | `exclusive` | `string` | No | — | Mutex key. Stages sharing the same key never run concurrently (e.g., `"vivado"` for stages that need exclusive access to a hardware resource) |
+| `hostMounts` | `AdditionalMount[]` | No | `[]` | Host path mounts for this stage. Validated against the mount allowlist. See [Host Mounts](#host-mounts) |
 | `transitions` | `PipelineTransition[]` | Yes | — | How to move to the next stage based on agent output. See [Transitions](#transitions) |
 
 ## Mounts
@@ -98,6 +99,50 @@ This mounts the project root as read-only, but grants write access to `src/gener
 | `project:src/foo` | `/workspace/project/src/foo` (overlay on project mount) |
 
 The agent's working directory is `/workspace`.
+
+## Host Mounts
+
+Host mounts allow a stage to access directories from the host filesystem outside the project. Each mount is validated against the mount allowlist at `~/.config/aer-art/mount-allowlist.json`.
+
+```json
+"hostMounts": [
+  { "hostPath": "~/datasets", "readonly": true },
+  { "hostPath": "/opt/tools", "containerPath": "tools", "readonly": true },
+  { "hostPath": "~/shared-cache", "containerPath": "cache", "readonly": false }
+]
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `hostPath` | `string` | Yes | — | Absolute path or `~` prefix on the host |
+| `containerPath` | `string` | No | basename of `hostPath` | Mounted at `/workspace/extra/{value}` |
+| `readonly` | `boolean` | No | `true` | Whether the mount is read-only |
+
+### Security
+
+- The host path must be under an allowed root in `~/.config/aer-art/mount-allowlist.json`
+- Paths matching blocked patterns (`.ssh`, `.env`, `.aws`, etc.) are automatically rejected
+- Non-main groups may be forced to read-only via the `nonMainReadOnly` allowlist setting
+- If a stage `hostMounts` entry has the same container path as a parent group's `additionalMounts`, the stage-level mount takes precedence
+
+### Example
+
+```json
+{
+  "name": "train",
+  "prompt": "Train the model using the dataset in /workspace/extra/data.",
+  "mounts": { "src": "ro", "outputs": "rw" },
+  "hostMounts": [
+    { "hostPath": "~/ml-datasets/imagenet", "containerPath": "data", "readonly": true },
+    { "hostPath": "~/model-cache", "containerPath": "cache", "readonly": false }
+  ],
+  "gpu": true,
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "evaluate" },
+    { "marker": "STAGE_ERROR", "retry": true }
+  ]
+}
+```
 
 ## Transitions
 
