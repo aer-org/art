@@ -25,6 +25,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
   "image": "default",
   "command": null,
   "mounts": { "plan": "ro", "src": "rw", "project": "ro" },
+  "env": { "BUILD_MODE": "release", "CUSTOM_FLAG": "true" },
   "devices": [],
   "runAsRoot": false,
   "exclusive": "vivado",
@@ -39,6 +40,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | `image` | `string` | No | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry) |
 | `command` | `string` | No | `null` | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
 | `mounts` | `Record<string, "ro" \| "rw" \| null>` | Yes | — | Mount permissions for `__art__/` subdirectories and the project root. See [Mounts](#mounts) |
+| `env` | `Record<string, string>` | No | `{}` | Custom environment variables passed to the stage container. Added after system env vars (TZ, ANTHROPIC_*, GIT_*) |
 | `devices` | `string[]` | No | `[]` | Host devices to pass through (e.g., `"/dev/bus/usb"`) |
 | `runAsRoot` | `boolean` | No | `false` | Run this stage's container as root (`--user 0:0`) |
 | `exclusive` | `string` | No | — | Mutex key. Stages sharing the same key never run concurrently (e.g., `"vivado"` for stages that need exclusive access to a hardware resource) |
@@ -143,6 +145,31 @@ Host mounts allow a stage to access directories from the host filesystem outside
   ]
 }
 ```
+
+## Environment Variables
+
+Set `env` on a stage to pass custom environment variables to the container. These are injected via `docker run -e` after the system env vars (TZ, ANTHROPIC_*, GIT_*).
+
+```json
+{
+  "name": "interview",
+  "prompt": "Run the Socratic interview phase.",
+  "mounts": { "project": "ro", "outputs": "rw" },
+  "env": {
+    "OUROBOROS_PHASE": "interview",
+    "AMBIGUITY_THRESHOLD": "0.2",
+    "MAX_INTERVIEW_ROUNDS": "10"
+  },
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "seed" },
+    { "marker": "STAGE_ERROR", "next": null }
+  ]
+}
+```
+
+The agent or command running inside the container can read these via standard `process.env` / `os.environ` / `$ENV_VAR` access.
+
+**Note:** System env vars (`TZ`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `HOME`, `GIT_*`) cannot be overridden by stage `env` — they are injected first and Docker uses the last `-e` value for duplicate keys, so custom env vars take precedence. Avoid overriding system vars unless you know what you're doing.
 
 ## Transitions
 

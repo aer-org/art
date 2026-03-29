@@ -27,7 +27,7 @@ interface VolumeMount {
     containerPath: string;
     readonly: boolean;
 }
-export declare function buildContainerArgs(mounts: VolumeMount[], containerName: string, devices?: string[], gpu?: boolean, runAsRoot?: boolean, image?: string, entrypoint?: string, runId?: string): string[];
+export declare function buildContainerArgs(mounts: VolumeMount[], containerName: string, devices?: string[], gpu?: boolean, runAsRoot?: boolean, image?: string, entrypoint?: string, runId?: string, env?: Record<string, string>): string[];
 export declare function runContainerAgent(group: RegisteredGroup, input: ContainerInput, onProcess: (proc: ChildProcess, containerName: string) => void, onOutput?: (output: ContainerOutput) => Promise<void>, logStream?: fs.WriteStream): Promise<ContainerOutput>;
 export {};
 //# sourceMappingURL=container-runner.d.ts.map

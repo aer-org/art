@@ -252,6 +252,7 @@ export function buildContainerArgs(
   image?: string,
   entrypoint?: string,
   runId?: string,
+  env?: Record<string, string>,
 ): string[] {
   const rt = getRuntime();
   const args: string[] = ['run'];
@@ -309,6 +310,13 @@ export function buildContainerArgs(
       );
   } catch {
     // No global git config — containers will need their own
+  }
+
+  // Stage-level custom environment variables from PIPELINE.json
+  if (env) {
+    for (const [key, value] of Object.entries(env)) {
+      args.push('-e', `${key}=${value}`);
+    }
   }
 
   // Runtime-specific args for host gateway resolution
@@ -416,6 +424,7 @@ export async function runContainerAgent(
     image,
     undefined,
     input.runId,
+    group.containerConfig?.env,
   );
 
   logger.debug(

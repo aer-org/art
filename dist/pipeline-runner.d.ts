@@ -17,6 +17,7 @@ export interface PipelineStage {
     exclusive?: string;
     hostMounts?: AdditionalMount[];
     resumeSession?: boolean;
+    env?: Record<string, string>;
     transitions: PipelineTransition[];
 }
 export interface PipelineConfig {

@@ -39,6 +39,7 @@ export interface ContainerConfig {
     containerPath: string;
     readonly: boolean;
   }>; // Host-generated mounts appended directly (bypass mount-security)
+  env?: Record<string, string>; // Custom environment variables passed to the container
 }
 
 export interface RegisteredGroup {

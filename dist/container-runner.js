@@ -147,7 +147,7 @@ function buildVolumeMounts(group, isMain) {
     }
     return mounts;
 }
-export function buildContainerArgs(mounts, containerName, devices = [], gpu = false, runAsRoot = false, image, entrypoint, runId) {
+export function buildContainerArgs(mounts, containerName, devices = [], gpu = false, runAsRoot = false, image, entrypoint, runId, env) {
     const rt = getRuntime();
     const args = ['run'];
     if (rt.capabilities.supportsStdin)
@@ -190,6 +190,12 @@ export function buildContainerArgs(mounts, containerName, devices = [], gpu = fa
     }
     catch {
         // No global git config — containers will need their own
+    }
+    // Stage-level custom environment variables from PIPELINE.json
+    if (env) {
+        for (const [key, value] of Object.entries(env)) {
+            args.push('-e', `${key}=${value}`);
+        }
     }
     // Runtime-specific args for host gateway resolution
     args.push(...hostGatewayArgs());
@@ -269,7 +275,7 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
     const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
     const containerName = `aer-art-${safeName}-${Date.now()}`;
     const image = group.containerConfig?.image || CONTAINER_IMAGE;
-    const containerArgs = buildContainerArgs(mounts, containerName, devices, gpu, runAsRoot, image, undefined, input.runId);
+    const containerArgs = buildContainerArgs(mounts, containerName, devices, gpu, runAsRoot, image, undefined, input.runId, group.containerConfig?.env);
     logger.debug({
         group: group.name,
         containerName,

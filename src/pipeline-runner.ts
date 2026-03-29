@@ -53,6 +53,7 @@ export interface PipelineStage {
   exclusive?: string;
   hostMounts?: AdditionalMount[]; // Host path mounts validated against allowlist
   resumeSession?: boolean; // false = always start fresh session. default true = resume
+  env?: Record<string, string>; // Custom environment variables passed to the container
   transitions: PipelineTransition[];
 }
 
@@ -458,6 +459,7 @@ export class PipelineRunner {
         gpu: stageConfig.gpu === true,
         runAsRoot: stageConfig.runAsRoot === true,
         internalMounts,
+        env: stageConfig.env,
       },
     };
 
@@ -647,6 +649,7 @@ export class PipelineRunner {
       image,
       'sh',
       this.runId,
+      stageConfig.env,
     );
     containerArgs.push('-c', stageConfig.command!);
 

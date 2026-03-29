@@ -302,6 +302,7 @@ export class PipelineRunner {
                 gpu: stageConfig.gpu === true,
                 runAsRoot: stageConfig.runAsRoot === true,
                 internalMounts,
+                env: stageConfig.env,
             },
         };
         const ipcInputDir = path.join(resolveGroupIpcPath(subFolder), 'input');
@@ -432,7 +433,7 @@ export class PipelineRunner {
         const devices = stageConfig.devices || [];
         const gpu = stageConfig.gpu === true;
         const runAsRoot = stageConfig.runAsRoot === true;
-        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, gpu, runAsRoot, image, 'sh', this.runId);
+        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, gpu, runAsRoot, image, 'sh', this.runId, stageConfig.env);
         containerArgs.push('-c', stageConfig.command);
         logger.info({ stage: stageConfig.name, image, command: stageConfig.command }, 'Running command-mode stage');
         if (logStream) {

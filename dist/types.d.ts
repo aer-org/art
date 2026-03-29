@@ -30,6 +30,7 @@ export interface ContainerConfig {
         containerPath: string;
         readonly: boolean;
     }>;
+    env?: Record<string, string>;
 }
 export interface RegisteredGroup {
     name: string;
