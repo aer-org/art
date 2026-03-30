@@ -31,6 +31,7 @@ install_optional() {
 
 # --- Always-available packages ---
 apt-get install -y --no-install-recommends \
+    ca-certificates \
     curl \
     git \
     locales \
