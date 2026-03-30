@@ -8,6 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import readline from 'readline';
 import { spawn, execSync } from 'child_process';
 import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
 import { buildContainerArgs, runContainerAgent, } from './container-runner.js';
@@ -81,6 +82,18 @@ export function parseStageMarkers(resultTexts, transitions) {
         }
     }
     return { matched: null, payload: null };
+}
+function readUserInput(promptText) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+    });
+    return new Promise((resolve) => {
+        rl.question(promptText, (answer) => {
+            rl.close();
+            resolve(answer);
+        });
+    });
 }
 function escapeRegExp(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -342,8 +355,12 @@ export class PipelineRunner {
                 return;
             }
             handle.resultTexts.push(output.result);
-            // Stream agent output to TUI so user can see progress
-            if (process.env.ART_TUI_MODE) {
+            // Stream agent output to user
+            if (stageConfig.chat) {
+                // Chatting stage: show full output so user can read the agent's response
+                await this.notify(output.result);
+            }
+            else if (process.env.ART_TUI_MODE) {
                 const lines = output.result.split('\n');
                 const summary = lines.length > 3
                     ? lines.slice(0, 3).join('\n') +
@@ -591,11 +608,13 @@ export class PipelineRunner {
             }
             return `- ${desc} → [${t.marker}]`;
         });
+        const modeRule = stageConfig.chat
+            ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
+            : '- Do NOT ask questions. Always assume "yes" and proceed autonomously.\n- Do not stop until this stage is complete or you hit a blocking error.';
         return `
 RULES:
-- Do NOT ask questions. Always assume "yes" and proceed autonomously.
+${modeRule}
 - Read files before editing. Use tools freely.
-- Do not stop until this stage is complete or you hit a blocking error.
 - 프로젝트 소스는 /workspace/project/ 에서 읽기 전용으로 볼 수 있다.
 - 스테이지 작업 디렉토리는 /workspace/ 아래에 마운트되어 있다 (plan/, src/, tb/, build/, sim/ 등). 반드시 이 경로에서 파일을 읽고 작업하라.
 
@@ -778,7 +797,19 @@ ${markerLines.join('\n')}`;
         const { matched, payload } = result;
         const { handle, stageConfig, currentStageName, turnCount, stageStartTime, completedStages, commonRules, planContent, stagesByName, } = ctx;
         if (!matched) {
-            // No markers found — retry
+            if (stageConfig.chat) {
+                // Chatting stage: read user input and send to container
+                const userInput = await readUserInput('\n> ');
+                handle.pendingResult = createDeferred();
+                sendToStage(handle, userInput);
+                return {
+                    stageResolved: false,
+                    nextStageName: null,
+                    nextInitialPrompt: null,
+                    lastResult: null,
+                };
+            }
+            // No markers found — retry (autonomous mode)
             logger.warn({ stage: currentStageName, turn: turnCount }, 'No stage markers found');
             handle.pendingResult = createDeferred();
             sendToStage(handle, `이전 응답에 스테이지 마커가 없었습니다. 작업을 계속하고 완료 시 적절한 마커를 출력하세요.\n\n${stageConfig.prompt}\n${commonRules}`);
@@ -1058,6 +1089,14 @@ ${markerLines.join('\n')}`;
             // Launch all pending stages concurrently
             const batch = [...pendingStages];
             pendingStages = [];
+            // Validate: chatting stages cannot run in parallel (need exclusive stdin)
+            const chatInBatch = batch.filter((e) => stagesByName.get(e.name)?.chat);
+            if (chatInBatch.length > 0 && batch.length > 1) {
+                logger.error({ stages: batch.map((s) => s.name) }, 'Chatting stage cannot run in parallel with other stages');
+                await this.notify('❌ Chatting 스테이지는 다른 스테이지와 동시에 실행할 수 없습니다.');
+                lastResult = 'error';
+                break;
+            }
             const results = await Promise.all(batch.map((entry) => this.runSingleStage(entry.name, stagesByName, completedStages, planContent, pipelineLogStream, entry.initialPrompt)));
             // Process results and collect next stages
             for (const { nextStages, nextInitialPrompt, result } of results) {

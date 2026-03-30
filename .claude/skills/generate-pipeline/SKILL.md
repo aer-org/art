@@ -29,6 +29,7 @@ interface PipelineStage {
   name: string;          // Unique stage identifier
   prompt: string;        // Agent instructions (must be "" for command stages)
   command?: string;      // Shell command — presence makes this a command stage
+  chat?: boolean;        // Interactive chatting stage (agent converses with user via stdin)
   image?: string;        // Docker image (required for command stages, optional for agent)
   mounts: Record<string, "ro" | "rw" | null>;
   hostMounts?: AdditionalMount[]; // Host path mounts (validated against allowlist)
@@ -204,6 +205,20 @@ Add to any stage:
   "privileged": true,
   "mounts": { "project": "ro", "build": "rw" },
   "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
+}
+```
+
+### Chatting stage (interactive user conversation)
+```json
+{
+  "name": "interview",
+  "prompt": "Discuss requirements with the user. Ask clarifying questions.",
+  "chat": true,
+  "mounts": { "project": "ro", "plan": "rw" },
+  "transitions": [
+    { "marker": "INTERVIEW_COMPLETE", "next": "implement", "prompt": "Requirements clarified" },
+    { "marker": "STAGE_ERROR", "retry": true }
+  ]
 }
 ```
 
