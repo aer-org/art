@@ -279,7 +279,10 @@ export function buildContainerArgs(
         const envName = value.slice(1);
         resolved = process.env[envName] || '';
         if (!resolved) {
-          logger.warn({ key, ref: value }, 'Environment variable not set on host');
+          logger.warn(
+            { key, ref: value },
+            'Environment variable not set on host',
+          );
         }
       }
       args.push('-e', `${key}=${resolved}`);

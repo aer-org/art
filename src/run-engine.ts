@@ -156,7 +156,10 @@ export async function runPipeline(opts: {
       ],
     };
     // For command stages, append success marker if not present
-    if (isolatedStage.command && !isolatedStage.command.includes('[STAGE_COMPLETE]')) {
+    if (
+      isolatedStage.command &&
+      !isolatedStage.command.includes('[STAGE_COMPLETE]')
+    ) {
       isolatedStage.command += " && echo '[STAGE_COMPLETE]'";
     }
     pipelineConfig = { stages: [isolatedStage] };
