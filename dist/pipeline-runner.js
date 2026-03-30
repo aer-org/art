@@ -903,7 +903,12 @@ ${markerLines.join('\n')}`;
         const stageConfig = stagesByName.get(stageName);
         if (!stageConfig) {
             logger.error({ stage: stageName }, 'Stage config not found');
-            return { stageName, nextStages: null, nextInitialPrompt: null, result: 'error' };
+            return {
+                stageName,
+                nextStages: null,
+                nextInitialPrompt: null,
+                result: 'error',
+            };
         }
         // Exclusive lock: wait for shared resource
         let exclusiveLock = null;
@@ -996,7 +1001,12 @@ ${markerLines.join('\n')}`;
                 logger.info({ stage: stageName, key: stageConfig.exclusive }, 'Exclusive lock released');
             }
         }
-        return { stageName, nextStages, nextInitialPrompt: outNextInitialPrompt, result: stageResult };
+        return {
+            stageName,
+            nextStages,
+            nextInitialPrompt: outNextInitialPrompt,
+            result: stageResult,
+        };
     }
     /**
      * Main FSM loop with fan-out/fan-in support.

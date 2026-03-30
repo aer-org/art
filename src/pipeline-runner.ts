@@ -938,7 +938,9 @@ ${markerLines.join('\n')}`;
   /**
    * Normalize transition.next to an array of target names (empty for pipeline end).
    */
-  private static nextTargets(next: string | string[] | null | undefined): string[] {
+  private static nextTargets(
+    next: string | string[] | null | undefined,
+  ): string[] {
     if (next == null) return [];
     return Array.isArray(next) ? next : [next];
   }
@@ -1028,8 +1030,7 @@ ${markerLines.join('\n')}`;
     ) {
       const completedStages = [...existingState.completedStages];
       // Find where to resume: look at the last completed stage's forward transition
-      const lastCompleted =
-        completedStages[completedStages.length - 1];
+      const lastCompleted = completedStages[completedStages.length - 1];
       const lastConfig = stagesByName.get(lastCompleted);
       const completeTransition = lastConfig?.transitions.find(
         (t) => !t.retry && t.next,
@@ -1038,9 +1039,7 @@ ${markerLines.join('\n')}`;
       if (completeTransition?.next) {
         const targets = PipelineRunner.nextTargets(completeTransition.next);
         // Only resume targets not yet completed
-        const remaining = targets.filter(
-          (t) => !completedStages.includes(t),
-        );
+        const remaining = targets.filter((t) => !completedStages.includes(t));
         initialStages = remaining.length > 0 ? remaining : [resolveEntry()];
       } else {
         initialStages = [resolveEntry()];
@@ -1269,7 +1268,12 @@ ${markerLines.join('\n')}`;
     const stageConfig = stagesByName.get(stageName);
     if (!stageConfig) {
       logger.error({ stage: stageName }, 'Stage config not found');
-      return { stageName, nextStages: null, nextInitialPrompt: null, result: 'error' };
+      return {
+        stageName,
+        nextStages: null,
+        nextInitialPrompt: null,
+        result: 'error',
+      };
     }
 
     // Exclusive lock: wait for shared resource
@@ -1402,7 +1406,12 @@ ${markerLines.join('\n')}`;
       }
     }
 
-    return { stageName, nextStages, nextInitialPrompt: outNextInitialPrompt, result: stageResult };
+    return {
+      stageName,
+      nextStages,
+      nextInitialPrompt: outNextInitialPrompt,
+      result: stageResult,
+    };
   }
 
   /**
@@ -1419,7 +1428,8 @@ ${markerLines.join('\n')}`;
       await this.resolveEntryStage(stagesByName);
 
     savePipelineState(this.groupDir, {
-      currentStage: initialStages.length === 1 ? initialStages[0] : initialStages,
+      currentStage:
+        initialStages.length === 1 ? initialStages[0] : initialStages,
       completedStages,
       lastUpdated: new Date().toISOString(),
       status: 'running',
@@ -1493,7 +1503,9 @@ ${markerLines.join('\n')}`;
           ) {
             continue;
           }
-          if (PipelineRunner.fanInReady(target, predecessors, completedStages)) {
+          if (
+            PipelineRunner.fanInReady(target, predecessors, completedStages)
+          ) {
             pendingStages.push({
               name: target,
               initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
