@@ -130,7 +130,7 @@ export class PipelineRunner {
     runId;
     manifest;
     aborted = false;
-    currentHandle = null;
+    activeHandles = new Map();
     stageSessionIds = new Map();
     constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId) {
         this.group = group;
@@ -153,9 +153,8 @@ export class PipelineRunner {
     }
     async abort() {
         this.aborted = true;
-        if (this.currentHandle) {
-            await this.closeAndWait(this.currentHandle);
-        }
+        const handles = [...this.activeHandles.values()];
+        await Promise.all(handles.map((h) => this.closeAndWait(h)));
     }
     /** Send a visually prominent banner to TUI for stage transitions */
     async notifyBanner(text) {
@@ -668,6 +667,51 @@ ${markerLines.join('\n')}`;
         return { planContent, stagesByName, pipelineLogStream };
     }
     /**
+     * Normalize transition.next to an array of target names (empty for pipeline end).
+     */
+    static nextTargets(next) {
+        if (next == null)
+            return [];
+        return Array.isArray(next) ? next : [next];
+    }
+    /**
+     * Build predecessor map: for each stage, which stages have non-retry
+     * transitions pointing to it?
+     */
+    buildPredecessorMap() {
+        const predecessors = new Map();
+        for (const s of this.config.stages) {
+            for (const t of s.transitions) {
+                if (t.retry)
+                    continue;
+                for (const target of PipelineRunner.nextTargets(t.next)) {
+                    let set = predecessors.get(target);
+                    if (!set) {
+                        set = new Set();
+                        predecessors.set(target, set);
+                    }
+                    set.add(s.name);
+                }
+            }
+        }
+        return predecessors;
+    }
+    /**
+     * Check if a stage's fan-in gate is satisfied:
+     * all predecessors must appear in completedStages.
+     */
+    static fanInReady(stageName, predecessors, completedStages) {
+        const preds = predecessors.get(stageName);
+        if (!preds || preds.size <= 1)
+            return true;
+        const completed = new Set(completedStages);
+        for (const pred of preds) {
+            if (!completed.has(pred))
+                return false;
+        }
+        return true;
+    }
+    /**
      * Determine entry stage and resume from previous state if applicable.
      */
     async resolveEntryStage(stagesByName) {
@@ -680,9 +724,13 @@ ${markerLines.join('\n')}`;
             const hasOutgoing = new Set();
             for (const s of this.config.stages) {
                 for (const t of s.transitions) {
-                    if (!t.retry && t.next) {
+                    if (t.retry)
+                        continue;
+                    const targets = PipelineRunner.nextTargets(t.next);
+                    if (targets.length > 0) {
                         hasOutgoing.add(s.name);
-                        hasIncoming.add(t.next);
+                        for (const target of targets)
+                            hasIncoming.add(target);
                     }
                 }
             }
@@ -702,15 +750,25 @@ ${markerLines.join('\n')}`;
         if (existingState &&
             existingState.status !== 'success' &&
             existingState.completedStages.length > 0) {
-            const lastCompleted = existingState.completedStages[existingState.completedStages.length - 1];
+            const completedStages = [...existingState.completedStages];
+            // Find where to resume: look at the last completed stage's forward transition
+            const lastCompleted = completedStages[completedStages.length - 1];
             const lastConfig = stagesByName.get(lastCompleted);
             const completeTransition = lastConfig?.transitions.find((t) => !t.retry && t.next);
-            const currentStageName = completeTransition?.next ?? resolveEntry();
-            const completedStages = [...existingState.completedStages];
-            await this.notifyBanner(`🔄 ${currentStageName}부터 재개 (이전 완료: ${existingState.completedStages.join(' → ')})`);
-            return { currentStageName, completedStages };
+            let initialStages;
+            if (completeTransition?.next) {
+                const targets = PipelineRunner.nextTargets(completeTransition.next);
+                // Only resume targets not yet completed
+                const remaining = targets.filter((t) => !completedStages.includes(t));
+                initialStages = remaining.length > 0 ? remaining : [resolveEntry()];
+            }
+            else {
+                initialStages = [resolveEntry()];
+            }
+            await this.notifyBanner(`🔄 ${initialStages.join(', ')}부터 재개 (이전 완료: ${existingState.completedStages.join(' → ')})`);
+            return { initialStages, completedStages };
         }
-        return { currentStageName: resolveEntry(), completedStages: [] };
+        return { initialStages: [resolveEntry()], completedStages: [] };
     }
     /**
      * Handle stage result: no-match → retry prompt, retry → re-send,
@@ -763,17 +821,20 @@ ${markerLines.join('\n')}`;
                 lastResult: null,
             };
         }
-        // Non-retry transition — move to next stage or end pipeline
+        // Non-retry transition — move to next stage(s) or end pipeline
         const targetName = matched.next ?? null;
+        const targetDisplay = Array.isArray(targetName)
+            ? targetName.join(', ')
+            : targetName;
         const isErrorTransition = matched.marker.includes('ERROR');
         if (isErrorTransition) {
-            await this.notifyBanner(targetName
-                ? `⚠️ 주의: ${payload || matched.marker}\n🔄 ${targetName}으로 복귀`
+            await this.notifyBanner(targetDisplay
+                ? `⚠️ 주의: ${payload || matched.marker}\n🔄 ${targetDisplay}으로 복귀`
                 : `⚠️ 주의: ${payload || matched.marker}`);
         }
         else {
-            await this.notifyBanner(targetName
-                ? `✅ ${currentStageName} → ${targetName} (${matched.marker})`
+            await this.notifyBanner(targetDisplay
+                ? `✅ ${currentStageName} → ${targetDisplay} (${matched.marker})`
                 : `✅ ${currentStageName} 완료! (${matched.marker})`);
         }
         // Track completed stage
@@ -796,10 +857,12 @@ ${markerLines.join('\n')}`;
         if (containerResult.newSessionId) {
             this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
         }
-        this.currentHandle = null;
+        this.activeHandles.delete(currentStageName);
+        // Payload forwarding only works for single-target transitions
         let nextInitialPrompt = null;
-        if (targetName && payload) {
-            const targetConfig = stagesByName.get(targetName);
+        const targets = PipelineRunner.nextTargets(targetName);
+        if (targets.length === 1 && payload) {
+            const targetConfig = stagesByName.get(targets[0]);
             const targetRules = targetConfig
                 ? this.buildCommonRules(targetConfig)
                 : commonRules;
@@ -809,7 +872,7 @@ ${markerLines.join('\n')}`;
             stageResolved: true,
             nextStageName: targetName,
             nextInitialPrompt,
-            lastResult: targetName ? null : 'success',
+            lastResult: targets.length === 0 ? 'success' : null,
         };
     }
     /**
@@ -833,55 +896,48 @@ ${markerLines.join('\n')}`;
             : '❌ 파이프라인이 에러로 종료되었습니다.');
     }
     /**
-     * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
+     * Run a single stage to completion (spawn → turn loop → close).
+     * Self-contained: handles retries and container respawns internally.
      */
-    async run() {
-        const init = await this.initRun();
-        if (!init)
-            return 'error';
-        const { planContent, stagesByName, pipelineLogStream } = init;
-        let { currentStageName, completedStages } = await this.resolveEntryStage(stagesByName);
-        savePipelineState(this.groupDir, {
-            currentStage: currentStageName,
-            completedStages,
-            lastUpdated: new Date().toISOString(),
-            status: 'running',
-        });
-        let currentStage = currentStageName;
-        let nextInitialPrompt = null;
-        let turnCount = 0;
-        let lastResult = 'success';
-        let containerRespawnCount = 0;
-        const MAX_CONTAINER_RESPAWNS = 3;
-        while (currentStage !== null) {
-            if (this.aborted)
-                break;
-            const stageConfig = stagesByName.get(currentStage);
-            if (!stageConfig) {
-                logger.error({ stage: currentStage }, 'Stage config not found');
-                lastResult = 'error';
-                break;
-            }
-            // Exclusive lock: wait for shared resource
-            let exclusiveLock = null;
-            if (stageConfig.exclusive) {
-                exclusiveLock = getExclusiveLock(stageConfig.exclusive);
-                logger.info({ stage: currentStage, key: stageConfig.exclusive }, 'Waiting for exclusive lock');
-                await this.notify(`🔒 ${currentStage}: 대기 중 (${stageConfig.exclusive} lock)...`);
-                await exclusiveLock.acquire();
-                logger.info({ stage: currentStage, key: stageConfig.exclusive }, 'Exclusive lock acquired');
-            }
-            try {
-                const commonRules = this.buildCommonRules(stageConfig);
+    async runSingleStage(stageName, stagesByName, completedStages, planContent, pipelineLogStream, initialPromptOverride) {
+        const stageConfig = stagesByName.get(stageName);
+        if (!stageConfig) {
+            logger.error({ stage: stageName }, 'Stage config not found');
+            return { stageName, nextStages: null, nextInitialPrompt: null, result: 'error' };
+        }
+        // Exclusive lock: wait for shared resource
+        let exclusiveLock = null;
+        if (stageConfig.exclusive) {
+            exclusiveLock = getExclusiveLock(stageConfig.exclusive);
+            logger.info({ stage: stageName, key: stageConfig.exclusive }, 'Waiting for exclusive lock');
+            await this.notify(`🔒 ${stageName}: 대기 중 (${stageConfig.exclusive} lock)...`);
+            await exclusiveLock.acquire();
+            logger.info({ stage: stageName, key: stageConfig.exclusive }, 'Exclusive lock acquired');
+        }
+        let nextStages = null;
+        let stageResult = null;
+        let outNextInitialPrompt = null;
+        try {
+            const commonRules = this.buildCommonRules(stageConfig);
+            let nextInitialPrompt = initialPromptOverride ?? null;
+            let containerRespawnCount = 0;
+            const MAX_CONTAINER_RESPAWNS = 3;
+            let turnCount = 0;
+            let currentStage = stageName;
+            while (currentStage === stageName) {
+                if (this.aborted) {
+                    stageResult = 'error';
+                    break;
+                }
                 const initialPrompt = nextInitialPrompt ||
                     `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
                 nextInitialPrompt = null;
                 const stageStartTime = Date.now();
                 const handle = this.spawnStageContainer(stageConfig, initialPrompt, pipelineLogStream);
-                this.currentHandle = handle;
-                logger.info({ stage: currentStage }, 'Stage container spawned (on-demand)');
-                logger.info({ stage: currentStage }, 'Entering stage');
-                await this.notifyBanner(`📌 Stage: ${currentStage} 시작`);
+                this.activeHandles.set(stageName, handle);
+                logger.info({ stage: stageName }, 'Stage container spawned (on-demand)');
+                logger.info({ stage: stageName }, 'Entering stage');
+                await this.notifyBanner(`📌 Stage: ${stageName} 시작`);
                 let isFirstTurn = true;
                 let stageResolved = false;
                 while (!stageResolved) {
@@ -894,15 +950,15 @@ ${markerLines.join('\n')}`;
                         sendToStage(handle, prompt);
                     }
                     isFirstTurn = false;
-                    logger.debug({ stage: currentStage, turn: turnCount }, 'Waiting for stage result');
-                    await this.notify(`🔧 [턴 ${turnCount}] ${currentStage} 진행 중...`);
+                    logger.debug({ stage: stageName, turn: turnCount }, 'Waiting for stage result');
+                    await this.notify(`🔧 [턴 ${turnCount}] ${stageName} 진행 중...`);
                     const result = await handle.pendingResult.promise;
                     handle.pendingResult = null;
-                    logger.info({ stage: currentStage, turn: turnCount, result }, 'Stage result received');
+                    logger.info({ stage: stageName, turn: turnCount, result }, 'Stage result received');
                     const outcome = await this.handleStageResult(result, {
                         handle,
                         stageConfig,
-                        currentStageName: currentStage,
+                        currentStageName: stageName,
                         turnCount,
                         stageStartTime,
                         completedStages,
@@ -914,25 +970,105 @@ ${markerLines.join('\n')}`;
                     });
                     stageResolved = outcome.stageResolved;
                     if (outcome.stageResolved) {
-                        // Respawn same stage → increment; advance to different stage → reset
-                        if (outcome.nextStageName === currentStage) {
+                        if (outcome.nextStageName === stageName) {
+                            // Container respawn — loop again with same stage
                             containerRespawnCount++;
+                            nextInitialPrompt = outcome.nextInitialPrompt;
+                            currentStage = stageName; // stay in outer while
                         }
                         else {
-                            containerRespawnCount = 0;
-                        }
-                        currentStage = outcome.nextStageName;
-                        nextInitialPrompt = outcome.nextInitialPrompt;
-                        if (outcome.lastResult) {
-                            lastResult = outcome.lastResult;
+                            // Advance to next stage(s) or end
+                            nextStages = outcome.nextStageName;
+                            outNextInitialPrompt = outcome.nextInitialPrompt;
+                            currentStage = null; // exit outer while
+                            if (outcome.lastResult) {
+                                stageResult = outcome.lastResult;
+                            }
                         }
                     }
                 }
             }
-            finally {
-                if (exclusiveLock) {
-                    exclusiveLock.release();
-                    logger.info({ stage: currentStage, key: stageConfig.exclusive }, 'Exclusive lock released');
+        }
+        finally {
+            this.activeHandles.delete(stageName);
+            if (exclusiveLock) {
+                exclusiveLock.release();
+                logger.info({ stage: stageName, key: stageConfig.exclusive }, 'Exclusive lock released');
+            }
+        }
+        return { stageName, nextStages, nextInitialPrompt: outNextInitialPrompt, result: stageResult };
+    }
+    /**
+     * Main FSM loop with fan-out/fan-in support.
+     * Spawns stage containers on-demand, runs parallel stages concurrently,
+     * and gates fan-in stages until all predecessors complete.
+     */
+    async run() {
+        const init = await this.initRun();
+        if (!init)
+            return 'error';
+        const { planContent, stagesByName, pipelineLogStream } = init;
+        const { initialStages, completedStages } = await this.resolveEntryStage(stagesByName);
+        savePipelineState(this.groupDir, {
+            currentStage: initialStages.length === 1 ? initialStages[0] : initialStages,
+            completedStages,
+            lastUpdated: new Date().toISOString(),
+            status: 'running',
+        });
+        const predecessors = this.buildPredecessorMap();
+        // Each entry: { name, initialPrompt } — prompt is set when payload forwarding applies
+        let pendingStages = initialStages.map((name) => ({ name }));
+        const waitingForFanIn = new Set();
+        let lastResult = 'success';
+        while (pendingStages.length > 0 || waitingForFanIn.size > 0) {
+            if (this.aborted)
+                break;
+            // Check fan-in gates
+            for (const w of waitingForFanIn) {
+                if (PipelineRunner.fanInReady(w, predecessors, completedStages)) {
+                    waitingForFanIn.delete(w);
+                    pendingStages.push({ name: w });
+                }
+            }
+            if (pendingStages.length === 0) {
+                // All pending stages are waiting for fan-in that will never be satisfied
+                // (predecessor failed or pipeline is stuck)
+                logger.warn({ waiting: [...waitingForFanIn] }, 'Fan-in stages stuck — predecessors did not complete');
+                lastResult = 'error';
+                break;
+            }
+            // Save current active stages
+            const activeNames = pendingStages.map((s) => s.name);
+            savePipelineState(this.groupDir, {
+                currentStage: activeNames.length === 1 ? activeNames[0] : activeNames,
+                completedStages,
+                lastUpdated: new Date().toISOString(),
+                status: 'running',
+            });
+            // Launch all pending stages concurrently
+            const batch = [...pendingStages];
+            pendingStages = [];
+            const results = await Promise.all(batch.map((entry) => this.runSingleStage(entry.name, stagesByName, completedStages, planContent, pipelineLogStream, entry.initialPrompt)));
+            // Process results and collect next stages
+            for (const { nextStages, nextInitialPrompt, result } of results) {
+                if (result === 'error')
+                    lastResult = 'error';
+                const targets = PipelineRunner.nextTargets(nextStages);
+                for (const target of targets) {
+                    // Skip if already queued in this round (fan-in dedup)
+                    if (pendingStages.some((s) => s.name === target) ||
+                        waitingForFanIn.has(target)) {
+                        continue;
+                    }
+                    if (PipelineRunner.fanInReady(target, predecessors, completedStages)) {
+                        pendingStages.push({
+                            name: target,
+                            initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
+                        });
+                    }
+                    else {
+                        waitingForFanIn.add(target);
+                    }
                 }
             }
         }

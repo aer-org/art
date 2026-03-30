@@ -1,0 +1,44 @@
+{
+  "stages": [
+    {
+      "name": "build",
+      "prompt": "",
+      "command": "echo '[BUILD_OK]'",
+      "image": "node:22-slim",
+      "mounts": {},
+      "transitions": [
+        { "marker": "BUILD_OK", "next": ["test-unit", "test-e2e"] }
+      ]
+    },
+    {
+      "name": "test-unit",
+      "prompt": "",
+      "command": "echo '[TEST_DONE]'",
+      "image": "node:22-slim",
+      "mounts": {},
+      "transitions": [
+        { "marker": "TEST_DONE", "next": "deploy" }
+      ]
+    },
+    {
+      "name": "test-e2e",
+      "prompt": "",
+      "command": "echo '[TEST_DONE]'",
+      "image": "node:22-slim",
+      "mounts": {},
+      "transitions": [
+        { "marker": "TEST_DONE", "next": "deploy" }
+      ]
+    },
+    {
+      "name": "deploy",
+      "prompt": "",
+      "command": "echo '[DEPLOYED]'",
+      "image": "node:22-slim",
+      "mounts": {},
+      "transitions": [
+        { "marker": "DEPLOYED", "next": null }
+      ]
+    }
+  ]
+}

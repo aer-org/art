@@ -154,7 +154,53 @@ describe.skipIf(!hasDocker)('Multi-stage command pipeline', () => {
   });
 });
 
-// ─── Test 5: Agent-mode pipeline (API required) ─────────────────────────────
+// ─── Test 5: Fan-out/fan-in command pipeline ────────────────────────────────
+
+describe.skipIf(!hasDocker)('Fan-out/fan-in command pipeline', () => {
+  let fixtureDir: string;
+
+  beforeAll(() => {
+    fixtureDir = copyFixture('fan-out-fan-in');
+  });
+
+  afterAll(() => {
+    cleanupFixture(fixtureDir);
+  });
+
+  it('runs parallel stages and waits for fan-in before deploy', () => {
+    const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
+
+    if (result.code !== 0) {
+      console.error('STDERR:', result.stderr);
+      console.error('STDOUT:', result.stdout.slice(-500));
+    }
+    expect(result.code).toBe(0);
+
+    const state = readPipelineState(path.join(fixtureDir, '__art__'));
+    expect(state).not.toBeNull();
+    expect(state!.status).toBe('success');
+
+    // All 4 stages completed
+    const completed = state!.completedStages as string[];
+    expect(completed).toContain('build');
+    expect(completed).toContain('test-unit');
+    expect(completed).toContain('test-e2e');
+    expect(completed).toContain('deploy');
+    expect(completed).toHaveLength(4);
+
+    // build must come before both test stages; deploy must be last
+    const buildIdx = completed.indexOf('build');
+    const unitIdx = completed.indexOf('test-unit');
+    const e2eIdx = completed.indexOf('test-e2e');
+    const deployIdx = completed.indexOf('deploy');
+    expect(buildIdx).toBeLessThan(unitIdx);
+    expect(buildIdx).toBeLessThan(e2eIdx);
+    expect(deployIdx).toBeGreaterThan(unitIdx);
+    expect(deployIdx).toBeGreaterThan(e2eIdx);
+  });
+});
+
+// ─── Test 6: Agent-mode pipeline (API required) ─────────────────────────────
 
 describe.skipIf(!hasDocker || !hasApiKey)('Agent-mode pipeline @api', () => {
   let fixtureDir: string;

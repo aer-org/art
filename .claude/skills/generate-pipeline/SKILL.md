@@ -14,7 +14,7 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a va
 ```typescript
 interface PipelineTransition {
   marker: string;        // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
-  next?: string | null;  // Target stage name, or null to end pipeline
+  next?: string | string[] | null;  // Target stage(s), array for fan-out, null to end pipeline
   retry?: boolean;       // true = retry current stage on this marker
   prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
 }
@@ -204,6 +204,39 @@ Add to any stage:
   "privileged": true,
   "mounts": { "project": "ro", "build": "rw" },
   "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
+}
+```
+
+### Fan-out / Fan-in (parallel stages)
+`next` can be an array to fan-out into parallel stages. Fan-in is automatic: a stage with multiple predecessors waits for all to complete.
+```json
+{
+  "stages": [
+    {
+      "name": "build",
+      "prompt": "Build the project...",
+      "mounts": { "src": "ro", "build": "rw" },
+      "transitions": [{ "marker": "BUILD_OK", "next": ["test-unit", "test-e2e"] }]
+    },
+    {
+      "name": "test-unit",
+      "prompt": "Run unit tests...",
+      "mounts": { "build": "ro", "results": "rw" },
+      "transitions": [{ "marker": "DONE", "next": "deploy" }]
+    },
+    {
+      "name": "test-e2e",
+      "prompt": "Run e2e tests...",
+      "mounts": { "build": "ro", "results": "rw" },
+      "transitions": [{ "marker": "DONE", "next": "deploy" }]
+    },
+    {
+      "name": "deploy",
+      "prompt": "Deploy after all tests pass...",
+      "mounts": { "build": "ro" },
+      "transitions": [{ "marker": "DEPLOYED", "next": null }]
+    }
+  ]
 }
 ```
 

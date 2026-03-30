@@ -1,7 +1,7 @@
 import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
     marker: string;
-    next?: string | null;
+    next?: string | string[] | null;
     retry?: boolean;
     prompt?: string;
 }
@@ -26,7 +26,7 @@ export interface PipelineConfig {
     entryStage?: string;
 }
 export interface PipelineState {
-    currentStage: string | null;
+    currentStage: string | string[] | null;
     completedStages: string[];
     lastUpdated: string;
     status: 'running' | 'error' | 'success';
@@ -52,7 +52,7 @@ export declare class PipelineRunner {
     private runId;
     private manifest;
     private aborted;
-    private currentHandle;
+    private activeHandles;
     private stageSessionIds;
     constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string);
     getRunId(): string;
@@ -89,6 +89,20 @@ export declare class PipelineRunner {
      */
     private initRun;
     /**
+     * Normalize transition.next to an array of target names (empty for pipeline end).
+     */
+    private static nextTargets;
+    /**
+     * Build predecessor map: for each stage, which stages have non-retry
+     * transitions pointing to it?
+     */
+    private buildPredecessorMap;
+    /**
+     * Check if a stage's fan-in gate is satisfied:
+     * all predecessors must appear in completedStages.
+     */
+    private static fanInReady;
+    /**
      * Determine entry stage and resume from previous state if applicable.
      */
     private resolveEntryStage;
@@ -102,7 +116,14 @@ export declare class PipelineRunner {
      */
     private finalizeRun;
     /**
-     * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
+     * Run a single stage to completion (spawn → turn loop → close).
+     * Self-contained: handles retries and container respawns internally.
+     */
+    private runSingleStage;
+    /**
+     * Main FSM loop with fan-out/fan-in support.
+     * Spawns stage containers on-demand, runs parallel stages concurrently,
+     * and gates fan-in stages until all predecessors complete.
      */
     run(): Promise<'success' | 'error'>;
 }
