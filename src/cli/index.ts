@@ -28,8 +28,10 @@ async function main(): Promise<void> {
       const runFlags = args.filter((a) => a.startsWith('--'));
       const runPositional = args.filter((a) => !a.startsWith('--'));
       const skipPreflight = runFlags.includes('--skip-preflight');
+      const stageIdx = args.indexOf('--stage');
+      const stageName = stageIdx !== -1 ? args[stageIdx + 1] : undefined;
       const { run } = await import('./run.js');
-      await run(runPositional[0] || '.', { skipPreflight });
+      await run(runPositional[0] || '.', { skipPreflight, stage: stageName });
       break;
     }
     case 'compose': {

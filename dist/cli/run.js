@@ -197,6 +197,6 @@ export async function run(targetDir, opts) {
     };
     // Import and run the pipeline engine
     const { runPipeline } = await import('../run-engine.js');
-    await runPipeline({ group: artGroup, runId, artDir });
+    await runPipeline({ group: artGroup, runId, artDir, stage: opts?.stage });
 }
 //# sourceMappingURL=run.js.map

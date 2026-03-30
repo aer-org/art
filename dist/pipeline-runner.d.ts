@@ -14,6 +14,8 @@ export interface PipelineStage {
     devices?: string[];
     gpu?: boolean;
     runAsRoot?: boolean;
+    privileged?: boolean;
+    env?: Record<string, string>;
     exclusive?: string;
     hostMounts?: AdditionalMount[];
     resumeSession?: boolean;

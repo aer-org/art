@@ -301,6 +301,8 @@ export class PipelineRunner {
                 additionalDevices: stageConfig.devices || [],
                 gpu: stageConfig.gpu === true,
                 runAsRoot: stageConfig.runAsRoot === true,
+                privileged: stageConfig.privileged === true,
+                env: stageConfig.env,
                 internalMounts,
             },
         };
@@ -361,6 +363,14 @@ export class PipelineRunner {
                 else {
                     logger.warn({ stage: stageConfig.name, marker: markers.matched.marker }, 'Marker matched but no pendingResult!');
                 }
+                handle.resultTexts = [];
+            }
+            else if (handle.pendingResult) {
+                // Result came but no marker — resolve immediately as no-match
+                // so the FSM sends a retry prompt with transition instructions via IPC.
+                logger.warn({ stage: stageConfig.name }, 'Result without marker, resolving as no-match for retry');
+                handle.pendingResult.resolve({ matched: null, payload: null });
+                handle.pendingResult = null;
                 handle.resultTexts = [];
             }
         };
@@ -432,7 +442,8 @@ export class PipelineRunner {
         const devices = stageConfig.devices || [];
         const gpu = stageConfig.gpu === true;
         const runAsRoot = stageConfig.runAsRoot === true;
-        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, gpu, runAsRoot, image, 'sh', this.runId);
+        const privileged = stageConfig.privileged === true;
+        const containerArgs = buildContainerArgs(internalMounts, containerName, devices, gpu, runAsRoot, image, 'sh', this.runId, privileged, stageConfig.env);
         containerArgs.push('-c', stageConfig.command);
         logger.info({ stage: stageConfig.name, image, command: stageConfig.command }, 'Running command-mode stage');
         if (logStream) {
@@ -467,7 +478,7 @@ export class PipelineRunner {
                 if (logStream)
                     logStream.write(`[stderr] ${chunk}`);
             });
-            const configTimeout = this.group.containerConfig?.timeout || 1800000; // 30 min default for commands
+            const configTimeout = this.group.containerConfig?.timeout || 14400000; // 4 hour default for commands
             let timedOut = false;
             const timeout = setTimeout(() => {
                 timedOut = true;

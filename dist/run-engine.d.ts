@@ -3,5 +3,6 @@ export declare function runPipeline(opts: {
     group: RegisteredGroup;
     runId: string;
     artDir: string;
+    stage?: string;
 }): Promise<void>;
 //# sourceMappingURL=run-engine.d.ts.map
