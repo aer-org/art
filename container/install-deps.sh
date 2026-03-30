@@ -62,6 +62,14 @@ install_one_of libncurses6 libncurses5
 # --- Optional packages (nice to have) ---
 install_optional fonts-noto-cjk fonts-noto-color-emoji
 
+# --- GitHub CLI ---
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+apt-get update
+apt-get install -y --no-install-recommends gh
+
 # --- Locale setup ---
 sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen
 locale-gen

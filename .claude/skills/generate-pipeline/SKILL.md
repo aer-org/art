@@ -34,6 +34,8 @@ interface PipelineStage {
   hostMounts?: AdditionalMount[]; // Host path mounts (validated against allowlist)
   gpu?: boolean;         // Pass --gpus all
   runAsRoot?: boolean;   // Run container as root
+  privileged?: boolean;  // Run with --privileged (full device access)
+  env?: Record<string, string>; // Environment variables passed to container
   devices?: string[];    // Device passthrough
   exclusive?: string;    // Mutex key — only one stage with same key runs at a time
   resumeSession?: boolean; // false = fresh session every time. default true = resume previous session
@@ -188,6 +190,19 @@ Add to any stage:
   "gpu": true,
   "runAsRoot": true,
   "mounts": { "project": "ro", "results": "rw", "cache": "rw" },
+  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
+}
+```
+
+### Privileged command stage (e.g. FPGA tools, USB devices)
+```json
+{
+  "name": "fpga-synth",
+  "prompt": "",
+  "command": "source /tools/Xilinx/Vivado/2023.2/settings64.sh && cd /workspace/project && make fpga 2>&1; echo '[STAGE_COMPLETE]'",
+  "image": "cva6-vivado",
+  "privileged": true,
+  "mounts": { "project": "ro", "build": "rw" },
   "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
 }
 ```

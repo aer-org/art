@@ -72,7 +72,7 @@ async function askConfirmation(prompt: string): Promise<boolean> {
 
 export async function run(
   targetDir: string,
-  opts?: { skipPreflight?: boolean },
+  opts?: { skipPreflight?: boolean; stage?: string },
 ): Promise<void> {
   preflight({ skipClaudeCli: opts?.skipPreflight });
 
@@ -230,5 +230,5 @@ export async function run(
 
   // Import and run the pipeline engine
   const { runPipeline } = await import('../run-engine.js');
-  await runPipeline({ group: artGroup, runId, artDir });
+  await runPipeline({ group: artGroup, runId, artDir, stage: opts?.stage });
 }

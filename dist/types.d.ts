@@ -24,6 +24,8 @@ export interface ContainerConfig {
     additionalDevices?: string[];
     gpu?: boolean;
     runAsRoot?: boolean;
+    privileged?: boolean;
+    env?: Record<string, string>;
     timeout?: number;
     internalMounts?: Array<{
         hostPath: string;

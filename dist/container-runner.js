@@ -147,7 +147,7 @@ function buildVolumeMounts(group, isMain) {
     }
     return mounts;
 }
-export function buildContainerArgs(mounts, containerName, devices = [], gpu = false, runAsRoot = false, image, entrypoint, runId) {
+export function buildContainerArgs(mounts, containerName, devices = [], gpu = false, runAsRoot = false, image, entrypoint, runId, privileged = false, env) {
     const rt = getRuntime();
     const args = ['run'];
     if (rt.capabilities.supportsStdin)
@@ -156,12 +156,28 @@ export function buildContainerArgs(mounts, containerName, devices = [], gpu = fa
         args.push('--rm');
     if (rt.capabilities.supportsNaming)
         args.push('--name', containerName);
+    if (privileged)
+        args.push('--privileged');
     // Label for run-ID-based cleanup
     if (runId && rt.capabilities.supportsPsFilter) {
         args.push('--label', `art-run-id=${runId}`);
     }
     // Pass host timezone so container's local time matches the user's
     args.push('-e', `TZ=${TIMEZONE}`);
+    // User-defined environment variables ($VAR references resolved from host env)
+    if (env) {
+        for (const [key, value] of Object.entries(env)) {
+            let resolved = value;
+            if (value.startsWith('$')) {
+                const envName = value.slice(1);
+                resolved = process.env[envName] || '';
+                if (!resolved) {
+                    logger.warn({ key, ref: value }, 'Environment variable not set on host');
+                }
+            }
+            args.push('-e', `${key}=${resolved}`);
+        }
+    }
     // Route API traffic through the credential proxy (containers never see real secrets)
     args.push('-e', `ANTHROPIC_BASE_URL=http://${rt.hostGateway}:${getCredentialProxyPort()}`);
     // Mirror the host's auth method with a placeholder value.
@@ -208,7 +224,12 @@ export function buildContainerArgs(mounts, containerName, devices = [], gpu = fa
         else {
             const hostUid = process.getuid?.();
             const hostGid = process.getgid?.();
-            if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
+            // Skip --user only when UID matches the agent image's node user (1000).
+            // Custom images (command stages) don't have UID 1000, so always set --user
+            // to prevent running as the image's default user (often root).
+            const isAgentImage = !image || image === CONTAINER_IMAGE;
+            const skipUser = isAgentImage && hostUid === 1000;
+            if (hostUid != null && hostUid !== 0 && !skipUser) {
                 args.push('--user', `${hostUid}:${hostGid}`);
                 args.push('-e', 'HOME=/home/node');
             }
@@ -266,10 +287,12 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
     const devices = group.containerConfig?.additionalDevices || [];
     const gpu = group.containerConfig?.gpu === true;
     const runAsRoot = group.containerConfig?.runAsRoot === true;
+    const privileged = group.containerConfig?.privileged === true;
     const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
     const containerName = `aer-art-${safeName}-${Date.now()}`;
     const image = group.containerConfig?.image || CONTAINER_IMAGE;
-    const containerArgs = buildContainerArgs(mounts, containerName, devices, gpu, runAsRoot, image, undefined, input.runId);
+    const env = group.containerConfig?.env;
+    const containerArgs = buildContainerArgs(mounts, containerName, devices, gpu, runAsRoot, image, undefined, input.runId, privileged, env);
     logger.debug({
         group: group.name,
         containerName,

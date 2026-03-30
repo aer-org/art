@@ -252,6 +252,8 @@ export function buildContainerArgs(
   image?: string,
   entrypoint?: string,
   runId?: string,
+  privileged = false,
+  env?: Record<string, string>,
 ): string[] {
   const rt = getRuntime();
   const args: string[] = ['run'];
@@ -259,6 +261,7 @@ export function buildContainerArgs(
 
   if (rt.capabilities.supportsAutoRemove) args.push('--rm');
   if (rt.capabilities.supportsNaming) args.push('--name', containerName);
+  if (privileged) args.push('--privileged');
 
   // Label for run-ID-based cleanup
   if (runId && rt.capabilities.supportsPsFilter) {
@@ -267,6 +270,21 @@ export function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // User-defined environment variables ($VAR references resolved from host env)
+  if (env) {
+    for (const [key, value] of Object.entries(env)) {
+      let resolved = value;
+      if (value.startsWith('$')) {
+        const envName = value.slice(1);
+        resolved = process.env[envName] || '';
+        if (!resolved) {
+          logger.warn({ key, ref: value }, 'Environment variable not set on host');
+        }
+      }
+      args.push('-e', `${key}=${resolved}`);
+    }
+  }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
   args.push(
@@ -327,7 +345,12 @@ export function buildContainerArgs(
     } else {
       const hostUid = process.getuid?.();
       const hostGid = process.getgid?.();
-      if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
+      // Skip --user only when UID matches the agent image's node user (1000).
+      // Custom images (command stages) don't have UID 1000, so always set --user
+      // to prevent running as the image's default user (often root).
+      const isAgentImage = !image || image === CONTAINER_IMAGE;
+      const skipUser = isAgentImage && hostUid === 1000;
+      if (hostUid != null && hostUid !== 0 && !skipUser) {
         args.push('--user', `${hostUid}:${hostGid}`);
         args.push('-e', 'HOME=/home/node');
       }
@@ -404,9 +427,11 @@ export async function runContainerAgent(
   const devices = group.containerConfig?.additionalDevices || [];
   const gpu = group.containerConfig?.gpu === true;
   const runAsRoot = group.containerConfig?.runAsRoot === true;
+  const privileged = group.containerConfig?.privileged === true;
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `aer-art-${safeName}-${Date.now()}`;
   const image = group.containerConfig?.image || CONTAINER_IMAGE;
+  const env = group.containerConfig?.env;
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
@@ -416,6 +441,8 @@ export async function runContainerAgent(
     image,
     undefined,
     input.runId,
+    privileged,
+    env,
   );
 
   logger.debug(

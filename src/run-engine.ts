@@ -28,8 +28,9 @@ export async function runPipeline(opts: {
   group: RegisteredGroup;
   runId: string;
   artDir: string;
+  stage?: string;
 }): Promise<void> {
-  const { group, runId, artDir } = opts;
+  const { group, runId, artDir, stage } = opts;
 
   // Initialize container runtime
   await initRuntime();
@@ -129,11 +130,37 @@ export async function runPipeline(opts: {
   }
 
   // Single pipeline mode
-  const pipelineConfig = loadPipelineConfig(group.folder);
+  let pipelineConfig = loadPipelineConfig(group.folder);
   if (!pipelineConfig) {
     console.error('No PIPELINE.json found');
     proxyServer.close();
     process.exit(1);
+  }
+
+  // --stage: run a single stage in isolation
+  if (stage) {
+    const stageConfig = pipelineConfig.stages.find((s) => s.name === stage);
+    if (!stageConfig) {
+      console.error(
+        `Stage "${stage}" not found. Available: ${pipelineConfig.stages.map((s) => s.name).join(', ')}`,
+      );
+      proxyServer.close();
+      process.exit(1);
+    }
+    // Replace transitions so the stage terminates on completion
+    const isolatedStage = {
+      ...stageConfig,
+      transitions: [
+        { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
+        { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
+      ],
+    };
+    // For command stages, append success marker if not present
+    if (isolatedStage.command && !isolatedStage.command.includes('[STAGE_COMPLETE]')) {
+      isolatedStage.command += " && echo '[STAGE_COMPLETE]'";
+    }
+    pipelineConfig = { stages: [isolatedStage] };
+    console.log(`\n🔧 단일 스테이지 실행: ${stage}`);
   }
 
   logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');

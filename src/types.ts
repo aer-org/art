@@ -33,6 +33,8 @@ export interface ContainerConfig {
   additionalDevices?: string[];
   gpu?: boolean;
   runAsRoot?: boolean;
+  privileged?: boolean; // Run container with --privileged flag
+  env?: Record<string, string>; // Environment variables passed to container
   timeout?: number; // Default: 300000 (5 minutes)
   internalMounts?: Array<{
     hostPath: string;
