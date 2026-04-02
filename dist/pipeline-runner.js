@@ -703,6 +703,10 @@ ${markerLines.join('\n')}`;
             for (const t of s.transitions) {
                 if (t.retry)
                     continue;
+                // Skip next_dynamic transitions — their targets are determined at runtime
+                // and tracked via activations/completions, not static predecessor counts.
+                if (t.next_dynamic)
+                    continue;
                 for (const target of PipelineRunner.nextTargets(t.next)) {
                     let set = predecessors.get(target);
                     if (!set) {
@@ -729,6 +733,27 @@ ${markerLines.join('\n')}`;
                 return false;
         }
         return true;
+    }
+    /**
+     * Check if a stage's dynamic fan-in gate is satisfied:
+     * only predecessors that have been activated are checked.
+     * A predecessor is "done" if its completion count matches its activation count.
+     */
+    static fanInReadyDynamic(stageName, predecessors, activations, completions) {
+        const preds = predecessors.get(stageName);
+        if (!preds || preds.size <= 1)
+            return true;
+        let anyActivated = false;
+        for (const pred of preds) {
+            const act = activations.get(pred) ?? 0;
+            if (act === 0)
+                continue; // never activated → skip
+            anyActivated = true;
+            const comp = completions.get(pred) ?? 0;
+            if (comp < act)
+                return false; // activated but not yet completed
+        }
+        return anyActivated; // at least one predecessor must have been activated
     }
     /**
      * Determine entry stage and resume from previous state if applicable.
@@ -785,9 +810,17 @@ ${markerLines.join('\n')}`;
                 initialStages = [resolveEntry()];
             }
             await this.notifyBanner(`🔄 ${initialStages.join(', ')}부터 재개 (이전 완료: ${existingState.completedStages.join(' → ')})`);
-            return { initialStages, completedStages };
+            // Restore activation/completion counts from persisted state
+            const activations = new Map(Object.entries(existingState.activations ?? {}));
+            const completions = new Map(Object.entries(existingState.completions ?? {}));
+            return { initialStages, completedStages, activations, completions };
         }
-        return { initialStages: [resolveEntry()], completedStages: [] };
+        return {
+            initialStages: [resolveEntry()],
+            completedStages: [],
+            activations: new Map(),
+            completions: new Map(),
+        };
     }
     /**
      * Handle stage result: no-match → retry prompt, retry → re-send,
@@ -853,7 +886,35 @@ ${markerLines.join('\n')}`;
             };
         }
         // Non-retry transition — move to next stage(s) or end pipeline
-        const targetName = matched.next ?? null;
+        let targetName;
+        if (matched.next_dynamic && payload) {
+            // Dynamic transition: agent picks targets from payload
+            const requested = payload
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean);
+            const allowlist = new Set(PipelineRunner.nextTargets(matched.next));
+            const invalid = requested.filter((t) => !allowlist.has(t));
+            if (invalid.length > 0) {
+                logger.error({ stage: currentStageName, invalid, allowlist: [...allowlist] }, 'Dynamic transition target not in allowlist');
+                await this.notifyBanner(`❌ ${currentStageName}: 동적 전환 대상이 허용 목록에 없습니다: ${invalid.join(', ')}`);
+                return {
+                    stageResolved: true,
+                    nextStageName: null,
+                    nextInitialPrompt: null,
+                    lastResult: 'error',
+                };
+            }
+            targetName =
+                requested.length === 0
+                    ? (matched.next ?? null) // empty payload → fallback to static next
+                    : requested.length === 1
+                        ? requested[0]
+                        : requested;
+        }
+        else {
+            targetName = matched.next ?? null;
+        }
         const targetDisplay = Array.isArray(targetName)
             ? targetName.join(', ')
             : targetName;
@@ -889,10 +950,11 @@ ${markerLines.join('\n')}`;
             this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
         }
         this.activeHandles.delete(currentStageName);
-        // Payload forwarding only works for single-target transitions
+        // Payload forwarding only works for single-target non-dynamic transitions
+        // (dynamic payloads contain target names, not content to forward)
         let nextInitialPrompt = null;
         const targets = PipelineRunner.nextTargets(targetName);
-        if (targets.length === 1 && payload) {
+        if (targets.length === 1 && payload && !matched.next_dynamic) {
             const targetConfig = stagesByName.get(targets[0]);
             const targetRules = targetConfig
                 ? this.buildCommonRules(targetConfig)
@@ -1049,12 +1111,18 @@ ${markerLines.join('\n')}`;
         if (!init)
             return 'error';
         const { planContent, stagesByName, pipelineLogStream } = init;
-        const { initialStages, completedStages } = await this.resolveEntryStage(stagesByName);
+        const { initialStages, completedStages, activations, completions, } = await this.resolveEntryStage(stagesByName);
+        // Track activations for initial stages
+        for (const name of initialStages) {
+            activations.set(name, (activations.get(name) ?? 0) + 1);
+        }
         savePipelineState(this.groupDir, {
             currentStage: initialStages.length === 1 ? initialStages[0] : initialStages,
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: 'running',
+            activations: Object.fromEntries(activations),
+            completions: Object.fromEntries(completions),
         });
         const predecessors = this.buildPredecessorMap();
         // Each entry: { name, initialPrompt } — prompt is set when payload forwarding applies
@@ -1066,7 +1134,12 @@ ${markerLines.join('\n')}`;
                 break;
             // Check fan-in gates
             for (const w of waitingForFanIn) {
-                if (PipelineRunner.fanInReady(w, predecessors, completedStages)) {
+                const wConfig = stagesByName.get(w);
+                const fanInMode = wConfig?.fan_in ?? 'all';
+                const ready = fanInMode === 'dynamic'
+                    ? PipelineRunner.fanInReadyDynamic(w, predecessors, activations, completions)
+                    : PipelineRunner.fanInReady(w, predecessors, completedStages);
+                if (ready) {
                     waitingForFanIn.delete(w);
                     pendingStages.push({ name: w });
                 }
@@ -1085,6 +1158,8 @@ ${markerLines.join('\n')}`;
                 completedStages,
                 lastUpdated: new Date().toISOString(),
                 status: 'running',
+                activations: Object.fromEntries(activations),
+                completions: Object.fromEntries(completions),
             });
             // Launch all pending stages concurrently
             const batch = [...pendingStages];
@@ -1099,9 +1174,11 @@ ${markerLines.join('\n')}`;
             }
             const results = await Promise.all(batch.map((entry) => this.runSingleStage(entry.name, stagesByName, completedStages, planContent, pipelineLogStream, entry.initialPrompt)));
             // Process results and collect next stages
-            for (const { nextStages, nextInitialPrompt, result } of results) {
+            for (const { stageName: finishedStage, nextStages, nextInitialPrompt, result, } of results) {
                 if (result === 'error')
                     lastResult = 'error';
+                // Track completion for dynamic fan-in
+                completions.set(finishedStage, (completions.get(finishedStage) ?? 0) + 1);
                 const targets = PipelineRunner.nextTargets(nextStages);
                 for (const target of targets) {
                     // Skip if already queued in this round (fan-in dedup)
@@ -1109,7 +1186,14 @@ ${markerLines.join('\n')}`;
                         waitingForFanIn.has(target)) {
                         continue;
                     }
-                    if (PipelineRunner.fanInReady(target, predecessors, completedStages)) {
+                    // Track activation for dynamic fan-in (only when actually queued, not deduped)
+                    activations.set(target, (activations.get(target) ?? 0) + 1);
+                    const targetConfig = stagesByName.get(target);
+                    const fanInMode = targetConfig?.fan_in ?? 'all';
+                    const ready = fanInMode === 'dynamic'
+                        ? PipelineRunner.fanInReadyDynamic(target, predecessors, activations, completions)
+                        : PipelineRunner.fanInReady(target, predecessors, completedStages);
+                    if (ready) {
                         pendingStages.push({
                             name: target,
                             initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
@@ -1174,6 +1258,42 @@ export function loadPipelineConfig(groupFolder, groupDir) {
         if (!Array.isArray(config.stages) || config.stages.length === 0) {
             logger.warn({ groupFolder }, 'PIPELINE.json has no stages');
             return null;
+        }
+        // Validate stage names and transitions
+        const stageNames = new Set(config.stages.map((s) => s.name));
+        for (const stage of config.stages) {
+            // Validate fan_in value
+            if (stage.fan_in !== undefined &&
+                stage.fan_in !== 'all' &&
+                stage.fan_in !== 'dynamic') {
+                logger.error({ groupFolder, stage: stage.name, fan_in: stage.fan_in }, 'Invalid fan_in value (must be "all" or "dynamic")');
+                return null;
+            }
+            for (const t of stage.transitions) {
+                // next_dynamic + retry mutual exclusion
+                if (t.next_dynamic && t.retry) {
+                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'next_dynamic and retry cannot be used together');
+                    return null;
+                }
+                // next_dynamic requires non-null next
+                if (t.next_dynamic && t.next == null) {
+                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'next_dynamic requires next to be a non-null array (allowlist)');
+                    return null;
+                }
+                // Validate transition targets exist
+                if (!t.retry) {
+                    const targets = Array.isArray(t.next)
+                        ? t.next
+                        : t.next != null
+                            ? [t.next]
+                            : [];
+                    for (const target of targets) {
+                        if (!stageNames.has(target)) {
+                            logger.warn({ groupFolder, stage: stage.name, target }, 'Transition target references non-existent stage');
+                        }
+                    }
+                }
+            }
         }
         return config;
     }

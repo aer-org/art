@@ -2,6 +2,7 @@ import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
     marker: string;
     next?: string | string[] | null;
+    next_dynamic?: boolean;
     retry?: boolean;
     prompt?: string;
 }
@@ -20,6 +21,7 @@ export interface PipelineStage {
     exclusive?: string;
     hostMounts?: AdditionalMount[];
     resumeSession?: boolean;
+    fan_in?: 'all' | 'dynamic';
     transitions: PipelineTransition[];
 }
 export interface PipelineConfig {
@@ -31,6 +33,8 @@ export interface PipelineState {
     completedStages: string[];
     lastUpdated: string;
     status: 'running' | 'error' | 'success';
+    activations?: Record<string, number>;
+    completions?: Record<string, number>;
 }
 export declare function savePipelineState(groupDir: string, state: PipelineState): void;
 export declare function loadPipelineState(groupDir: string): PipelineState | null;
@@ -103,6 +107,12 @@ export declare class PipelineRunner {
      * all predecessors must appear in completedStages.
      */
     private static fanInReady;
+    /**
+     * Check if a stage's dynamic fan-in gate is satisfied:
+     * only predecessors that have been activated are checked.
+     * A predecessor is "done" if its completion count matches its activation count.
+     */
+    private static fanInReadyDynamic;
     /**
      * Determine entry stage and resume from previous state if applicable.
      */

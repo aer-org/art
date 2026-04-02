@@ -15,6 +15,7 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a va
 interface PipelineTransition {
   marker: string;        // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
   next?: string | string[] | null;  // Target stage(s), array for fan-out, null to end pipeline
+  next_dynamic?: boolean; // Agent picks targets at runtime via payload; next becomes allowlist
   retry?: boolean;       // true = retry current stage on this marker
   prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
 }
@@ -40,6 +41,7 @@ interface PipelineStage {
   devices?: string[];    // Device passthrough
   exclusive?: string;    // Mutex key — only one stage with same key runs at a time
   resumeSession?: boolean; // false = fresh session every time. default true = resume previous session
+  fan_in?: "all" | "dynamic"; // Default "all". "dynamic" = wait only for activated predecessors
   transitions: PipelineTransition[];
 }
 
@@ -255,6 +257,73 @@ Add to any stage:
 }
 ```
 
+### Dynamic Transition (selective fan-out)
+`next_dynamic: true`를 쓰면 agent가 런타임에 fan-out target을 선택할 수 있다. `next`는 허용 목록(allowlist)으로 작동하며, agent는 marker payload로 subset을 지정한다.
+
+Agent emission format:
+- `[MARKER:stage1]` → single target
+- `[MARKER:stage1,stage2]` → multiple targets (selective fan-out)
+- `[MARKER]` → payload 없으면 `next` 전체 사용 (fallback)
+
+```json
+{
+  "name": "review-router",
+  "prompt": "Analyze test failure log at /workspace/results/router-test.log.\nDetermine which modules caused the failure.\nEmit [FIX:edit-arbiter] or [FIX:edit-arbiter,edit-crossbar] depending on the cause.",
+  "mounts": { "project": "ro", "results": "ro" },
+  "transitions": [
+    {
+      "marker": "FIX",
+      "next_dynamic": true,
+      "next": ["edit-arbiter", "edit-crossbar", "edit-router"],
+      "prompt": "Agent identified failing modules — re-edit only those"
+    },
+    { "marker": "PASS", "next": "test-system", "prompt": "All modules pass" },
+    { "marker": "STAGE_ERROR", "retry": true, "prompt": "Environment error" }
+  ]
+}
+```
+
+Rules:
+- `next_dynamic` and `retry` cannot be used together
+- `next_dynamic` requires `next` to be a non-null array (allowlist)
+- Agent payload targets must be in the allowlist, otherwise runtime error
+
+### Conditional Fan-in (`fan_in: "dynamic"`)
+기본 fan-in은 모든 predecessor가 완료되어야 실행된다. `fan_in: "dynamic"`이면 **활성화된 predecessor만** 기다린다. Dynamic transition으로 일부 경로만 재실행할 때, 재실행하지 않은 경로를 기다리지 않게 한다.
+
+```json
+{
+  "name": "test-router",
+  "fan_in": "dynamic",
+  "prompt": "",
+  "command": "cd /workspace/project && make test-router 2>&1; echo '[STAGE_COMPLETE]'",
+  "image": "sim-runner:latest",
+  "mounts": { "project": "ro", "results": "rw" },
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "test-system", "prompt": "Router tests passed" },
+    { "marker": "STAGE_ERROR", "next": "review-router", "prompt": "Test failed" }
+  ]
+}
+```
+
+Use `fan_in: "dynamic"` on any stage that:
+- Is the convergence point after a `next_dynamic` transition
+- Might not have all predecessors re-run in every execution cycle
+
+### Hierarchical test promotion (dynamic fan-out + conditional fan-in)
+Bottom-up test promotion pattern. On failure, review agent selectively re-runs only the causal modules.
+```
+plan → [edit-arbiter, edit-crossbar] → [test-arbiter, test-crossbar]
+                                        ↓ fan-in (dynamic)
+                                    edit-router → test-router
+                                        ↓ FAIL
+                                    review-router → [FIX:edit-arbiter] (dynamic)
+                                        ↓ re-run arbiter only
+                                    edit-arbiter → test-arbiter → edit-router (fan-in: dynamic)
+                                        ↓
+                                    test-router → PASS → done
+```
+
 ---
 
 ## Prompt Writing Guidelines
@@ -321,4 +390,8 @@ Before writing the JSON, verify ALL of the following:
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
 - [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values
+- [ ] `next_dynamic` transitions have `next` as a non-null array (allowlist)
+- [ ] `next_dynamic` and `retry` are not used on the same transition
+- [ ] `fan_in: "dynamic"` stages have multiple predecessors (otherwise meaningless)
+- [ ] Dynamic fan-out → fan-in paths use `fan_in: "dynamic"` at convergence points
 - [ ] The JSON is valid and parseable
