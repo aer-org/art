@@ -1478,6 +1478,116 @@ describe('Dynamic Fan-in FSM', () => {
 
     cleanupStageIpc(stageNames);
   }, 30000);
+
+  it('dynamic fan-in waits when retry path could still activate predecessor', async () => {
+    // Pipeline:
+    //   plan → [edit-a, edit-b]
+    //   edit-a → test-a-unit
+    //   edit-b → test-b-unit
+    //   test-a-unit DONE → router    (success path)
+    //   test-a-unit FAIL → edit-a    (error retry path)
+    //   test-b-unit DONE → merge     (success path)
+    //   router DONE → merge          (fan_in: dynamic)
+    //
+    // Scenario: test-a-unit fails first, then test-b-unit succeeds.
+    // merge should NOT start yet because edit-a retry path could still activate router.
+    // After edit-a re-runs → test-a-unit succeeds → router succeeds → merge fires.
+    const stageNames = [
+      'plan',
+      'edit-a',
+      'edit-b',
+      'test-a-unit',
+      'test-b-unit',
+      'router',
+      'merge',
+    ];
+    setupStageIpc(stageNames);
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'plan',
+          prompt: 'Plan',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: ['edit-a', 'edit-b'] }],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          fan_in: 'dynamic',
+          transitions: [{ marker: 'DONE', next: 'test-a-unit' }],
+        },
+        {
+          name: 'edit-b',
+          prompt: 'Edit B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'test-b-unit' }],
+        },
+        {
+          name: 'test-a-unit',
+          prompt: 'Test A',
+          mounts: {},
+          transitions: [
+            { marker: 'DONE', next: 'router' },
+            { marker: 'FAIL', next: 'edit-a' },
+          ],
+        },
+        {
+          name: 'test-b-unit',
+          prompt: 'Test B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'router',
+          prompt: 'Router',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'merge',
+          prompt: 'Merge',
+          mounts: {},
+          fan_in: 'dynamic',
+          transitions: [{ marker: 'PASS', next: null }],
+        },
+      ],
+    };
+
+    // First pass: plan succeeds
+    enqueueStageOutput('plan', [{ result: '[DONE]' }]);
+    // edit-a and edit-b both succeed
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    enqueueStageOutput('edit-b', [{ result: '[DONE]' }]);
+    // test-a-unit FAILS → error transition to edit-a
+    enqueueStageOutput('test-a-unit', [{ result: '[FAIL]' }]);
+    // test-b-unit succeeds → next: merge (but merge must wait for router path)
+    enqueueStageOutput('test-b-unit', [{ result: '[DONE]' }]);
+    // edit-a re-runs (from test-a-unit FAIL → edit-a)
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    // test-a-unit succeeds on retry → next: router
+    enqueueStageOutput('test-a-unit', [{ result: '[DONE]' }]);
+    // router succeeds → next: merge
+    enqueueStageOutput('router', [{ result: '[DONE]' }]);
+    // NOW merge should fire (both test-b-unit and router completed)
+    enqueueStageOutput('merge', [{ result: '[PASS]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    cleanupStageIpc(stageNames);
+  }, 30000);
 });
 
 describe('savePipelineState with activations/completions', () => {

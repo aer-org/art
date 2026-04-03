@@ -103,6 +103,13 @@ export declare class PipelineRunner {
      */
     private buildPredecessorMap;
     /**
+     * Build reachability map: for each stage, which stages can it
+     * transitively reach through the pipeline's transition graph?
+     * Used by dynamic fan-in to determine if an unactivated predecessor
+     * could still be activated by a currently-alive stage.
+     */
+    private buildReachabilityMap;
+    /**
      * Check if a stage's fan-in gate is satisfied:
      * all predecessors must appear in completedStages.
      */
@@ -111,6 +118,10 @@ export declare class PipelineRunner {
      * Check if a stage's dynamic fan-in gate is satisfied:
      * only predecessors that have been activated are checked.
      * A predecessor is "done" if its completion count matches its activation count.
+     *
+     * An unactivated predecessor (activation=0) is only skipped if no alive
+     * stage can transitively reach it. If any alive stage could still activate
+     * the predecessor via retry/error paths, the gate stays closed.
      */
     private static fanInReadyDynamic;
     /**

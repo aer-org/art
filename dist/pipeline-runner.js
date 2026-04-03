@@ -720,6 +720,45 @@ ${markerLines.join('\n')}`;
         return predecessors;
     }
     /**
+     * Build reachability map: for each stage, which stages can it
+     * transitively reach through the pipeline's transition graph?
+     * Used by dynamic fan-in to determine if an unactivated predecessor
+     * could still be activated by a currently-alive stage.
+     */
+    buildReachabilityMap() {
+        // Build adjacency list from all transitions with `next` targets
+        const adj = new Map();
+        for (const s of this.config.stages) {
+            if (!adj.has(s.name))
+                adj.set(s.name, new Set());
+            for (const t of s.transitions) {
+                if (t.retry && !t.next)
+                    continue;
+                for (const target of PipelineRunner.nextTargets(t.next)) {
+                    adj.get(s.name).add(target);
+                }
+            }
+        }
+        // BFS transitive closure per stage
+        const reachability = new Map();
+        for (const s of this.config.stages) {
+            const reachable = new Set();
+            const queue = [...(adj.get(s.name) ?? [])];
+            while (queue.length > 0) {
+                const current = queue.shift();
+                if (reachable.has(current))
+                    continue;
+                reachable.add(current);
+                for (const next of adj.get(current) ?? []) {
+                    if (!reachable.has(next))
+                        queue.push(next);
+                }
+            }
+            reachability.set(s.name, reachable);
+        }
+        return reachability;
+    }
+    /**
      * Check if a stage's fan-in gate is satisfied:
      * all predecessors must appear in completedStages.
      */
@@ -738,16 +777,28 @@ ${markerLines.join('\n')}`;
      * Check if a stage's dynamic fan-in gate is satisfied:
      * only predecessors that have been activated are checked.
      * A predecessor is "done" if its completion count matches its activation count.
+     *
+     * An unactivated predecessor (activation=0) is only skipped if no alive
+     * stage can transitively reach it. If any alive stage could still activate
+     * the predecessor via retry/error paths, the gate stays closed.
      */
-    static fanInReadyDynamic(stageName, predecessors, activations, completions) {
+    static fanInReadyDynamic(stageName, predecessors, activations, completions, reachability, aliveStages) {
         const preds = predecessors.get(stageName);
         if (!preds || preds.size <= 1)
             return true;
         let anyActivated = false;
         for (const pred of preds) {
             const act = activations.get(pred) ?? 0;
-            if (act === 0)
-                continue; // never activated → skip
+            if (act === 0) {
+                // Never activated — but could it still be activated?
+                // Check if any alive stage can transitively reach this predecessor.
+                for (const alive of aliveStages) {
+                    if (reachability.get(alive)?.has(pred)) {
+                        return false; // alive stage can still reach this predecessor — wait
+                    }
+                }
+                continue; // no alive stage can reach it — safe to skip
+            }
             anyActivated = true;
             const comp = completions.get(pred) ?? 0;
             if (comp < act)
@@ -1125,34 +1176,108 @@ ${markerLines.join('\n')}`;
             completions: Object.fromEntries(completions),
         });
         const predecessors = this.buildPredecessorMap();
+        const reachability = this.buildReachabilityMap();
         // Each entry: { name, initialPrompt } — prompt is set when payload forwarding applies
         let pendingStages = initialStages.map((name) => ({ name }));
         const waitingForFanIn = new Set();
         let lastResult = 'success';
-        while (pendingStages.length > 0 || waitingForFanIn.size > 0) {
+        const resultQueue = [];
+        let notifyResolve = null;
+        const running = new Set();
+        const runningNames = new Set();
+        const waitForResult = () => {
+            if (resultQueue.length > 0)
+                return Promise.resolve();
+            return new Promise((r) => {
+                notifyResolve = r;
+            });
+        };
+        const signalResult = () => {
+            if (notifyResolve) {
+                const r = notifyResolve;
+                notifyResolve = null;
+                r();
+            }
+        };
+        const launchStage = (entry) => {
+            runningNames.add(entry.name);
+            const p = this.runSingleStage(entry.name, stagesByName, completedStages, planContent, pipelineLogStream, entry.initialPrompt)
+                .then((result) => {
+                resultQueue.push(result);
+                running.delete(p);
+                runningNames.delete(result.stageName);
+                signalResult();
+            })
+                .catch((err) => {
+                logger.error({ stage: entry.name, err }, 'Stage threw unexpectedly');
+                resultQueue.push({
+                    stageName: entry.name,
+                    nextStages: null,
+                    nextInitialPrompt: null,
+                    result: 'error',
+                });
+                running.delete(p);
+                runningNames.delete(entry.name);
+                signalResult();
+            });
+            running.add(p);
+        };
+        // Helper: check fan-in readiness for a stage
+        const isFanInReady = (stageName) => {
+            const cfg = stagesByName.get(stageName);
+            const fanInMode = cfg?.fan_in ?? 'all';
+            if (fanInMode === 'dynamic') {
+                // Compute alive stages: running + pending + waiting-for-fan-in, excluding self
+                const aliveStages = new Set([
+                    ...runningNames,
+                    ...pendingStages.map((s) => s.name),
+                    ...waitingForFanIn,
+                ]);
+                aliveStages.delete(stageName);
+                return PipelineRunner.fanInReadyDynamic(stageName, predecessors, activations, completions, reachability, aliveStages);
+            }
+            return PipelineRunner.fanInReady(stageName, predecessors, completedStages);
+        };
+        // Helper: launch a stage, deferring chat stages if pool is busy
+        const tryLaunch = (entry) => {
+            const cfg = stagesByName.get(entry.name);
+            if (cfg?.chat && running.size > 0) {
+                // Chat stages need exclusive stdin — defer until pool drains
+                pendingStages.push(entry);
+                return;
+            }
+            launchStage(entry);
+        };
+        // Launch initial stages
+        for (const entry of pendingStages) {
+            tryLaunch(entry);
+        }
+        pendingStages = [];
+        while (running.size > 0 ||
+            waitingForFanIn.size > 0 ||
+            pendingStages.length > 0) {
             if (this.aborted)
                 break;
-            // Check fan-in gates
-            for (const w of waitingForFanIn) {
-                const wConfig = stagesByName.get(w);
-                const fanInMode = wConfig?.fan_in ?? 'all';
-                const ready = fanInMode === 'dynamic'
-                    ? PipelineRunner.fanInReadyDynamic(w, predecessors, activations, completions)
-                    : PipelineRunner.fanInReady(w, predecessors, completedStages);
-                if (ready) {
-                    waitingForFanIn.delete(w);
-                    pendingStages.push({ name: w });
+            // Launch any deferred pending stages (e.g. chat stages waiting for pool to drain)
+            if (pendingStages.length > 0 && running.size === 0) {
+                const deferred = [...pendingStages];
+                pendingStages = [];
+                for (const entry of deferred) {
+                    tryLaunch(entry);
                 }
             }
-            if (pendingStages.length === 0) {
-                // All pending stages are waiting for fan-in that will never be satisfied
-                // (predecessor failed or pipeline is stuck)
-                logger.warn({ waiting: [...waitingForFanIn] }, 'Fan-in stages stuck — predecessors did not complete');
-                lastResult = 'error';
+            // Stuck detection: nothing running, nothing queued, only fan-in waiting
+            if (running.size === 0 &&
+                resultQueue.length === 0 &&
+                pendingStages.length === 0) {
+                if (waitingForFanIn.size > 0) {
+                    logger.warn({ waiting: [...waitingForFanIn] }, 'Fan-in stages stuck — predecessors did not complete');
+                    lastResult = 'error';
+                }
                 break;
             }
             // Save current active stages
-            const activeNames = pendingStages.map((s) => s.name);
+            const activeNames = [...runningNames];
             savePipelineState(this.groupDir, {
                 currentStage: activeNames.length === 1 ? activeNames[0] : activeNames,
                 completedStages,
@@ -1161,40 +1286,27 @@ ${markerLines.join('\n')}`;
                 activations: Object.fromEntries(activations),
                 completions: Object.fromEntries(completions),
             });
-            // Launch all pending stages concurrently
-            const batch = [...pendingStages];
-            pendingStages = [];
-            // Validate: chatting stages cannot run in parallel (need exclusive stdin)
-            const chatInBatch = batch.filter((e) => stagesByName.get(e.name)?.chat);
-            if (chatInBatch.length > 0 && batch.length > 1) {
-                logger.error({ stages: batch.map((s) => s.name) }, 'Chatting stage cannot run in parallel with other stages');
-                await this.notify('❌ Chatting stage cannot run in parallel with other stages.');
-                lastResult = 'error';
-                break;
-            }
-            const results = await Promise.all(batch.map((entry) => this.runSingleStage(entry.name, stagesByName, completedStages, planContent, pipelineLogStream, entry.initialPrompt)));
-            // Process results and collect next stages
-            for (const { stageName: finishedStage, nextStages, nextInitialPrompt, result, } of results) {
+            // Wait for at least one stage to complete
+            await waitForResult();
+            // Drain all available results and launch ready successors immediately
+            while (resultQueue.length > 0) {
+                const { stageName: finishedStage, nextStages, nextInitialPrompt, result, } = resultQueue.shift();
                 if (result === 'error')
                     lastResult = 'error';
                 // Track completion for dynamic fan-in
                 completions.set(finishedStage, (completions.get(finishedStage) ?? 0) + 1);
                 const targets = PipelineRunner.nextTargets(nextStages);
                 for (const target of targets) {
-                    // Skip if already queued in this round (fan-in dedup)
-                    if (pendingStages.some((s) => s.name === target) ||
+                    // Skip if already running, queued, or waiting for fan-in
+                    if (runningNames.has(target) ||
+                        pendingStages.some((s) => s.name === target) ||
                         waitingForFanIn.has(target)) {
                         continue;
                     }
                     // Track activation for dynamic fan-in (only when actually queued, not deduped)
                     activations.set(target, (activations.get(target) ?? 0) + 1);
-                    const targetConfig = stagesByName.get(target);
-                    const fanInMode = targetConfig?.fan_in ?? 'all';
-                    const ready = fanInMode === 'dynamic'
-                        ? PipelineRunner.fanInReadyDynamic(target, predecessors, activations, completions)
-                        : PipelineRunner.fanInReady(target, predecessors, completedStages);
-                    if (ready) {
-                        pendingStages.push({
+                    if (isFanInReady(target)) {
+                        tryLaunch({
                             name: target,
                             initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
                         });
@@ -1202,6 +1314,13 @@ ${markerLines.join('\n')}`;
                     else {
                         waitingForFanIn.add(target);
                     }
+                }
+            }
+            // Re-check fan-in gates — a newly completed stage may have unblocked waiters
+            for (const w of [...waitingForFanIn]) {
+                if (isFanInReady(w)) {
+                    waitingForFanIn.delete(w);
+                    tryLaunch({ name: w });
                 }
             }
         }
