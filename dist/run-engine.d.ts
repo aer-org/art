@@ -4,5 +4,6 @@ export declare function runPipeline(opts: {
     runId: string;
     artDir: string;
     stage?: string;
+    pipeline?: string;
 }): Promise<void>;
 //# sourceMappingURL=run-engine.d.ts.map

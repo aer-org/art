@@ -120,7 +120,10 @@ export async function run(targetDir, opts) {
     const { getRuntime } = await import('../container-runtime.js');
     const { CONTAINER_IMAGE } = await import('../config.js');
     const { getImageForStage } = await import('../image-registry.js');
-    const pipelineConfig = loadPipelineConfig('', artDir);
+    const pipelineOverride = opts?.pipeline
+        ? path.resolve(projectDir, opts.pipeline)
+        : undefined;
+    const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
     if (pipelineConfig) {
         const rt = getRuntime();
         const images = new Set();
@@ -197,6 +200,12 @@ export async function run(targetDir, opts) {
     };
     // Import and run the pipeline engine
     const { runPipeline } = await import('../run-engine.js');
-    await runPipeline({ group: artGroup, runId, artDir, stage: opts?.stage });
+    await runPipeline({
+        group: artGroup,
+        runId,
+        artDir,
+        stage: opts?.stage,
+        pipeline: pipelineOverride,
+    });
 }
 //# sourceMappingURL=run.js.map

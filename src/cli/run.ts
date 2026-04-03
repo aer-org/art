@@ -72,7 +72,7 @@ async function askConfirmation(prompt: string): Promise<boolean> {
 
 export async function run(
   targetDir: string,
-  opts?: { skipPreflight?: boolean; stage?: string },
+  opts?: { skipPreflight?: boolean; stage?: string; pipeline?: string },
 ): Promise<void> {
   preflight({ skipClaudeCli: opts?.skipPreflight });
 
@@ -150,7 +150,10 @@ export async function run(
   const { CONTAINER_IMAGE } = await import('../config.js');
   const { getImageForStage } = await import('../image-registry.js');
 
-  const pipelineConfig = loadPipelineConfig('', artDir);
+  const pipelineOverride = opts?.pipeline
+    ? path.resolve(projectDir, opts.pipeline)
+    : undefined;
+  const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
   if (pipelineConfig) {
     const rt = getRuntime();
     const images = new Set<string>();
@@ -182,9 +185,7 @@ export async function run(
     if (missing.length > 0) {
       console.log('\nThe following images are not available locally:');
       for (const img of missing) console.log(`  - ${img}`);
-      const confirmed = await askConfirmation(
-        'Pull them now? [Y/n] ',
-      );
+      const confirmed = await askConfirmation('Pull them now? [Y/n] ');
       if (confirmed) {
         for (const img of missing) {
           console.log(`\nPulling ${img}...`);
@@ -230,5 +231,11 @@ export async function run(
 
   // Import and run the pipeline engine
   const { runPipeline } = await import('../run-engine.js');
-  await runPipeline({ group: artGroup, runId, artDir, stage: opts?.stage });
+  await runPipeline({
+    group: artGroup,
+    runId,
+    artDir,
+    stage: opts?.stage,
+    pipeline: pipelineOverride,
+  });
 }

@@ -29,8 +29,9 @@ export async function runPipeline(opts: {
   runId: string;
   artDir: string;
   stage?: string;
+  pipeline?: string;
 }): Promise<void> {
-  const { group, runId, artDir, stage } = opts;
+  const { group, runId, artDir, stage, pipeline } = opts;
 
   // Initialize container runtime
   await initRuntime();
@@ -130,9 +131,9 @@ export async function runPipeline(opts: {
   }
 
   // Single pipeline mode
-  let pipelineConfig = loadPipelineConfig(group.folder);
+  let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
   if (!pipelineConfig) {
-    console.error('No PIPELINE.json found');
+    console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
     proxyServer.close();
     process.exit(1);
   }

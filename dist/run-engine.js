@@ -13,7 +13,7 @@ import { writeCurrentRun } from './run-manifest.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 export async function runPipeline(opts) {
-    const { group, runId, artDir, stage } = opts;
+    const { group, runId, artDir, stage, pipeline } = opts;
     // Initialize container runtime
     await initRuntime();
     ensureContainerRuntimeRunning();
@@ -85,9 +85,9 @@ export async function runPipeline(opts) {
         process.exit(allSuccess ? 0 : 1);
     }
     // Single pipeline mode
-    let pipelineConfig = loadPipelineConfig(group.folder);
+    let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
     if (!pipelineConfig) {
-        console.error('No PIPELINE.json found');
+        console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
         proxyServer.close();
         process.exit(1);
     }
