@@ -68,7 +68,7 @@ export async function runPipeline(opts) {
             const agentGroupDir = path.join(parentGroupDir, agent.folder);
             const pipelineConfig = loadPipelineConfig(group.folder, agentGroupDir);
             if (!pipelineConfig) {
-                console.log(`⚠️ ${agent.name}: PIPELINE.json 없음`);
+                console.log(`⚠️ ${agent.name}: PIPELINE.json not found`);
                 return 'error';
             }
             const virtualGroup = {
@@ -113,7 +113,7 @@ export async function runPipeline(opts) {
             isolatedStage.command += " && echo '[STAGE_COMPLETE]'";
         }
         pipelineConfig = { stages: [isolatedStage] };
-        console.log(`\n🔧 단일 스테이지 실행: ${stage}`);
+        console.log(`\n🔧 Running single stage: ${stage}`);
     }
     logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');
     const runner = new PipelineRunner(group, chatJid, pipelineConfig, notify, onProcess, undefined, runId);

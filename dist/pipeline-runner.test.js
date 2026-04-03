@@ -455,7 +455,7 @@ describe('PipelineRunner FSM', () => {
         expect(implCalls.length).toBe(2);
         // Second call should include error context in prompt
         const respawnPrompt = implCalls[1][1].prompt;
-        expect(respawnPrompt).toContain('비정상 종료');
+        expect(respawnPrompt).toContain('exited abnormally');
     }, 15000);
     it('does not pass sessionId when resumeSession is false', async () => {
         const { runContainerAgent } = await import('./container-runner.js');
@@ -996,9 +996,7 @@ describe('Dynamic Fan-in FSM', () => {
                     name: 'plan',
                     prompt: 'Plan',
                     mounts: {},
-                    transitions: [
-                        { marker: 'DONE', next: ['edit-a', 'edit-b'] },
-                    ],
+                    transitions: [{ marker: 'DONE', next: ['edit-a', 'edit-b'] }],
                 },
                 {
                     name: 'edit-a',

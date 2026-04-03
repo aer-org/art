@@ -38,8 +38,8 @@ export const git = {
         'project:.git': 'rw',
     },
     transitions: [
-        { marker: '[STAGE_COMPLETE]', next: null, prompt: 'Git 작업 완료' },
-        { marker: '[STAGE_ERROR]', next: null, prompt: 'Git 작업 에러' },
+        { marker: '[STAGE_COMPLETE]', next: null, prompt: 'Git operations complete' },
+        { marker: '[STAGE_ERROR]', next: null, prompt: 'Git operations error' },
     ],
 };
 //# sourceMappingURL=git.js.map

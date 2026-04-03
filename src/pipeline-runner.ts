@@ -869,8 +869,8 @@ export class PipelineRunner {
 RULES:
 ${modeRule}
 - Read files before editing. Use tools freely.
-- 프로젝트 소스는 /workspace/project/ 에서 읽기 전용으로 볼 수 있다.
-- 스테이지 작업 디렉토리는 /workspace/ 아래에 마운트되어 있다 (plan/, src/, tb/, build/, sim/ 등). 반드시 이 경로에서 파일을 읽고 작업하라.
+- Project source is available read-only at /workspace/project/.
+- Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
 
 STAGE MARKERS — use the correct one:
 ${markerLines.join('\n')}`;
@@ -889,7 +889,7 @@ ${markerLines.join('\n')}`;
 
     if (!fs.existsSync(planPath)) {
       await this.notify(
-        '⚠️ PLAN.md가 없습니다. 먼저 구현 계획을 작성해주세요.',
+        '⚠️ PLAN.md not found. Please write an implementation plan first.',
       );
       return null;
     }
@@ -934,7 +934,7 @@ ${markerLines.join('\n')}`;
     );
 
     const stageNames = this.config.stages.map((s) => s.name).join(' → ');
-    await this.notifyBanner(`🚀 파이프라인 시작. 스테이지: ${stageNames}`);
+    await this.notifyBanner(`🚀 Pipeline starting. Stages: ${stageNames}`);
 
     // Pipeline-wide log file
     const logsDir = path.join(this.groupDir, 'logs');
@@ -1103,7 +1103,7 @@ ${markerLines.join('\n')}`;
         initialStages = [resolveEntry()];
       }
       await this.notifyBanner(
-        `🔄 ${initialStages.join(', ')}부터 재개 (이전 완료: ${existingState.completedStages.join(' → ')})`,
+        `🔄 Resuming from ${initialStages.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`,
       );
       // Restore activation/completion counts from persisted state
       const activations = new Map(
@@ -1183,7 +1183,7 @@ ${markerLines.join('\n')}`;
       handle.pendingResult = createDeferred();
       sendToStage(
         handle,
-        `이전 응답에 스테이지 마커가 없었습니다. 작업을 계속하고 완료 시 적절한 마커를 출력하세요.\n\n${stageConfig.prompt}\n${commonRules}`,
+        `No stage markers found in the previous response. Continue working and emit the appropriate marker when done.\n\n${stageConfig.prompt}\n${commonRules}`,
       );
       return {
         stageResolved: false,
@@ -1196,14 +1196,14 @@ ${markerLines.join('\n')}`;
     if (matched.retry) {
       const errorDesc = payload || matched.marker;
       await this.notify(
-        `⚠️ [턴 ${turnCount}] ${currentStageName} 에러: ${errorDesc}`,
+        `⚠️ [Turn ${turnCount}] ${currentStageName} error: ${errorDesc}`,
       );
 
       // Synthetic container exit/error — container is dead, must respawn
       if (matched.marker.startsWith('_CONTAINER')) {
         if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
           await this.notify(
-            `❌ [턴 ${turnCount}] ${currentStageName} 컨테이너 재시작 ${ctx.maxContainerRespawns}회 초과 — 스테이지 실패`,
+            `❌ [Turn ${turnCount}] ${currentStageName} container respawn limit exceeded (${ctx.maxContainerRespawns}) — stage failed`,
           );
           return {
             stageResolved: true,
@@ -1213,12 +1213,12 @@ ${markerLines.join('\n')}`;
           };
         }
         await this.notify(
-          `🔄 [턴 ${turnCount}] ${currentStageName} 컨테이너 재시작 (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`,
+          `🔄 [Turn ${turnCount}] ${currentStageName} container respawn (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`,
         );
         return {
           stageResolved: true,
           nextStageName: currentStageName,
-          nextInitialPrompt: `이전 시도에서 컨테이너가 비정상 종료되었습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
+          nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
           lastResult: null,
         };
       }
@@ -1227,7 +1227,7 @@ ${markerLines.join('\n')}`;
       handle.pendingResult = createDeferred();
       sendToStage(
         handle,
-        `이전 시도에서 에러가 발생했습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
+        `An error occurred in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
       );
       return {
         stageResolved: false,
@@ -1253,7 +1253,7 @@ ${markerLines.join('\n')}`;
           'Dynamic transition target not in allowlist',
         );
         await this.notifyBanner(
-          `❌ ${currentStageName}: 동적 전환 대상이 허용 목록에 없습니다: ${invalid.join(', ')}`,
+          `❌ ${currentStageName}: dynamic transition target not in allowlist: ${invalid.join(', ')}`,
         );
         return {
           stageResolved: true,
@@ -1278,14 +1278,14 @@ ${markerLines.join('\n')}`;
     if (isErrorTransition) {
       await this.notifyBanner(
         targetDisplay
-          ? `⚠️ 주의: ${payload || matched.marker}\n🔄 ${targetDisplay}으로 복귀`
-          : `⚠️ 주의: ${payload || matched.marker}`,
+          ? `⚠️ Warning: ${payload || matched.marker}\n🔄 Returning to ${targetDisplay}`
+          : `⚠️ Warning: ${payload || matched.marker}`,
       );
     } else {
       await this.notifyBanner(
         targetDisplay
           ? `✅ ${currentStageName} → ${targetDisplay} (${matched.marker})`
-          : `✅ ${currentStageName} 완료! (${matched.marker})`,
+          : `✅ ${currentStageName} completed! (${matched.marker})`,
       );
     }
 
@@ -1321,7 +1321,7 @@ ${markerLines.join('\n')}`;
       const targetRules = targetConfig
         ? this.buildCommonRules(targetConfig)
         : commonRules;
-      nextInitialPrompt = `이전 스테이지(${currentStageName})에서 전달된 내용:\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}\n\n## Plan\n\n${planContent}`;
+      nextInitialPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}\n\n## Plan\n\n${planContent}`;
     }
 
     return {
@@ -1359,8 +1359,8 @@ ${markerLines.join('\n')}`;
 
     await this.notifyBanner(
       lastResult === 'success'
-        ? '🏁 전체 파이프라인 완료!'
-        : '❌ 파이프라인이 에러로 종료되었습니다.',
+        ? '🏁 Pipeline completed!'
+        : '❌ Pipeline terminated with errors.',
     );
   }
 
@@ -1401,7 +1401,7 @@ ${markerLines.join('\n')}`;
         'Waiting for exclusive lock',
       );
       await this.notify(
-        `🔒 ${stageName}: 대기 중 (${stageConfig.exclusive} lock)...`,
+        `🔒 ${stageName}: waiting (${stageConfig.exclusive} lock)...`,
       );
       await exclusiveLock.acquire();
       logger.info(
@@ -1446,7 +1446,7 @@ ${markerLines.join('\n')}`;
           'Stage container spawned (on-demand)',
         );
         logger.info({ stage: stageName }, 'Entering stage');
-        await this.notifyBanner(`📌 Stage: ${stageName} 시작`);
+        await this.notifyBanner(`📌 Stage: ${stageName} starting`);
 
         let isFirstTurn = true;
         let stageResolved = false;
@@ -1468,7 +1468,7 @@ ${markerLines.join('\n')}`;
             { stage: stageName, turn: turnCount },
             'Waiting for stage result',
           );
-          await this.notify(`🔧 [턴 ${turnCount}] ${stageName} 진행 중...`);
+          await this.notify(`🔧 [Turn ${turnCount}] ${stageName} in progress...`);
 
           const result = await handle.pendingResult.promise;
           handle.pendingResult = null;
@@ -1540,12 +1540,8 @@ ${markerLines.join('\n')}`;
     if (!init) return 'error';
 
     const { planContent, stagesByName, pipelineLogStream } = init;
-    const {
-      initialStages,
-      completedStages,
-      activations,
-      completions,
-    } = await this.resolveEntryStage(stagesByName);
+    const { initialStages, completedStages, activations, completions } =
+      await this.resolveEntryStage(stagesByName);
 
     // Track activations for initial stages
     for (const name of initialStages) {
@@ -1625,7 +1621,7 @@ ${markerLines.join('\n')}`;
           'Chatting stage cannot run in parallel with other stages',
         );
         await this.notify(
-          '❌ Chatting 스테이지는 다른 스테이지와 동시에 실행할 수 없습니다.',
+          '❌ Chatting stage cannot run in parallel with other stages.',
         );
         lastResult = 'error';
         break;

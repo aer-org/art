@@ -100,10 +100,10 @@ export async function run(
   if (currentRun) {
     if (isPidAlive(currentRun.pid)) {
       const confirmed = await askConfirmation(
-        `이미 실행 중인 run이 있습니다 (${currentRun.runId}, PID ${currentRun.pid}).\n중지하고 새로 시작하시겠습니까? [Y/n] `,
+        `A run is already in progress (${currentRun.runId}, PID ${currentRun.pid}).\nStop and start a new one? [Y/n] `,
       );
       if (!confirmed) {
-        console.log('종료합니다.');
+        console.log('Exiting.');
         process.exit(0);
       }
       // Stop the existing run
@@ -117,7 +117,7 @@ export async function run(
     } else {
       // PID is dead — orphan cleanup
       console.log(
-        `이전 run이 비정상 종료됨 (${currentRun.runId}, PID ${currentRun.pid}). 정리 중...`,
+        `Previous run exited abnormally (${currentRun.runId}, PID ${currentRun.pid}). Cleaning up...`,
       );
       cleanupRunContainers(currentRun.runId);
       removeCurrentRun(artDir);
@@ -180,10 +180,10 @@ export async function run(
     }
 
     if (missing.length > 0) {
-      console.log('\n다음 이미지가 로컬에 없습니다:');
+      console.log('\nThe following images are not available locally:');
       for (const img of missing) console.log(`  - ${img}`);
       const confirmed = await askConfirmation(
-        '미리 다운로드하시겠습니까? [Y/n] ',
+        'Pull them now? [Y/n] ',
       );
       if (confirmed) {
         for (const img of missing) {

@@ -27,11 +27,11 @@ export const test = {
         outputs: 'rw',
     },
     transitions: [
-        { marker: '[STAGE_COMPLETE]', next: null, prompt: '테스트 완료' },
+        { marker: '[STAGE_COMPLETE]', next: null, prompt: 'Tests complete' },
         {
             marker: '[STAGE_ERROR]',
             next: 'build',
-            prompt: '코드 수정이 필요한 에러',
+            prompt: 'Error requiring code changes',
         },
     ],
 };

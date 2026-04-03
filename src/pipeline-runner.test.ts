@@ -674,7 +674,7 @@ describe('PipelineRunner FSM', () => {
 
     // Second call should include error context in prompt
     const respawnPrompt = (implCalls[1][1] as { prompt: string }).prompt;
-    expect(respawnPrompt).toContain('비정상 종료');
+    expect(respawnPrompt).toContain('exited abnormally');
   }, 15000);
 
   it('does not pass sessionId when resumeSession is false', async () => {
@@ -936,10 +936,7 @@ describe('parseStageMarkers with dynamic payload', () => {
         next: ['edit-arbiter', 'edit-crossbar'],
       },
     ];
-    const result = parseStageMarkers(
-      ['[FIX:edit-arbiter]'],
-      transitions,
-    );
+    const result = parseStageMarkers(['[FIX:edit-arbiter]'], transitions);
     expect(result.matched!.marker).toBe('FIX');
     expect(result.payload).toBe('edit-arbiter');
   });
@@ -1400,9 +1397,7 @@ describe('Dynamic Fan-in FSM', () => {
           name: 'plan',
           prompt: 'Plan',
           mounts: {},
-          transitions: [
-            { marker: 'DONE', next: ['edit-a', 'edit-b'] },
-          ],
+          transitions: [{ marker: 'DONE', next: ['edit-a', 'edit-b'] }],
         },
         {
           name: 'edit-a',
