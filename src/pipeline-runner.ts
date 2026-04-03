@@ -977,19 +977,22 @@ ${markerLines.join('\n')}`;
   private buildPredecessorMap(): Map<string, Set<string>> {
     const predecessors = new Map<string, Set<string>>();
     for (const s of this.config.stages) {
-      for (const t of s.transitions) {
-        if (t.retry) continue;
-        // Skip next_dynamic transitions — their targets are determined at runtime
-        // and tracked via activations/completions, not static predecessor counts.
-        if (t.next_dynamic) continue;
-        for (const target of PipelineRunner.nextTargets(t.next)) {
-          let set = predecessors.get(target);
-          if (!set) {
-            set = new Set();
-            predecessors.set(target, set);
-          }
-          set.add(s.name);
+      // Only the first non-retry, non-dynamic transition (primary/success path)
+      // contributes to the predecessor map. Error/fallback transitions listed
+      // after the primary one create backward edges (child→parent) that must
+      // not gate fan-in — otherwise a re-entry from an eval/dynamic source
+      // gets blocked by its own downstream stage's pending work.
+      const primary = s.transitions.find(
+        (t) => !t.retry && !t.next_dynamic,
+      );
+      if (!primary) continue;
+      for (const target of PipelineRunner.nextTargets(primary.next)) {
+        let set = predecessors.get(target);
+        if (!set) {
+          set = new Set();
+          predecessors.set(target, set);
         }
+        set.add(s.name);
       }
     }
     return predecessors;
@@ -1696,7 +1699,11 @@ ${markerLines.join('\n')}`;
           aliveStages,
         );
       }
-      return PipelineRunner.fanInReady(stageName, predecessors, completedStages);
+      return PipelineRunner.fanInReady(
+        stageName,
+        predecessors,
+        completedStages,
+      );
     };
 
     // Helper: launch a stage, deferring chat stages if pool is busy
@@ -1798,8 +1805,7 @@ ${markerLines.join('\n')}`;
           if (isFanInReady(target)) {
             tryLaunch({
               name: target,
-              initialPrompt:
-                targets.length === 1 ? nextInitialPrompt : null,
+              initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
             });
           } else {
             waitingForFanIn.add(target);
@@ -1870,15 +1876,20 @@ export function loadAgentTeamConfig(
 }
 
 /**
- * Load and validate PIPELINE.json from a group folder.
+ * Load and validate a pipeline config.
+ * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
+ *   groupFolder/groupDir are ignored and the file is loaded directly.
  * Returns null if the file doesn't exist.
  */
 export function loadPipelineConfig(
   groupFolder: string,
   groupDir?: string,
+  pipelinePath?: string,
 ): PipelineConfig | null {
   const dir = groupDir ?? resolveGroupFolderPath(groupFolder);
-  const pipelinePath = path.join(dir, 'PIPELINE.json');
+  if (!pipelinePath) {
+    pipelinePath = path.join(dir, 'PIPELINE.json');
+  }
 
   if (!fs.existsSync(pipelinePath)) {
     return null;

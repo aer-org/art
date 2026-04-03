@@ -161,9 +161,11 @@ export interface AgentTeamConfig {
  */
 export declare function loadAgentTeamConfig(groupFolder: string): AgentTeamConfig | null;
 /**
- * Load and validate PIPELINE.json from a group folder.
+ * Load and validate a pipeline config.
+ * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
+ *   groupFolder/groupDir are ignored and the file is loaded directly.
  * Returns null if the file doesn't exist.
  */
-export declare function loadPipelineConfig(groupFolder: string, groupDir?: string): PipelineConfig | null;
+export declare function loadPipelineConfig(groupFolder: string, groupDir?: string, pipelinePath?: string): PipelineConfig | null;
 export {};
 //# sourceMappingURL=pipeline-runner.d.ts.map
