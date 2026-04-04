@@ -35,6 +35,10 @@ export const plan: StageTemplate = {
   },
   transitions: [
     { marker: '[STAGE_COMPLETE]', next: 'build', prompt: 'Plan complete' },
-    { marker: '[STAGE_ERROR]', next: null, prompt: 'Environment/tool/config error' },
+    {
+      marker: '[STAGE_ERROR]',
+      next: null,
+      prompt: 'Environment/tool/config error',
+    },
   ],
 };

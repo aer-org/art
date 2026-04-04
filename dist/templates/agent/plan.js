@@ -30,7 +30,11 @@ export const plan = {
     },
     transitions: [
         { marker: '[STAGE_COMPLETE]', next: 'build', prompt: 'Plan complete' },
-        { marker: '[STAGE_ERROR]', next: null, prompt: 'Environment/tool/config error' },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Environment/tool/config error',
+        },
     ],
 };
 //# sourceMappingURL=plan.js.map

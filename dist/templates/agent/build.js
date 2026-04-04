@@ -34,8 +34,16 @@ export const build = {
         metrics: 'ro',
     },
     transitions: [
-        { marker: '[STAGE_COMPLETE]', next: 'test', prompt: 'Code implementation complete' },
-        { marker: '[STAGE_ERROR]', next: null, prompt: 'Environment/tool/config error' },
+        {
+            marker: '[STAGE_COMPLETE]',
+            next: 'test',
+            prompt: 'Code implementation complete',
+        },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Environment/tool/config error',
+        },
     ],
 };
 //# sourceMappingURL=build.js.map

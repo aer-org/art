@@ -33,7 +33,11 @@ export const history = {
             next: null,
             prompt: 'Insight consolidation complete',
         },
-        { marker: '[STAGE_ERROR]', next: null, prompt: 'Environment/tool/config error' },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Environment/tool/config error',
+        },
     ],
 };
 //# sourceMappingURL=history.js.map

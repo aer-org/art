@@ -982,9 +982,7 @@ ${markerLines.join('\n')}`;
       // after the primary one create backward edges (child→parent) that must
       // not gate fan-in — otherwise a re-entry from an eval/dynamic source
       // gets blocked by its own downstream stage's pending work.
-      const primary = s.transitions.find(
-        (t) => !t.retry && !t.next_dynamic,
-      );
+      const primary = s.transitions.find((t) => !t.retry && !t.next_dynamic);
       if (!primary) continue;
       for (const target of PipelineRunner.nextTargets(primary.next)) {
         let set = predecessors.get(target);

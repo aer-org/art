@@ -38,7 +38,11 @@ export const git = {
         'project:.git': 'rw',
     },
     transitions: [
-        { marker: '[STAGE_COMPLETE]', next: null, prompt: 'Git operations complete' },
+        {
+            marker: '[STAGE_COMPLETE]',
+            next: null,
+            prompt: 'Git operations complete',
+        },
         { marker: '[STAGE_ERROR]', next: null, prompt: 'Git operations error' },
     ],
 };

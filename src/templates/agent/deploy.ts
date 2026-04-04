@@ -9,6 +9,10 @@ export const deploy: StageTemplate = {
   mounts: { project: 'ro', plan: 'ro', src: 'ro', build: 'rw', tests: null },
   transitions: [
     { marker: '[STAGE_COMPLETE]', next: null, prompt: 'Deploy complete' },
-    { marker: '[STAGE_ERROR]', next: null, prompt: 'Environment/tool/config error' },
+    {
+      marker: '[STAGE_ERROR]',
+      next: null,
+      prompt: 'Environment/tool/config error',
+    },
   ],
 };

@@ -38,6 +38,10 @@ export const history: StageTemplate = {
       next: null,
       prompt: 'Insight consolidation complete',
     },
-    { marker: '[STAGE_ERROR]', next: null, prompt: 'Environment/tool/config error' },
+    {
+      marker: '[STAGE_ERROR]',
+      next: null,
+      prompt: 'Environment/tool/config error',
+    },
   ],
 };

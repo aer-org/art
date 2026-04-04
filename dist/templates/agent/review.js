@@ -32,7 +32,11 @@ export const review = {
             next: null,
             prompt: 'Review report complete',
         },
-        { marker: '[STAGE_ERROR]', next: null, prompt: 'Environment/tool/config error' },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Environment/tool/config error',
+        },
     ],
 };
 //# sourceMappingURL=review.js.map
