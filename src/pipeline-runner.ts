@@ -16,6 +16,7 @@ import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
 import {
   buildContainerArgs,
   ContainerOutput,
+  prefixLogLines,
   runContainerAgent,
 } from './container-runner.js';
 import { getRuntime } from './container-runtime.js';
@@ -711,11 +712,21 @@ export class PipelineRunner {
 
       let stdout = '';
       let stderr = '';
+      let cmdLogRemainder = '';
+      let cmdLogStderrRemainder = '';
 
       container.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
-        if (logStream) logStream.write(chunk);
+        if (logStream) {
+          const { prefixed, remainder } = prefixLogLines(
+            chunk,
+            stageConfig.name,
+            cmdLogRemainder,
+          );
+          cmdLogRemainder = remainder;
+          if (prefixed) logStream.write(prefixed);
+        }
 
         // Stream output to TUI
         if (process.env.ART_TUI_MODE) {
@@ -729,7 +740,15 @@ export class PipelineRunner {
       container.stderr.on('data', (data) => {
         const chunk = data.toString();
         stderr += chunk;
-        if (logStream) logStream.write(`[stderr] ${chunk}`);
+        if (logStream) {
+          const { prefixed, remainder } = prefixLogLines(
+            chunk,
+            `${stageConfig.name}:stderr`,
+            cmdLogStderrRemainder,
+          );
+          cmdLogStderrRemainder = remainder;
+          if (prefixed) logStream.write(prefixed);
+        }
       });
 
       const configTimeout = this.group.containerConfig?.timeout || 14400000; // 4 hour default for commands
@@ -744,6 +763,12 @@ export class PipelineRunner {
         clearTimeout(timeout);
 
         if (logStream) {
+          if (cmdLogRemainder)
+            logStream.write(`[${stageConfig.name}] ${cmdLogRemainder}\n`);
+          if (cmdLogStderrRemainder)
+            logStream.write(
+              `[${stageConfig.name}:stderr] ${cmdLogStderrRemainder}\n`,
+            );
           logStream.write(
             `\n=== Command Stage ${stageConfig.name} exited: code=${code} ===\n`,
           );
