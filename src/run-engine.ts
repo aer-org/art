@@ -19,7 +19,6 @@ import {
   loadPipelineConfig,
   PipelineRunner,
 } from './pipeline-runner.js';
-import { writeCurrentRun } from './run-manifest.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -48,12 +47,6 @@ export async function runPipeline(opts: {
   );
   setCredentialProxyPort(proxyPort);
 
-  // Write _current.json for orphan detection
-  writeCurrentRun(artDir, {
-    runId,
-    pid: process.pid,
-    startTime: new Date().toISOString(),
-  });
 
   // Graceful shutdown
   let shuttingDown = false;
@@ -152,9 +145,7 @@ export async function runPipeline(opts: {
     const isolatedStage = {
       ...stageConfig,
       transitions: stageConfig.command
-        ? [
-            { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
-          ]
+        ? [{ marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' }]
         : [
             { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
             { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },

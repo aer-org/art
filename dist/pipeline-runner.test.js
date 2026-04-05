@@ -92,6 +92,13 @@ function enqueueStageOutput(stageName, sequence) {
 }
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 vi.mock('./container-runner.js', () => ({
+    prefixLogLines: (chunk, stageName, remainder) => {
+        const text = remainder + chunk;
+        const lines = text.split('\n');
+        const newRemainder = lines.pop();
+        const prefixed = lines.map((l) => `[${stageName}] ${l}\n`).join('');
+        return { prefixed, remainder: newRemainder };
+    },
     runContainerAgent: vi.fn((group, _input, _onProcess, onOutput) => {
         const stageName = group.name.replace('pipeline-', '');
         const queues = stageOutputQueues.get(stageName) || [];
@@ -271,7 +278,7 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
         expect(loaded).toBeNull();
     });
 });
-// writeRunManifest/readRunManifest and writeCurrentRun/readCurrentRun/removeCurrentRun
+// writeRunManifest/readRunManifest
 // tests are in run-manifest.test.ts
 // ============================================================
 // Group B: PipelineRunner FSM (runContainerAgent mock)

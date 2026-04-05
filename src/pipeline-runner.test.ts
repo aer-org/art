@@ -389,7 +389,7 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
   });
 });
 
-// writeRunManifest/readRunManifest and writeCurrentRun/readCurrentRun/removeCurrentRun
+// writeRunManifest/readRunManifest
 // tests are in run-manifest.test.ts
 
 // ============================================================

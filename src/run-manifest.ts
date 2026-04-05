@@ -28,47 +28,10 @@ export interface RunManifest {
   outputLogFile?: string;
 }
 
-export interface CurrentRunInfo {
-  runId: string;
-  pid: number;
-  startTime: string;
-}
-
 // --- Helpers ---
 
 function runsDir(groupDir: string): string {
   return path.join(groupDir, 'runs');
-}
-
-// --- Current Run ---
-
-export function writeCurrentRun(groupDir: string, info: CurrentRunInfo): void {
-  const dir = runsDir(groupDir);
-  fs.mkdirSync(dir, { recursive: true });
-  const tmpPath = path.join(dir, '_current.json.tmp');
-  const filePath = path.join(dir, '_current.json');
-  fs.writeFileSync(tmpPath, JSON.stringify(info, null, 2));
-  fs.renameSync(tmpPath, filePath);
-}
-
-export function readCurrentRun(groupDir: string): CurrentRunInfo | null {
-  try {
-    const raw = fs.readFileSync(
-      path.join(runsDir(groupDir), '_current.json'),
-      'utf-8',
-    );
-    return JSON.parse(raw) as CurrentRunInfo;
-  } catch {
-    return null;
-  }
-}
-
-export function removeCurrentRun(groupDir: string): void {
-  try {
-    fs.unlinkSync(path.join(runsDir(groupDir), '_current.json'));
-  } catch {
-    /* file may not exist */
-  }
 }
 
 // --- Run Manifest ---
@@ -120,13 +83,3 @@ export function listRunManifests(groupDir: string): RunManifest[] {
     .filter((m): m is RunManifest => m !== null);
 }
 
-// --- PID ---
-
-export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}

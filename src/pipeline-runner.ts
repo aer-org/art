@@ -26,11 +26,8 @@ import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   generateRunId,
-  writeCurrentRun,
-  removeCurrentRun,
   writeRunManifest,
   type RunManifest,
-  type CurrentRunInfo,
 } from './run-manifest.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
 
@@ -943,12 +940,7 @@ ${markerLines.join('\n')}`;
       });
     }
 
-    // Write _current.json and initial manifest
-    writeCurrentRun(this.groupDir, {
-      runId: this.runId,
-      pid: process.pid,
-      startTime: this.manifest.startTime,
-    });
+    // Write initial manifest
     writeRunManifest(this.groupDir, this.manifest);
 
     const planContent = fs.readFileSync(planPath, 'utf-8');
@@ -1431,7 +1423,6 @@ ${markerLines.join('\n')}`;
     this.manifest.endTime = new Date().toISOString();
     this.manifest.status = lastResult;
     writeRunManifest(this.groupDir, this.manifest);
-    removeCurrentRun(this.groupDir);
 
     pipelineLogStream.write(
       `\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`,

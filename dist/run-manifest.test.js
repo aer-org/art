@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { generateRunId, writeCurrentRun, readCurrentRun, removeCurrentRun, writeRunManifest, readRunManifest, listRunManifests, isPidAlive, } from './run-manifest.js';
+import { generateRunId, writeRunManifest, readRunManifest, listRunManifests, } from './run-manifest.js';
 let tmpDir;
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-manifest-test-'));
@@ -19,39 +19,6 @@ describe('generateRunId', () => {
         const a = generateRunId();
         const b = generateRunId();
         expect(a).not.toBe(b);
-    });
-});
-describe('writeCurrentRun / readCurrentRun', () => {
-    it('roundtrips current run info', () => {
-        const info = {
-            runId: 'run-123-abcdef',
-            pid: 9999,
-            startTime: new Date().toISOString(),
-        };
-        writeCurrentRun(tmpDir, info);
-        const result = readCurrentRun(tmpDir);
-        expect(result).toEqual(info);
-    });
-});
-describe('readCurrentRun', () => {
-    it('returns null for nonexistent dir', () => {
-        const result = readCurrentRun(path.join(tmpDir, 'does-not-exist'));
-        expect(result).toBeNull();
-    });
-});
-describe('removeCurrentRun', () => {
-    it('removes file so subsequent read returns null', () => {
-        const info = {
-            runId: 'run-123-abcdef',
-            pid: 9999,
-            startTime: new Date().toISOString(),
-        };
-        writeCurrentRun(tmpDir, info);
-        removeCurrentRun(tmpDir);
-        expect(readCurrentRun(tmpDir)).toBeNull();
-    });
-    it('does not throw on nonexistent file', () => {
-        expect(() => removeCurrentRun(path.join(tmpDir, 'nope'))).not.toThrow();
     });
 });
 describe('writeRunManifest / readRunManifest', () => {
@@ -111,14 +78,6 @@ describe('listRunManifests', () => {
     it('returns empty array for nonexistent dir', () => {
         const result = listRunManifests(path.join(tmpDir, 'nope'));
         expect(result).toEqual([]);
-    });
-});
-describe('isPidAlive', () => {
-    it('returns true for current process PID', () => {
-        expect(isPidAlive(process.pid)).toBe(true);
-    });
-    it('returns false for a very large non-existent PID', () => {
-        expect(isPidAlive(4_000_000)).toBe(false);
     });
 });
 //# sourceMappingURL=run-manifest.test.js.map

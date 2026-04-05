@@ -91,38 +91,7 @@ export async function run(
   process.env.ART_TUI_MODE = 'true';
   process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
 
-  // Check for existing run (_current.json)
-  const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } =
-    await import('../run-manifest.js');
-  const { cleanupRunContainers } = await import('../container-runtime.js');
-
-  const currentRun = readCurrentRun(artDir);
-  if (currentRun) {
-    if (isPidAlive(currentRun.pid)) {
-      const confirmed = await askConfirmation(
-        `A run is already in progress (${currentRun.runId}, PID ${currentRun.pid}).\nStop and start a new one? [Y/n] `,
-      );
-      if (!confirmed) {
-        console.log('Exiting.');
-        process.exit(0);
-      }
-      // Stop the existing run
-      try {
-        process.kill(currentRun.pid, 'SIGTERM');
-      } catch {
-        /* already dead */
-      }
-      cleanupRunContainers(currentRun.runId);
-      removeCurrentRun(artDir);
-    } else {
-      // PID is dead — orphan cleanup
-      console.log(
-        `Previous run exited abnormally (${currentRun.runId}, PID ${currentRun.pid}). Cleaning up...`,
-      );
-      cleanupRunContainers(currentRun.runId);
-      removeCurrentRun(artDir);
-    }
-  }
+  const { generateRunId } = await import('../run-manifest.js');
 
   // Generate run ID for this execution
   const runId = generateRunId();
@@ -202,7 +171,7 @@ export async function run(
   const { readRunManifest, writeRunManifest } =
     await import('../run-manifest.js');
 
-  // Register SIGINT/SIGTERM handlers to clean up _current.json
+  // Register SIGINT/SIGTERM handlers to mark manifest as cancelled
   const cleanupOnSignal = () => {
     try {
       const manifest = readRunManifest(artDir, runId);
@@ -214,7 +183,6 @@ export async function run(
     } catch {
       /* best effort */
     }
-    removeCurrentRun(artDir);
   };
   process.on('SIGINT', cleanupOnSignal);
   process.on('SIGTERM', cleanupOnSignal);

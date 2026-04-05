@@ -17,7 +17,7 @@ import { getImageForStage } from './image-registry.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { generateRunId, writeCurrentRun, removeCurrentRun, writeRunManifest, } from './run-manifest.js';
+import { generateRunId, writeRunManifest, } from './run-manifest.js';
 // --- Exclusive stage lock ---
 // Stages with the same `exclusive` key share a mutex.
 // Only one container runs at a time per key (e.g. "vivado" for bitstream + board_upload).
@@ -668,12 +668,7 @@ ${markerLines.join('\n')}`;
                 env: gitEnv,
             });
         }
-        // Write _current.json and initial manifest
-        writeCurrentRun(this.groupDir, {
-            runId: this.runId,
-            pid: process.pid,
-            startTime: this.manifest.startTime,
-        });
+        // Write initial manifest
         writeRunManifest(this.groupDir, this.manifest);
         const planContent = fs.readFileSync(planPath, 'utf-8');
         logger.info({
@@ -1050,7 +1045,6 @@ ${markerLines.join('\n')}`;
         this.manifest.endTime = new Date().toISOString();
         this.manifest.status = lastResult;
         writeRunManifest(this.groupDir, this.manifest);
-        removeCurrentRun(this.groupDir);
         pipelineLogStream.write(`\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`);
         pipelineLogStream.end();
         await this.notifyBanner(lastResult === 'success'
