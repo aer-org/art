@@ -477,6 +477,29 @@ export class PipelineRunner {
             let stderr = '';
             let cmdLogRemainder = '';
             let cmdLogStderrRemainder = '';
+            // Streaming marker detection: resolve pendingResult as soon as a marker
+            // is found in stdout, without waiting for process exit.
+            let markerResolved = false;
+            const completeTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_COMPLETE');
+            const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
+            const resolveMarker = (isSuccess, payload) => {
+                if (markerResolved || !handle.pendingResult)
+                    return;
+                markerResolved = true;
+                const transition = isSuccess ? completeTransition : errorTransition;
+                handle.pendingResult.resolve({
+                    matched: transition ?? {
+                        marker: isSuccess ? 'STAGE_COMPLETE' : 'STAGE_ERROR',
+                        next: null,
+                    },
+                    payload,
+                });
+                handle.pendingResult = null;
+                // Kill process on error marker — no need to wait for cleanup
+                if (!isSuccess) {
+                    container.kill('SIGTERM');
+                }
+            };
             container.stdout.on('data', (data) => {
                 const chunk = data.toString();
                 stdout += chunk;
@@ -491,6 +514,17 @@ export class PipelineRunner {
                     const trimmed = chunk.trim();
                     if (trimmed) {
                         this.notify(`[${stageConfig.name}] ${trimmed}`).catch(() => { });
+                    }
+                }
+                // Streaming marker detection
+                if (!markerResolved) {
+                    if (stageConfig.successMarker &&
+                        stdout.includes(stageConfig.successMarker)) {
+                        resolveMarker(true, null);
+                    }
+                    else if (stageConfig.errorMarker &&
+                        stdout.includes(stageConfig.errorMarker)) {
+                        resolveMarker(false, `errorMarker detected: ${stageConfig.errorMarker}`);
                     }
                 }
             });
@@ -520,18 +554,17 @@ export class PipelineRunner {
                         logStream.write(`[${stageConfig.name}:stderr] ${cmdLogStderrRemainder}\n`);
                     logStream.write(`\n=== Command Stage ${stageConfig.name} exited: code=${code} ===\n`);
                 }
+                // If marker already resolved during streaming, just finalize the container promise
+                if (markerResolved) {
+                    resolve({
+                        status: code === 0 ? 'success' : 'error',
+                        result: stdout,
+                        error: code !== 0 ? `Command exited with code ${code}` : undefined,
+                    });
+                    return;
+                }
                 if (timedOut) {
-                    if (handle.pendingResult) {
-                        const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
-                        handle.pendingResult.resolve({
-                            matched: errorTransition ?? {
-                                marker: 'STAGE_ERROR',
-                                next: null,
-                            },
-                            payload: `Command timed out after ${configTimeout}ms`,
-                        });
-                        handle.pendingResult = null;
-                    }
+                    resolveMarker(false, `Command timed out after ${configTimeout}ms`);
                     resolve({
                         status: 'error',
                         result: null,
@@ -539,41 +572,15 @@ export class PipelineRunner {
                     });
                     return;
                 }
-                // Determine success: successMarker match or exit code
+                // Fallback: no streaming marker matched, use successMarker check or exit code
                 const isSuccess = stageConfig.successMarker
                     ? stdout.includes(stageConfig.successMarker)
                     : code === 0;
-                if (handle.pendingResult) {
-                    const completeTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_COMPLETE');
-                    const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
-                    if (isSuccess && completeTransition) {
-                        handle.pendingResult.resolve({
-                            matched: completeTransition,
-                            payload: null,
-                        });
-                    }
-                    else if (!isSuccess && errorTransition) {
-                        handle.pendingResult.resolve({
-                            matched: errorTransition,
-                            payload: code !== 0
-                                ? `Exit code ${code}: ${stderr.slice(-500)}`
-                                : `successMarker not found in output`,
-                        });
-                    }
-                    else {
-                        // Fallback: resolve with synthetic marker
-                        handle.pendingResult.resolve({
-                            matched: {
-                                marker: isSuccess ? 'STAGE_COMPLETE' : 'STAGE_ERROR',
-                                next: null,
-                            },
-                            payload: isSuccess
-                                ? null
-                                : `Exit code ${code}: ${stderr.slice(-500)}`,
-                        });
-                    }
-                    handle.pendingResult = null;
-                }
+                resolveMarker(isSuccess, isSuccess
+                    ? null
+                    : code !== 0
+                        ? `Exit code ${code}: ${stderr.slice(-500)}`
+                        : `successMarker not found in output`);
                 resolve({
                     status: code === 0 ? 'success' : 'error',
                     result: stdout,
@@ -582,17 +589,7 @@ export class PipelineRunner {
             });
             container.on('error', (err) => {
                 clearTimeout(timeout);
-                if (handle.pendingResult) {
-                    const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
-                    handle.pendingResult.resolve({
-                        matched: errorTransition ?? {
-                            marker: 'STAGE_ERROR',
-                            next: null,
-                        },
-                        payload: err.message,
-                    });
-                    handle.pendingResult = null;
-                }
+                resolveMarker(false, err.message);
                 resolve({
                     status: 'error',
                     result: null,

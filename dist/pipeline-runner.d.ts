@@ -12,6 +12,7 @@ export interface PipelineStage {
     image?: string;
     command?: string;
     successMarker?: string;
+    errorMarker?: string;
     chat?: boolean;
     mounts: Record<string, 'ro' | 'rw' | null | undefined>;
     devices?: string[];

@@ -31,6 +31,7 @@ interface PipelineStage {
   prompt: string;        // Agent instructions (must be "" for command stages)
   command?: string;      // Shell command — presence makes this a command stage
   successMarker?: string; // Command mode only: stdout substring that means success → STAGE_COMPLETE
+  errorMarker?: string;   // Command mode only: stdout substring that means failure → STAGE_ERROR (resolves immediately, kills process)
   chat?: boolean;        // Interactive chatting stage (agent converses with user via stdin)
   image?: string;        // Docker image (required for command stages, optional for agent)
   mounts: Record<string, "ro" | "rw" | null>;
@@ -66,8 +67,17 @@ interface PipelineConfig {
 
 #### Command stage success detection
 
-1. If `successMarker` is set: stdout contains the string → `STAGE_COMPLETE`, otherwise → `STAGE_ERROR`
-2. If `successMarker` is not set: exit code 0 → `STAGE_COMPLETE`, non-zero → `STAGE_ERROR`
+Markers are detected by **streaming** stdout line-by-line. The first marker found wins — no need to wait for process exit.
+
+1. `successMarker` found in stdout → immediately `STAGE_COMPLETE`
+2. `errorMarker` found in stdout → immediately `STAGE_ERROR` (process is killed)
+3. Neither found, process exits → exit code 0 = `STAGE_COMPLETE`, non-zero = `STAGE_ERROR`
+
+Both fields are optional:
+- Neither set → exit code only
+- `successMarker` only → match = success, no match = exit code fallback
+- `errorMarker` only → match = immediate failure, no match = exit code fallback
+- Both set → first match wins
 
 ---
 
