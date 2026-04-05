@@ -522,11 +522,11 @@ export class PipelineRunner {
                 }
                 if (timedOut) {
                     if (handle.pendingResult) {
+                        const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
                         handle.pendingResult.resolve({
-                            matched: {
-                                marker: '_COMMAND_TIMEOUT',
+                            matched: errorTransition ?? {
+                                marker: 'STAGE_ERROR',
                                 next: null,
-                                prompt: 'Command timed out',
                             },
                             payload: `Command timed out after ${configTimeout}ms`,
                         });
@@ -539,31 +539,37 @@ export class PipelineRunner {
                     });
                     return;
                 }
-                // Parse markers from stdout
-                const markerResult = parseStageMarkers([stdout], stageConfig.transitions);
+                // Determine success: successMarker match or exit code
+                const isSuccess = stageConfig.successMarker
+                    ? stdout.includes(stageConfig.successMarker)
+                    : code === 0;
                 if (handle.pendingResult) {
-                    if (markerResult.matched) {
-                        handle.pendingResult.resolve(markerResult);
-                    }
-                    else if (code !== 0) {
+                    const completeTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_COMPLETE');
+                    const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
+                    if (isSuccess && completeTransition) {
                         handle.pendingResult.resolve({
-                            matched: {
-                                marker: '_COMMAND_FAILED',
-                                next: null,
-                                prompt: 'Command failed',
-                            },
-                            payload: `Exit code ${code}: ${stderr.slice(-500)}`,
+                            matched: completeTransition,
+                            payload: null,
+                        });
+                    }
+                    else if (!isSuccess && errorTransition) {
+                        handle.pendingResult.resolve({
+                            matched: errorTransition,
+                            payload: code !== 0
+                                ? `Exit code ${code}: ${stderr.slice(-500)}`
+                                : `successMarker not found in output`,
                         });
                     }
                     else {
-                        // Exited 0 but no markers found — treat as success
+                        // Fallback: resolve with synthetic marker
                         handle.pendingResult.resolve({
                             matched: {
-                                marker: '_COMMAND_SUCCESS',
+                                marker: isSuccess ? 'STAGE_COMPLETE' : 'STAGE_ERROR',
                                 next: null,
-                                prompt: 'Command completed without markers',
                             },
-                            payload: null,
+                            payload: isSuccess
+                                ? null
+                                : `Exit code ${code}: ${stderr.slice(-500)}`,
                         });
                     }
                     handle.pendingResult = null;
@@ -577,11 +583,11 @@ export class PipelineRunner {
             container.on('error', (err) => {
                 clearTimeout(timeout);
                 if (handle.pendingResult) {
+                    const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
                     handle.pendingResult.resolve({
-                        matched: {
-                            marker: '_COMMAND_SPAWN_ERROR',
+                        matched: errorTransition ?? {
+                            marker: 'STAGE_ERROR',
                             next: null,
-                            prompt: 'Container spawn error',
                         },
                         payload: err.message,
                     });

@@ -82,4 +82,3 @@ export function listRunManifests(groupDir: string): RunManifest[] {
     })
     .filter((m): m is RunManifest => m !== null);
 }
-

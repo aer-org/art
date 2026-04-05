@@ -96,17 +96,15 @@ export async function runPipeline(opts) {
         const isolatedStage = {
             ...stageConfig,
             transitions: stageConfig.command
-                ? [{ marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' }]
+                ? [
+                    { marker: 'STAGE_COMPLETE', next: null },
+                    { marker: 'STAGE_ERROR', next: null },
+                ]
                 : [
                     { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
                     { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
                 ],
         };
-        // For command stages, append success marker if not present
-        if (isolatedStage.command &&
-            !isolatedStage.command.includes('[STAGE_COMPLETE]')) {
-            isolatedStage.command += " && echo '[STAGE_COMPLETE]'";
-        }
         pipelineConfig = { stages: [isolatedStage] };
         console.log(`\n🔧 Running single stage: ${stage}`);
     }

@@ -545,7 +545,7 @@ describe('Command mode stage', () => {
         const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
         fs.rmSync(groupDir, { recursive: true, force: true });
     });
-    it('command mode stage spawns shell and parses markers from stdout', async () => {
+    it('command mode stage uses exit code for success when no successMarker', async () => {
         const { spawn } = await import('child_process');
         const config = {
             stages: [
@@ -555,24 +555,52 @@ describe('Command mode stage', () => {
                     command: 'make build',
                     mounts: {},
                     transitions: [
-                        { marker: 'BUILD_OK', next: null },
-                        { marker: 'BUILD_FAIL', retry: true },
+                        { marker: 'STAGE_COMPLETE', next: null },
+                        { marker: 'STAGE_ERROR', next: null },
                     ],
                 },
             ],
         };
         const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-        // Create IPC dirs for command stage
         const ipcDir = path.join(TEST_IPC_BASE, `${group.folder}__pipeline_build`, 'input');
         fs.mkdirSync(ipcDir, { recursive: true });
         const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
-        // Start run in background, then simulate container output
         const runPromise = runner.run();
-        // Give the runner time to spawn the process
         await new Promise((r) => setTimeout(r, 50));
-        // Simulate stdout with marker
-        fakeProc.stdout.push('Compiling... [BUILD_OK]\n');
-        fakeProc.stdout.push(null); // end stream
+        // Exit 0 without successMarker → STAGE_COMPLETE
+        fakeProc.stdout.push('Compiling... done\n');
+        fakeProc.stdout.push(null);
+        fakeProc.emit('close', 0);
+        const result = await runPromise;
+        expect(result).toBe('success');
+        expect(spawn).toHaveBeenCalled();
+    }, 15000);
+    it('command mode stage uses successMarker to determine success', async () => {
+        const { spawn } = await import('child_process');
+        const config = {
+            stages: [
+                {
+                    name: 'test',
+                    prompt: 'Run tests',
+                    command: 'make test',
+                    successMarker: '[TEST] passed',
+                    mounts: {},
+                    transitions: [
+                        { marker: 'STAGE_COMPLETE', next: null },
+                        { marker: 'STAGE_ERROR', next: null },
+                    ],
+                },
+            ],
+        };
+        const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+        const ipcDir = path.join(TEST_IPC_BASE, `${group.folder}__pipeline_test`, 'input');
+        fs.mkdirSync(ipcDir, { recursive: true });
+        const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
+        const runPromise = runner.run();
+        await new Promise((r) => setTimeout(r, 50));
+        // successMarker found in stdout → STAGE_COMPLETE
+        fakeProc.stdout.push('Running tests... [TEST] passed\n');
+        fakeProc.stdout.push(null);
         fakeProc.emit('close', 0);
         const result = await runPromise;
         expect(result).toBe('success');

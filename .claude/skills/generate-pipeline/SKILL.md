@@ -30,6 +30,7 @@ interface PipelineStage {
   name: string;          // Unique stage identifier
   prompt: string;        // Agent instructions (must be "" for command stages)
   command?: string;      // Shell command — presence makes this a command stage
+  successMarker?: string; // Command mode only: stdout substring that means success → STAGE_COMPLETE
   chat?: boolean;        // Interactive chatting stage (agent converses with user via stdin)
   image?: string;        // Docker image (required for command stages, optional for agent)
   mounts: Record<string, "ro" | "rw" | null>;
@@ -59,7 +60,14 @@ interface PipelineConfig {
 | `command` | Absent or undefined | Shell string (`sh -c`) |
 | `image` | Optional (registry key or omit for default) | **Required** (Docker image name) |
 | Execution | Claude agent with tools | `sh -c <command>`, no agent |
-| Marker emission | Agent prints `[MARKER]` in response | Command must `echo '[MARKER]'` |
+| Marker emission | Agent prints `[MARKER]` in response | Automatic: `STAGE_COMPLETE` / `STAGE_ERROR` based on `successMarker` or exit code |
+| Transitions | N transitions with custom markers | Fixed: `STAGE_COMPLETE` + `STAGE_ERROR` only |
+| Retry | Supported (`retry: true`) | Not supported — fails immediately |
+
+#### Command stage success detection
+
+1. If `successMarker` is set: stdout contains the string → `STAGE_COMPLETE`, otherwise → `STAGE_ERROR`
+2. If `successMarker` is not set: exit code 0 → `STAGE_COMPLETE`, non-zero → `STAGE_ERROR`
 
 ---
 
@@ -177,8 +185,8 @@ git-start → (work stages) → git-save → (more stages)
 ```
 Wrap iteration loops with git agent stages. Use `project:ro` + `project:.git:rw`.
 
-### Error retry
-Add to any stage:
+### Error retry (agent stages only)
+Add to any **agent** stage (not command stages — they fail immediately):
 ```json
 { "marker": "STAGE_ERROR", "retry": true, "prompt": "Recoverable error — retry" }
 ```
@@ -188,12 +196,15 @@ Add to any stage:
 {
   "name": "train",
   "prompt": "",
-  "command": "cd /workspace/project && python train.py > /workspace/results/log.txt 2>&1; echo '[STAGE_COMPLETE]'",
+  "command": "cd /workspace/project && python train.py > /workspace/results/log.txt 2>&1",
   "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04",
   "gpu": true,
   "runAsRoot": true,
   "mounts": { "project": "ro", "results": "rw", "cache": "rw" },
-  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "review" },
+    { "marker": "STAGE_ERROR", "next": null }
+  ]
 }
 ```
 
@@ -202,11 +213,14 @@ Add to any stage:
 {
   "name": "fpga-synth",
   "prompt": "",
-  "command": "source /tools/Xilinx/Vivado/2023.2/settings64.sh && cd /workspace/project && make fpga 2>&1; echo '[STAGE_COMPLETE]'",
+  "command": "source /tools/Xilinx/Vivado/2023.2/settings64.sh && cd /workspace/project && make fpga 2>&1",
   "image": "cva6-vivado",
   "privileged": true,
   "mounts": { "project": "ro", "build": "rw" },
-  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "review" },
+    { "marker": "STAGE_ERROR", "next": null }
+  ]
 }
 ```
 
@@ -296,12 +310,12 @@ Rules:
   "name": "test-router",
   "fan_in": "dynamic",
   "prompt": "",
-  "command": "cd /workspace/project && make test-router 2>&1; echo '[STAGE_COMPLETE]'",
+  "command": "cd /workspace/project && make test-router 2>&1",
   "image": "sim-runner:latest",
   "mounts": { "project": "ro", "results": "rw" },
   "transitions": [
-    { "marker": "STAGE_COMPLETE", "next": "test-system", "prompt": "Router tests passed" },
-    { "marker": "STAGE_ERROR", "next": "review-router", "prompt": "Test failed" }
+    { "marker": "STAGE_COMPLETE", "next": "test-system" },
+    { "marker": "STAGE_ERROR", "next": "review-router" }
   ]
 }
 ```
@@ -382,7 +396,8 @@ Before writing the JSON, verify ALL of the following:
 - [ ] Every stage has a unique `name`
 - [ ] Every transition `next` references an existing stage name or is `null`
 - [ ] Every stage has at least one transition
-- [ ] Command stages have `prompt: ""` and an `image` field
+- [ ] Command stages have `prompt: ""`, an `image` field, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions (no retry)
+- [ ] Command stages use `successMarker` if success depends on stdout content (otherwise exit code is used)
 - [ ] Agent stages have a non-empty `prompt` and no `command` field
 - [ ] At least one path through the graph reaches `next: null`
 - [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`)
