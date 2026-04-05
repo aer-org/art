@@ -686,8 +686,7 @@ export async function runContainerAgent(
       const duration = Date.now() - startTime;
       if (logStream) {
         // Flush any remaining partial lines
-        if (logRemainder)
-          logStream.write(`[${group.name}] ${logRemainder}\n`);
+        if (logRemainder) logStream.write(`[${group.name}] ${logRemainder}\n`);
         if (logStderrRemainder)
           logStream.write(`[${group.name}:stderr] ${logStderrRemainder}\n`);
         logStream.write(

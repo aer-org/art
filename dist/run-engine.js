@@ -102,10 +102,14 @@ export async function runPipeline(opts) {
         // Replace transitions so the stage terminates on completion
         const isolatedStage = {
             ...stageConfig,
-            transitions: [
-                { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
-                { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
-            ],
+            transitions: stageConfig.command
+                ? [
+                    { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
+                ]
+                : [
+                    { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
+                    { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
+                ],
         };
         // For command stages, append success marker if not present
         if (isolatedStage.command &&

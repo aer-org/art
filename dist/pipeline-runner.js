@@ -524,11 +524,11 @@ export class PipelineRunner {
                     if (handle.pendingResult) {
                         handle.pendingResult.resolve({
                             matched: {
-                                marker: '_CONTAINER_TIMEOUT',
-                                retry: true,
+                                marker: '_COMMAND_TIMEOUT',
+                                next: null,
                                 prompt: 'Command timed out',
                             },
-                            payload: 'Command timed out',
+                            payload: `Command timed out after ${configTimeout}ms`,
                         });
                         handle.pendingResult = null;
                     }
@@ -549,16 +549,20 @@ export class PipelineRunner {
                         handle.pendingResult.resolve({
                             matched: {
                                 marker: '_COMMAND_FAILED',
-                                retry: true,
+                                next: null,
                                 prompt: 'Command failed',
                             },
                             payload: `Exit code ${code}: ${stderr.slice(-500)}`,
                         });
                     }
                     else {
-                        // Exited 0 but no markers found
+                        // Exited 0 but no markers found — treat as success
                         handle.pendingResult.resolve({
-                            matched: null,
+                            matched: {
+                                marker: '_COMMAND_SUCCESS',
+                                next: null,
+                                prompt: 'Command completed without markers',
+                            },
                             payload: null,
                         });
                     }
@@ -575,8 +579,8 @@ export class PipelineRunner {
                 if (handle.pendingResult) {
                     handle.pendingResult.resolve({
                         matched: {
-                            marker: '_CONTAINER_ERROR',
-                            retry: true,
+                            marker: '_COMMAND_SPAWN_ERROR',
+                            next: null,
                             prompt: 'Container spawn error',
                         },
                         payload: err.message,

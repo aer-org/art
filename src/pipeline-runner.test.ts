@@ -116,6 +116,13 @@ function enqueueStageOutput(
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 vi.mock('./container-runner.js', () => ({
+  prefixLogLines: (chunk: string, stageName: string, remainder: string) => {
+    const text = remainder + chunk;
+    const lines = text.split('\n');
+    const newRemainder = lines.pop()!;
+    const prefixed = lines.map((l: string) => `[${stageName}] ${l}\n`).join('');
+    return { prefixed, remainder: newRemainder };
+  },
   runContainerAgent: vi.fn(
     (
       group: { name: string },
