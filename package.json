@@ -25,7 +25,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.82.0",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
     "yaml": "^2.8.2",
