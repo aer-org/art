@@ -5,9 +5,11 @@
       "prompt": "",
       "command": "echo '[BUILD_OK]'",
       "image": "node:22-slim",
+      "successMarker": "BUILD_OK",
       "mounts": {},
       "transitions": [
-        { "marker": "BUILD_OK", "next": ["test-unit", "test-e2e"] }
+        { "marker": "STAGE_COMPLETE", "next": ["test-unit", "test-e2e"] },
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     },
     {
@@ -15,9 +17,11 @@
       "prompt": "",
       "command": "echo '[TEST_DONE]'",
       "image": "node:22-slim",
+      "successMarker": "TEST_DONE",
       "mounts": {},
       "transitions": [
-        { "marker": "TEST_DONE", "next": "deploy" }
+        { "marker": "STAGE_COMPLETE", "next": "deploy" },
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     },
     {
@@ -25,9 +29,11 @@
       "prompt": "",
       "command": "echo '[TEST_DONE]'",
       "image": "node:22-slim",
+      "successMarker": "TEST_DONE",
       "mounts": {},
       "transitions": [
-        { "marker": "TEST_DONE", "next": "deploy" }
+        { "marker": "STAGE_COMPLETE", "next": "deploy" },
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     },
     {
@@ -35,9 +41,11 @@
       "prompt": "",
       "command": "echo '[DEPLOYED]'",
       "image": "node:22-slim",
+      "successMarker": "DEPLOYED",
       "mounts": {},
       "transitions": [
-        { "marker": "DEPLOYED", "next": null }
+        { "marker": "STAGE_COMPLETE", "next": null },
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     }
   ]

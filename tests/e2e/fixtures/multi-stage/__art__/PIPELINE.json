@@ -5,9 +5,11 @@
       "prompt": "",
       "command": "echo '[A_DONE]'",
       "image": "node:22-slim",
+      "successMarker": "A_DONE",
       "mounts": {},
       "transitions": [
-        { "marker": "A_DONE", "next": "stage-b" }
+        { "marker": "STAGE_COMPLETE", "next": "stage-b" },
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     },
     {
@@ -15,9 +17,11 @@
       "prompt": "",
       "command": "echo '[B_DONE]'",
       "image": "node:22-slim",
+      "successMarker": "B_DONE",
       "mounts": {},
       "transitions": [
-        { "marker": "B_DONE", "next": "stage-c" }
+        { "marker": "STAGE_COMPLETE", "next": "stage-c" },
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     },
     {
@@ -25,9 +29,11 @@
       "prompt": "",
       "command": "echo '[COMPLETE]'",
       "image": "node:22-slim",
+      "successMarker": "COMPLETE",
       "mounts": {},
       "transitions": [
-        { "marker": "COMPLETE", "next": null }
+        { "marker": "STAGE_COMPLETE", "next": null },
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     }
   ]
