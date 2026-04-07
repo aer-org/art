@@ -4,6 +4,24 @@
  */
 import { ChildProcess, exec, execSync, spawn } from 'child_process';
 import fs from 'fs';
+
+/**
+ * Prefix each line in a chunk with `[stageName] `.
+ * Handles partial lines: returns { prefixed, remainder }.
+ * Caller should carry `remainder` across chunks and flush it on stream end.
+ */
+export function prefixLogLines(
+  chunk: string,
+  stageName: string,
+  remainder: string,
+): { prefixed: string; remainder: string } {
+  const text = remainder + chunk;
+  const lines = text.split('\n');
+  // Last element is either '' (chunk ended with \n) or a partial line
+  const newRemainder = lines.pop()!;
+  const prefixed = lines.map((l) => `[${stageName}] ${l}\n`).join('');
+  return { prefixed, remainder: newRemainder };
+}
 import path from 'path';
 
 import {
@@ -518,10 +536,20 @@ export async function runContainerAgent(
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
+    let logRemainder = '';
+    let logStderrRemainder = '';
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
-      if (logStream) logStream.write(chunk);
+      if (logStream) {
+        const { prefixed, remainder } = prefixLogLines(
+          chunk,
+          group.name,
+          logRemainder,
+        );
+        logRemainder = remainder;
+        if (prefixed) logStream.write(prefixed);
+      }
 
       // Always accumulate for logging
       if (!stdoutTruncated) {
@@ -574,7 +602,15 @@ export async function runContainerAgent(
 
     container.stderr.on('data', (data) => {
       const chunk = data.toString();
-      if (logStream) logStream.write(`[stderr] ${chunk}`);
+      if (logStream) {
+        const { prefixed, remainder } = prefixLogLines(
+          chunk,
+          `${group.name}:stderr`,
+          logStderrRemainder,
+        );
+        logStderrRemainder = remainder;
+        if (prefixed) logStream.write(prefixed);
+      }
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
         if (line) logger.debug({ container: group.folder }, line);
@@ -649,6 +685,10 @@ export async function runContainerAgent(
       cleanupContainer(containerName);
       const duration = Date.now() - startTime;
       if (logStream) {
+        // Flush any remaining partial lines
+        if (logRemainder) logStream.write(`[${group.name}] ${logRemainder}\n`);
+        if (logStderrRemainder)
+          logStream.write(`[${group.name}:stderr] ${logStderrRemainder}\n`);
         logStream.write(
           `\n=== Stage ${group.name} exited: code=${code} duration=${duration}ms ===\n`,
         );

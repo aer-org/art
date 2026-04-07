@@ -116,6 +116,13 @@ function enqueueStageOutput(
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 vi.mock('./container-runner.js', () => ({
+  prefixLogLines: (chunk: string, stageName: string, remainder: string) => {
+    const text = remainder + chunk;
+    const lines = text.split('\n');
+    const newRemainder = lines.pop()!;
+    const prefixed = lines.map((l: string) => `[${stageName}] ${l}\n`).join('');
+    return { prefixed, remainder: newRemainder };
+  },
   runContainerAgent: vi.fn(
     (
       group: { name: string },
@@ -382,7 +389,7 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
   });
 });
 
-// writeRunManifest/readRunManifest and writeCurrentRun/readCurrentRun/removeCurrentRun
+// writeRunManifest/readRunManifest
 // tests are in run-manifest.test.ts
 
 // ============================================================
@@ -674,7 +681,7 @@ describe('PipelineRunner FSM', () => {
 
     // Second call should include error context in prompt
     const respawnPrompt = (implCalls[1][1] as { prompt: string }).prompt;
-    expect(respawnPrompt).toContain('비정상 종료');
+    expect(respawnPrompt).toContain('exited abnormally');
   }, 15000);
 
   it('does not pass sessionId when resumeSession is false', async () => {
@@ -807,7 +814,7 @@ describe('Command mode stage', () => {
     fs.rmSync(groupDir, { recursive: true, force: true });
   });
 
-  it('command mode stage spawns shell and parses markers from stdout', async () => {
+  it('command mode stage uses exit code for success when no successMarker', async () => {
     const { spawn } = await import('child_process');
     const config: PipelineConfig = {
       stages: [
@@ -817,8 +824,8 @@ describe('Command mode stage', () => {
           command: 'make build',
           mounts: {},
           transitions: [
-            { marker: 'BUILD_OK', next: null },
-            { marker: 'BUILD_FAIL', retry: true },
+            { marker: 'STAGE_COMPLETE', next: null },
+            { marker: 'STAGE_ERROR', next: null },
           ],
         },
       ],
@@ -826,7 +833,6 @@ describe('Command mode stage', () => {
 
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
 
-    // Create IPC dirs for command stage
     const ipcDir = path.join(
       TEST_IPC_BASE,
       `${group.folder}__pipeline_build`,
@@ -843,15 +849,61 @@ describe('Command mode stage', () => {
       groupDir,
     );
 
-    // Start run in background, then simulate container output
     const runPromise = runner.run();
-
-    // Give the runner time to spawn the process
     await new Promise((r) => setTimeout(r, 50));
 
-    // Simulate stdout with marker
-    fakeProc.stdout.push('Compiling... [BUILD_OK]\n');
-    fakeProc.stdout.push(null); // end stream
+    // Exit 0 without successMarker → STAGE_COMPLETE
+    fakeProc.stdout.push('Compiling... done\n');
+    fakeProc.stdout.push(null);
+    fakeProc.emit('close', 0);
+
+    const result = await runPromise;
+    expect(result).toBe('success');
+    expect(spawn).toHaveBeenCalled();
+  }, 15000);
+
+  it('command mode stage uses successMarker to determine success', async () => {
+    const { spawn } = await import('child_process');
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'test',
+          prompt: 'Run tests',
+          command: 'make test',
+          successMarker: '[TEST] passed',
+          mounts: {},
+          transitions: [
+            { marker: 'STAGE_COMPLETE', next: null },
+            { marker: 'STAGE_ERROR', next: null },
+          ],
+        },
+      ],
+    };
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+
+    const ipcDir = path.join(
+      TEST_IPC_BASE,
+      `${group.folder}__pipeline_test`,
+      'input',
+    );
+    fs.mkdirSync(ipcDir, { recursive: true });
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const runPromise = runner.run();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // successMarker found in stdout → STAGE_COMPLETE
+    fakeProc.stdout.push('Running tests... [TEST] passed\n');
+    fakeProc.stdout.push(null);
     fakeProc.emit('close', 0);
 
     const result = await runPromise;
@@ -904,5 +956,736 @@ describe('ExclusiveLock serialization', () => {
 
     await Promise.all([p1, p2]);
     expect(order).toEqual([1, 2]);
+  });
+});
+
+// ============================================================
+// Group D: Dynamic Transition & Conditional Fan-in
+// ============================================================
+
+describe('parseStageMarkers with dynamic payload', () => {
+  it('extracts comma-separated targets from dynamic marker payload', () => {
+    const transitions: PipelineTransition[] = [
+      {
+        marker: 'FIX',
+        next_dynamic: true,
+        next: ['edit-arbiter', 'edit-crossbar'],
+      },
+    ];
+    const result = parseStageMarkers(
+      ['[FIX: edit-arbiter,edit-crossbar]'],
+      transitions,
+    );
+    expect(result.matched!.marker).toBe('FIX');
+    expect(result.payload).toBe('edit-arbiter,edit-crossbar');
+  });
+
+  it('extracts single target from dynamic marker payload', () => {
+    const transitions: PipelineTransition[] = [
+      {
+        marker: 'FIX',
+        next_dynamic: true,
+        next: ['edit-arbiter', 'edit-crossbar'],
+      },
+    ];
+    const result = parseStageMarkers(['[FIX:edit-arbiter]'], transitions);
+    expect(result.matched!.marker).toBe('FIX');
+    expect(result.payload).toBe('edit-arbiter');
+  });
+});
+
+describe('loadPipelineConfig validation for dynamic features', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-pipeline-dyn-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects next_dynamic + retry on same transition', () => {
+    const config = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'FIX',
+              next_dynamic: true,
+              retry: true,
+              next: ['edit-a'],
+            },
+          ],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it('rejects next_dynamic with null next', () => {
+    const config = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          mounts: {},
+          transitions: [{ marker: 'FIX', next_dynamic: true, next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it('rejects invalid fan_in value', () => {
+    const config = {
+      stages: [
+        {
+          name: 'test',
+          prompt: 'Test',
+          mounts: {},
+          fan_in: 'invalid',
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it('accepts valid fan_in: "dynamic"', () => {
+    const config = {
+      stages: [
+        {
+          name: 'build',
+          prompt: 'Build',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'test' }],
+        },
+        {
+          name: 'test',
+          prompt: 'Test',
+          mounts: {},
+          fan_in: 'dynamic',
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stages[1].fan_in).toBe('dynamic');
+  });
+
+  it('accepts valid next_dynamic transition', () => {
+    const config = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'FIX',
+              next_dynamic: true,
+              next: ['edit-a', 'edit-b'],
+            },
+          ],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+        {
+          name: 'edit-b',
+          prompt: 'Edit B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stages[0].transitions[0].next_dynamic).toBe(true);
+  });
+});
+
+describe('Dynamic Transition FSM', () => {
+  let group: RegisteredGroup;
+
+  function setupStageIpc(stageNames: string[]) {
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
+    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
+
+    for (const stageName of stageNames) {
+      const ipcDir = path.join(
+        TEST_IPC_BASE,
+        `${group.folder}__pipeline_${stageName}`,
+        'input',
+      );
+      fs.mkdirSync(ipcDir, { recursive: true });
+    }
+  }
+
+  function cleanupStageIpc(stageNames: string[]) {
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.rmSync(groupDir, { recursive: true, force: true });
+    for (const stageName of stageNames) {
+      const ipcDir = path.join(
+        TEST_IPC_BASE,
+        `${group.folder}__pipeline_${stageName}`,
+      );
+      fs.rmSync(ipcDir, { recursive: true, force: true });
+    }
+  }
+
+  beforeEach(() => {
+    group = makeTestGroup();
+    stageOutputQueues.clear();
+    vi.clearAllMocks();
+  });
+
+  it('dynamic transition routes to agent-selected single target', async () => {
+    const stageNames = ['review', 'edit-a', 'edit-b'];
+    setupStageIpc(stageNames);
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review and pick target',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'FIX',
+              next_dynamic: true,
+              next: ['edit-a', 'edit-b'],
+            },
+          ],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+        {
+          name: 'edit-b',
+          prompt: 'Edit B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+
+    // review selects only edit-a
+    enqueueStageOutput('review', [{ result: '[FIX:edit-a]' }]);
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    // edit-b should NOT be called
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    // Verify edit-b was never executed (no output was dequeued)
+    expect(stageOutputQueues.get('edit-b')).toBeUndefined();
+
+    cleanupStageIpc(stageNames);
+  }, 15000);
+
+  it('dynamic transition routes to multiple targets (fan-out)', async () => {
+    const stageNames = ['review', 'edit-a', 'edit-b', 'merge'];
+    setupStageIpc(stageNames);
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'FIX',
+              next_dynamic: true,
+              next: ['edit-a', 'edit-b'],
+            },
+          ],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'edit-b',
+          prompt: 'Edit B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'merge',
+          prompt: 'Merge',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+
+    // review selects both edit-a and edit-b
+    enqueueStageOutput('review', [{ result: '[FIX:edit-a,edit-b]' }]);
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    enqueueStageOutput('edit-b', [{ result: '[DONE]' }]);
+    enqueueStageOutput('merge', [{ result: '[DONE]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    cleanupStageIpc(stageNames);
+  }, 15000);
+
+  it('dynamic transition errors on invalid target', async () => {
+    const stageNames = ['review', 'edit-a'];
+    setupStageIpc(stageNames);
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'FIX',
+              next_dynamic: true,
+              next: ['edit-a'],
+            },
+          ],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+
+    // review selects non-existent target
+    enqueueStageOutput('review', [{ result: '[FIX:nonexistent]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('error');
+
+    cleanupStageIpc(stageNames);
+  }, 15000);
+
+  it('dynamic transition falls back to static next when payload is empty', async () => {
+    const stageNames = ['review', 'edit-a', 'edit-b'];
+    setupStageIpc(stageNames);
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'FIX',
+              next_dynamic: true,
+              next: ['edit-a', 'edit-b'],
+            },
+          ],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+        {
+          name: 'edit-b',
+          prompt: 'Edit B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+
+    // Empty payload → fall back to all targets
+    enqueueStageOutput('review', [{ result: '[FIX]' }]);
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    enqueueStageOutput('edit-b', [{ result: '[DONE]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    cleanupStageIpc(stageNames);
+  }, 15000);
+});
+
+describe('Dynamic Fan-in FSM', () => {
+  let group: RegisteredGroup;
+
+  function setupStageIpc(stageNames: string[]) {
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
+    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
+
+    for (const stageName of stageNames) {
+      const ipcDir = path.join(
+        TEST_IPC_BASE,
+        `${group.folder}__pipeline_${stageName}`,
+        'input',
+      );
+      fs.mkdirSync(ipcDir, { recursive: true });
+    }
+  }
+
+  function cleanupStageIpc(stageNames: string[]) {
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.rmSync(groupDir, { recursive: true, force: true });
+    for (const stageName of stageNames) {
+      const ipcDir = path.join(
+        TEST_IPC_BASE,
+        `${group.folder}__pipeline_${stageName}`,
+      );
+      fs.rmSync(ipcDir, { recursive: true, force: true });
+    }
+  }
+
+  beforeEach(() => {
+    group = makeTestGroup();
+    stageOutputQueues.clear();
+    vi.clearAllMocks();
+  });
+
+  it('dynamic fan-in fires when only activated predecessor completes', async () => {
+    // Pipeline: plan → [edit-a, edit-b] → [test-a, test-b] → merge (fan_in: dynamic)
+    // review selects only edit-a path, merge should fire after test-a only
+    const stageNames = [
+      'plan',
+      'edit-a',
+      'edit-b',
+      'test-a',
+      'test-b',
+      'merge',
+      'review',
+    ];
+    setupStageIpc(stageNames);
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'plan',
+          prompt: 'Plan',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: ['edit-a', 'edit-b'] }],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'test-a' }],
+        },
+        {
+          name: 'edit-b',
+          prompt: 'Edit B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'test-b' }],
+        },
+        {
+          name: 'test-a',
+          prompt: 'Test A',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'test-b',
+          prompt: 'Test B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'merge',
+          prompt: 'Merge',
+          mounts: {},
+          fan_in: 'dynamic',
+          transitions: [
+            { marker: 'PASS', next: null },
+            { marker: 'FAIL', next: 'review' },
+          ],
+        },
+        {
+          name: 'review',
+          prompt: 'Review failure',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'FIX',
+              next_dynamic: true,
+              next: ['edit-a', 'edit-b'],
+            },
+          ],
+        },
+      ],
+    };
+
+    // First run: both paths
+    enqueueStageOutput('plan', [{ result: '[DONE]' }]);
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    enqueueStageOutput('edit-b', [{ result: '[DONE]' }]);
+    enqueueStageOutput('test-a', [{ result: '[DONE]' }]);
+    enqueueStageOutput('test-b', [{ result: '[DONE]' }]);
+    // merge fails, review selects only edit-a
+    enqueueStageOutput('merge', [{ result: '[FAIL]' }]);
+    enqueueStageOutput('review', [{ result: '[FIX:edit-a]' }]);
+    // Re-run: only edit-a path
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    enqueueStageOutput('test-a', [{ result: '[DONE]' }]);
+    // merge should fire (dynamic fan-in: only test-a was activated this round)
+    enqueueStageOutput('merge', [{ result: '[PASS]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    cleanupStageIpc(stageNames);
+  }, 30000);
+
+  it('dynamic fan-in waits when retry path could still activate predecessor', async () => {
+    // Pipeline:
+    //   plan → [edit-a, edit-b]
+    //   edit-a → test-a-unit
+    //   edit-b → test-b-unit
+    //   test-a-unit DONE → router    (success path)
+    //   test-a-unit FAIL → edit-a    (error retry path)
+    //   test-b-unit DONE → merge     (success path)
+    //   router DONE → merge          (fan_in: dynamic)
+    //
+    // Scenario: test-a-unit fails first, then test-b-unit succeeds.
+    // merge should NOT start yet because edit-a retry path could still activate router.
+    // After edit-a re-runs → test-a-unit succeeds → router succeeds → merge fires.
+    const stageNames = [
+      'plan',
+      'edit-a',
+      'edit-b',
+      'test-a-unit',
+      'test-b-unit',
+      'router',
+      'merge',
+    ];
+    setupStageIpc(stageNames);
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'plan',
+          prompt: 'Plan',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: ['edit-a', 'edit-b'] }],
+        },
+        {
+          name: 'edit-a',
+          prompt: 'Edit A',
+          mounts: {},
+          fan_in: 'dynamic',
+          transitions: [{ marker: 'DONE', next: 'test-a-unit' }],
+        },
+        {
+          name: 'edit-b',
+          prompt: 'Edit B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'test-b-unit' }],
+        },
+        {
+          name: 'test-a-unit',
+          prompt: 'Test A',
+          mounts: {},
+          transitions: [
+            { marker: 'DONE', next: 'router' },
+            { marker: 'FAIL', next: 'edit-a' },
+          ],
+        },
+        {
+          name: 'test-b-unit',
+          prompt: 'Test B',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'router',
+          prompt: 'Router',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: 'merge' }],
+        },
+        {
+          name: 'merge',
+          prompt: 'Merge',
+          mounts: {},
+          fan_in: 'dynamic',
+          transitions: [{ marker: 'PASS', next: null }],
+        },
+      ],
+    };
+
+    // First pass: plan succeeds
+    enqueueStageOutput('plan', [{ result: '[DONE]' }]);
+    // edit-a and edit-b both succeed
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    enqueueStageOutput('edit-b', [{ result: '[DONE]' }]);
+    // test-a-unit FAILS → error transition to edit-a
+    enqueueStageOutput('test-a-unit', [{ result: '[FAIL]' }]);
+    // test-b-unit succeeds → next: merge (but merge must wait for router path)
+    enqueueStageOutput('test-b-unit', [{ result: '[DONE]' }]);
+    // edit-a re-runs (from test-a-unit FAIL → edit-a)
+    enqueueStageOutput('edit-a', [{ result: '[DONE]' }]);
+    // test-a-unit succeeds on retry → next: router
+    enqueueStageOutput('test-a-unit', [{ result: '[DONE]' }]);
+    // router succeeds → next: merge
+    enqueueStageOutput('router', [{ result: '[DONE]' }]);
+    // NOW merge should fire (both test-b-unit and router completed)
+    enqueueStageOutput('merge', [{ result: '[PASS]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    cleanupStageIpc(stageNames);
+  }, 30000);
+});
+
+describe('savePipelineState with activations/completions', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-pipeline-ac-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('persists and restores activations/completions', () => {
+    const state: PipelineState = {
+      currentStage: 'test-router',
+      completedStages: ['edit-arbiter', 'test-arbiter'],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+      activations: { 'edit-arbiter': 2, 'test-arbiter': 2 },
+      completions: { 'edit-arbiter': 2, 'test-arbiter': 1 },
+    };
+    savePipelineState(tmpDir, state);
+    const loaded = loadPipelineState(tmpDir);
+    expect(loaded).toEqual(state);
+    expect(loaded!.activations).toEqual({
+      'edit-arbiter': 2,
+      'test-arbiter': 2,
+    });
+    expect(loaded!.completions).toEqual({
+      'edit-arbiter': 2,
+      'test-arbiter': 1,
+    });
+  });
+
+  it('loads state without activations/completions (backwards compat)', () => {
+    const state: PipelineState = {
+      currentStage: 'verify',
+      completedStages: ['implement'],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    };
+    savePipelineState(tmpDir, state);
+    const loaded = loadPipelineState(tmpDir);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.activations).toBeUndefined();
+    expect(loaded!.completions).toBeUndefined();
   });
 });

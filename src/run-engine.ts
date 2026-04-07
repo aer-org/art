@@ -19,7 +19,6 @@ import {
   loadPipelineConfig,
   PipelineRunner,
 } from './pipeline-runner.js';
-import { writeCurrentRun } from './run-manifest.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -29,8 +28,9 @@ export async function runPipeline(opts: {
   runId: string;
   artDir: string;
   stage?: string;
+  pipeline?: string;
 }): Promise<void> {
-  const { group, runId, artDir, stage } = opts;
+  const { group, runId, artDir, stage, pipeline } = opts;
 
   // Initialize container runtime
   await initRuntime();
@@ -46,13 +46,6 @@ export async function runPipeline(opts: {
     getProxyBindHost(),
   );
   setCredentialProxyPort(proxyPort);
-
-  // Write _current.json for orphan detection
-  writeCurrentRun(artDir, {
-    runId,
-    pid: process.pid,
-    startTime: new Date().toISOString(),
-  });
 
   // Graceful shutdown
   let shuttingDown = false;
@@ -100,7 +93,7 @@ export async function runPipeline(opts: {
         const agentGroupDir = path.join(parentGroupDir, agent.folder);
         const pipelineConfig = loadPipelineConfig(group.folder, agentGroupDir);
         if (!pipelineConfig) {
-          console.log(`⚠️ ${agent.name}: PIPELINE.json 없음`);
+          console.log(`⚠️ ${agent.name}: PIPELINE.json not found`);
           return 'error' as const;
         }
 
@@ -130,9 +123,9 @@ export async function runPipeline(opts: {
   }
 
   // Single pipeline mode
-  let pipelineConfig = loadPipelineConfig(group.folder);
+  let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
   if (!pipelineConfig) {
-    console.error('No PIPELINE.json found');
+    console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
     proxyServer.close();
     process.exit(1);
   }
@@ -150,20 +143,18 @@ export async function runPipeline(opts: {
     // Replace transitions so the stage terminates on completion
     const isolatedStage = {
       ...stageConfig,
-      transitions: [
-        { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
-        { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
-      ],
+      transitions: stageConfig.command
+        ? [
+            { marker: 'STAGE_COMPLETE', next: null },
+            { marker: 'STAGE_ERROR', next: null },
+          ]
+        : [
+            { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
+            { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
+          ],
     };
-    // For command stages, append success marker if not present
-    if (
-      isolatedStage.command &&
-      !isolatedStage.command.includes('[STAGE_COMPLETE]')
-    ) {
-      isolatedStage.command += " && echo '[STAGE_COMPLETE]'";
-    }
     pipelineConfig = { stages: [isolatedStage] };
-    console.log(`\n🔧 단일 스테이지 실행: ${stage}`);
+    console.log(`\n🔧 Running single stage: ${stage}`);
   }
 
   logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');

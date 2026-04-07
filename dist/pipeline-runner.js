@@ -8,15 +8,16 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import readline from 'readline';
 import { spawn, execSync } from 'child_process';
 import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
-import { buildContainerArgs, runContainerAgent, } from './container-runner.js';
+import { buildContainerArgs, prefixLogLines, runContainerAgent, } from './container-runner.js';
 import { getRuntime } from './container-runtime.js';
 import { getImageForStage } from './image-registry.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { generateRunId, writeCurrentRun, removeCurrentRun, writeRunManifest, } from './run-manifest.js';
+import { generateRunId, writeRunManifest, } from './run-manifest.js';
 // --- Exclusive stage lock ---
 // Stages with the same `exclusive` key share a mutex.
 // Only one container runs at a time per key (e.g. "vivado" for bitstream + board_upload).
@@ -82,6 +83,18 @@ export function parseStageMarkers(resultTexts, transitions) {
     }
     return { matched: null, payload: null };
 }
+function readUserInput(promptText) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+    });
+    return new Promise((resolve) => {
+        rl.question(promptText, (answer) => {
+            rl.close();
+            resolve(answer);
+        });
+    });
+}
 function escapeRegExp(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -130,7 +143,7 @@ export class PipelineRunner {
     runId;
     manifest;
     aborted = false;
-    currentHandle = null;
+    activeHandles = new Map();
     stageSessionIds = new Map();
     constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId) {
         this.group = group;
@@ -153,9 +166,8 @@ export class PipelineRunner {
     }
     async abort() {
         this.aborted = true;
-        if (this.currentHandle) {
-            await this.closeAndWait(this.currentHandle);
-        }
+        const handles = [...this.activeHandles.values()];
+        await Promise.all(handles.map((h) => this.closeAndWait(h)));
     }
     /** Send a visually prominent banner to TUI for stage transitions */
     async notifyBanner(text) {
@@ -343,8 +355,12 @@ export class PipelineRunner {
                 return;
             }
             handle.resultTexts.push(output.result);
-            // Stream agent output to TUI so user can see progress
-            if (process.env.ART_TUI_MODE) {
+            // Stream agent output to user
+            if (stageConfig.chat) {
+                // Chatting stage: show full output so user can read the agent's response
+                await this.notify(output.result);
+            }
+            else if (process.env.ART_TUI_MODE) {
                 const lines = output.result.split('\n');
                 const summary = lines.length > 3
                     ? lines.slice(0, 3).join('\n') +
@@ -459,11 +475,40 @@ export class PipelineRunner {
             this.onProcess(container, containerName);
             let stdout = '';
             let stderr = '';
+            let cmdLogRemainder = '';
+            let cmdLogStderrRemainder = '';
+            // Streaming marker detection: resolve pendingResult as soon as a marker
+            // is found in stdout, without waiting for process exit.
+            let markerResolved = false;
+            const completeTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_COMPLETE');
+            const errorTransition = stageConfig.transitions.find((t) => t.marker === 'STAGE_ERROR');
+            const resolveMarker = (isSuccess, payload) => {
+                if (markerResolved || !handle.pendingResult)
+                    return;
+                markerResolved = true;
+                const transition = isSuccess ? completeTransition : errorTransition;
+                handle.pendingResult.resolve({
+                    matched: transition ?? {
+                        marker: isSuccess ? 'STAGE_COMPLETE' : 'STAGE_ERROR',
+                        next: null,
+                    },
+                    payload,
+                });
+                handle.pendingResult = null;
+                // Kill process on error marker — no need to wait for cleanup
+                if (!isSuccess) {
+                    container.kill('SIGTERM');
+                }
+            };
             container.stdout.on('data', (data) => {
                 const chunk = data.toString();
                 stdout += chunk;
-                if (logStream)
-                    logStream.write(chunk);
+                if (logStream) {
+                    const { prefixed, remainder } = prefixLogLines(chunk, stageConfig.name, cmdLogRemainder);
+                    cmdLogRemainder = remainder;
+                    if (prefixed)
+                        logStream.write(prefixed);
+                }
                 // Stream output to TUI
                 if (process.env.ART_TUI_MODE) {
                     const trimmed = chunk.trim();
@@ -471,12 +516,27 @@ export class PipelineRunner {
                         this.notify(`[${stageConfig.name}] ${trimmed}`).catch(() => { });
                     }
                 }
+                // Streaming marker detection
+                if (!markerResolved) {
+                    if (stageConfig.successMarker &&
+                        stdout.includes(stageConfig.successMarker)) {
+                        resolveMarker(true, null);
+                    }
+                    else if (stageConfig.errorMarker &&
+                        stdout.includes(stageConfig.errorMarker)) {
+                        resolveMarker(false, `errorMarker detected: ${stageConfig.errorMarker}`);
+                    }
+                }
             });
             container.stderr.on('data', (data) => {
                 const chunk = data.toString();
                 stderr += chunk;
-                if (logStream)
-                    logStream.write(`[stderr] ${chunk}`);
+                if (logStream) {
+                    const { prefixed, remainder } = prefixLogLines(chunk, `${stageConfig.name}:stderr`, cmdLogStderrRemainder);
+                    cmdLogStderrRemainder = remainder;
+                    if (prefixed)
+                        logStream.write(prefixed);
+                }
             });
             const configTimeout = this.group.containerConfig?.timeout || 14400000; // 4 hour default for commands
             let timedOut = false;
@@ -488,20 +548,23 @@ export class PipelineRunner {
             container.on('close', (code) => {
                 clearTimeout(timeout);
                 if (logStream) {
+                    if (cmdLogRemainder)
+                        logStream.write(`[${stageConfig.name}] ${cmdLogRemainder}\n`);
+                    if (cmdLogStderrRemainder)
+                        logStream.write(`[${stageConfig.name}:stderr] ${cmdLogStderrRemainder}\n`);
                     logStream.write(`\n=== Command Stage ${stageConfig.name} exited: code=${code} ===\n`);
                 }
+                // If marker already resolved during streaming, just finalize the container promise
+                if (markerResolved) {
+                    resolve({
+                        status: code === 0 ? 'success' : 'error',
+                        result: stdout,
+                        error: code !== 0 ? `Command exited with code ${code}` : undefined,
+                    });
+                    return;
+                }
                 if (timedOut) {
-                    if (handle.pendingResult) {
-                        handle.pendingResult.resolve({
-                            matched: {
-                                marker: '_CONTAINER_TIMEOUT',
-                                retry: true,
-                                prompt: 'Command timed out',
-                            },
-                            payload: 'Command timed out',
-                        });
-                        handle.pendingResult = null;
-                    }
+                    resolveMarker(false, `Command timed out after ${configTimeout}ms`);
                     resolve({
                         status: 'error',
                         result: null,
@@ -509,31 +572,15 @@ export class PipelineRunner {
                     });
                     return;
                 }
-                // Parse markers from stdout
-                const markerResult = parseStageMarkers([stdout], stageConfig.transitions);
-                if (handle.pendingResult) {
-                    if (markerResult.matched) {
-                        handle.pendingResult.resolve(markerResult);
-                    }
-                    else if (code !== 0) {
-                        handle.pendingResult.resolve({
-                            matched: {
-                                marker: '_COMMAND_FAILED',
-                                retry: true,
-                                prompt: 'Command failed',
-                            },
-                            payload: `Exit code ${code}: ${stderr.slice(-500)}`,
-                        });
-                    }
-                    else {
-                        // Exited 0 but no markers found
-                        handle.pendingResult.resolve({
-                            matched: null,
-                            payload: null,
-                        });
-                    }
-                    handle.pendingResult = null;
-                }
+                // Fallback: no streaming marker matched, use successMarker check or exit code
+                const isSuccess = stageConfig.successMarker
+                    ? stdout.includes(stageConfig.successMarker)
+                    : code === 0;
+                resolveMarker(isSuccess, isSuccess
+                    ? null
+                    : code !== 0
+                        ? `Exit code ${code}: ${stderr.slice(-500)}`
+                        : `successMarker not found in output`);
                 resolve({
                     status: code === 0 ? 'success' : 'error',
                     result: stdout,
@@ -542,17 +589,7 @@ export class PipelineRunner {
             });
             container.on('error', (err) => {
                 clearTimeout(timeout);
-                if (handle.pendingResult) {
-                    handle.pendingResult.resolve({
-                        matched: {
-                            marker: '_CONTAINER_ERROR',
-                            retry: true,
-                            prompt: 'Container spawn error',
-                        },
-                        payload: err.message,
-                    });
-                    handle.pendingResult = null;
-                }
+                resolveMarker(false, err.message);
                 resolve({
                     status: 'error',
                     result: null,
@@ -592,13 +629,15 @@ export class PipelineRunner {
             }
             return `- ${desc} → [${t.marker}]`;
         });
+        const modeRule = stageConfig.chat
+            ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
+            : '- Do NOT ask questions. Always assume "yes" and proceed autonomously.\n- Do not stop until this stage is complete or you hit a blocking error.';
         return `
 RULES:
-- Do NOT ask questions. Always assume "yes" and proceed autonomously.
+${modeRule}
 - Read files before editing. Use tools freely.
-- Do not stop until this stage is complete or you hit a blocking error.
-- 프로젝트 소스는 /workspace/project/ 에서 읽기 전용으로 볼 수 있다.
-- 스테이지 작업 디렉토리는 /workspace/ 아래에 마운트되어 있다 (plan/, src/, tb/, build/, sim/ 등). 반드시 이 경로에서 파일을 읽고 작업하라.
+- Project source is available read-only at /workspace/project/.
+- Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
 
 STAGE MARKERS — use the correct one:
 ${markerLines.join('\n')}`;
@@ -610,7 +649,7 @@ ${markerLines.join('\n')}`;
     async initRun() {
         const planPath = path.join(this.groupDir, 'plan', 'PLAN.md');
         if (!fs.existsSync(planPath)) {
-            await this.notify('⚠️ PLAN.md가 없습니다. 먼저 구현 계획을 작성해주세요.');
+            await this.notify('⚠️ PLAN.md not found. Please write an implementation plan first.');
             return null;
         }
         // Ensure project directory is a git repo (containers need it for branching/committing)
@@ -632,12 +671,7 @@ ${markerLines.join('\n')}`;
                 env: gitEnv,
             });
         }
-        // Write _current.json and initial manifest
-        writeCurrentRun(this.groupDir, {
-            runId: this.runId,
-            pid: process.pid,
-            startTime: this.manifest.startTime,
-        });
+        // Write initial manifest
         writeRunManifest(this.groupDir, this.manifest);
         const planContent = fs.readFileSync(planPath, 'utf-8');
         logger.info({
@@ -647,7 +681,7 @@ ${markerLines.join('\n')}`;
             stageCount: this.config.stages.length,
         }, 'Pipeline starting');
         const stageNames = this.config.stages.map((s) => s.name).join(' → ');
-        await this.notifyBanner(`🚀 파이프라인 시작. 스테이지: ${stageNames}`);
+        await this.notifyBanner(`🚀 Pipeline starting. Stages: ${stageNames}`);
         // Pipeline-wide log file
         const logsDir = path.join(this.groupDir, 'logs');
         fs.mkdirSync(logsDir, { recursive: true });
@@ -668,6 +702,127 @@ ${markerLines.join('\n')}`;
         return { planContent, stagesByName, pipelineLogStream };
     }
     /**
+     * Normalize transition.next to an array of target names (empty for pipeline end).
+     */
+    static nextTargets(next) {
+        if (next == null)
+            return [];
+        return Array.isArray(next) ? next : [next];
+    }
+    /**
+     * Build predecessor map: for each stage, which stages have non-retry
+     * transitions pointing to it?
+     */
+    buildPredecessorMap() {
+        const predecessors = new Map();
+        for (const s of this.config.stages) {
+            // Only the first non-retry, non-dynamic transition (primary/success path)
+            // contributes to the predecessor map. Error/fallback transitions listed
+            // after the primary one create backward edges (child→parent) that must
+            // not gate fan-in — otherwise a re-entry from an eval/dynamic source
+            // gets blocked by its own downstream stage's pending work.
+            const primary = s.transitions.find((t) => !t.retry && !t.next_dynamic);
+            if (!primary)
+                continue;
+            for (const target of PipelineRunner.nextTargets(primary.next)) {
+                let set = predecessors.get(target);
+                if (!set) {
+                    set = new Set();
+                    predecessors.set(target, set);
+                }
+                set.add(s.name);
+            }
+        }
+        return predecessors;
+    }
+    /**
+     * Build reachability map: for each stage, which stages can it
+     * transitively reach through the pipeline's transition graph?
+     * Used by dynamic fan-in to determine if an unactivated predecessor
+     * could still be activated by a currently-alive stage.
+     */
+    buildReachabilityMap() {
+        // Build adjacency list from all transitions with `next` targets
+        const adj = new Map();
+        for (const s of this.config.stages) {
+            if (!adj.has(s.name))
+                adj.set(s.name, new Set());
+            for (const t of s.transitions) {
+                if (t.retry && !t.next)
+                    continue;
+                for (const target of PipelineRunner.nextTargets(t.next)) {
+                    adj.get(s.name).add(target);
+                }
+            }
+        }
+        // BFS transitive closure per stage
+        const reachability = new Map();
+        for (const s of this.config.stages) {
+            const reachable = new Set();
+            const queue = [...(adj.get(s.name) ?? [])];
+            while (queue.length > 0) {
+                const current = queue.shift();
+                if (reachable.has(current))
+                    continue;
+                reachable.add(current);
+                for (const next of adj.get(current) ?? []) {
+                    if (!reachable.has(next))
+                        queue.push(next);
+                }
+            }
+            reachability.set(s.name, reachable);
+        }
+        return reachability;
+    }
+    /**
+     * Check if a stage's fan-in gate is satisfied:
+     * all predecessors must appear in completedStages.
+     */
+    static fanInReady(stageName, predecessors, completedStages) {
+        const preds = predecessors.get(stageName);
+        if (!preds || preds.size <= 1)
+            return true;
+        const completed = new Set(completedStages);
+        for (const pred of preds) {
+            if (!completed.has(pred))
+                return false;
+        }
+        return true;
+    }
+    /**
+     * Check if a stage's dynamic fan-in gate is satisfied:
+     * only predecessors that have been activated are checked.
+     * A predecessor is "done" if its completion count matches its activation count.
+     *
+     * An unactivated predecessor (activation=0) is only skipped if no alive
+     * stage can transitively reach it. If any alive stage could still activate
+     * the predecessor via retry/error paths, the gate stays closed.
+     */
+    static fanInReadyDynamic(stageName, predecessors, activations, completions, reachability, aliveStages) {
+        const preds = predecessors.get(stageName);
+        if (!preds || preds.size <= 1)
+            return true;
+        let anyActivated = false;
+        for (const pred of preds) {
+            const act = activations.get(pred) ?? 0;
+            if (act === 0) {
+                // Never activated — but could it still be activated?
+                // Check if any alive stage can transitively reach this predecessor.
+                for (const alive of aliveStages) {
+                    if (reachability.get(alive)?.has(pred)) {
+                        return false; // alive stage can still reach this predecessor — wait
+                    }
+                }
+                continue; // no alive stage can reach it — safe to skip
+            }
+            anyActivated = true;
+            const comp = completions.get(pred) ?? 0;
+            if (comp < act)
+                return false; // activated but not yet completed
+        }
+        return anyActivated; // at least one predecessor must have been activated
+    }
+    /**
      * Determine entry stage and resume from previous state if applicable.
      */
     async resolveEntryStage(stagesByName) {
@@ -680,9 +835,13 @@ ${markerLines.join('\n')}`;
             const hasOutgoing = new Set();
             for (const s of this.config.stages) {
                 for (const t of s.transitions) {
-                    if (!t.retry && t.next) {
+                    if (t.retry)
+                        continue;
+                    const targets = PipelineRunner.nextTargets(t.next);
+                    if (targets.length > 0) {
                         hasOutgoing.add(s.name);
-                        hasIncoming.add(t.next);
+                        for (const target of targets)
+                            hasIncoming.add(target);
                     }
                 }
             }
@@ -702,15 +861,33 @@ ${markerLines.join('\n')}`;
         if (existingState &&
             existingState.status !== 'success' &&
             existingState.completedStages.length > 0) {
-            const lastCompleted = existingState.completedStages[existingState.completedStages.length - 1];
+            const completedStages = [...existingState.completedStages];
+            // Find where to resume: look at the last completed stage's forward transition
+            const lastCompleted = completedStages[completedStages.length - 1];
             const lastConfig = stagesByName.get(lastCompleted);
             const completeTransition = lastConfig?.transitions.find((t) => !t.retry && t.next);
-            const currentStageName = completeTransition?.next ?? resolveEntry();
-            const completedStages = [...existingState.completedStages];
-            await this.notifyBanner(`🔄 ${currentStageName}부터 재개 (이전 완료: ${existingState.completedStages.join(' → ')})`);
-            return { currentStageName, completedStages };
+            let initialStages;
+            if (completeTransition?.next) {
+                const targets = PipelineRunner.nextTargets(completeTransition.next);
+                // Only resume targets not yet completed
+                const remaining = targets.filter((t) => !completedStages.includes(t));
+                initialStages = remaining.length > 0 ? remaining : [resolveEntry()];
+            }
+            else {
+                initialStages = [resolveEntry()];
+            }
+            await this.notifyBanner(`🔄 Resuming from ${initialStages.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`);
+            // Restore activation/completion counts from persisted state
+            const activations = new Map(Object.entries(existingState.activations ?? {}));
+            const completions = new Map(Object.entries(existingState.completions ?? {}));
+            return { initialStages, completedStages, activations, completions };
         }
-        return { currentStageName: resolveEntry(), completedStages: [] };
+        return {
+            initialStages: [resolveEntry()],
+            completedStages: [],
+            activations: new Map(),
+            completions: new Map(),
+        };
     }
     /**
      * Handle stage result: no-match → retry prompt, retry → re-send,
@@ -720,10 +897,22 @@ ${markerLines.join('\n')}`;
         const { matched, payload } = result;
         const { handle, stageConfig, currentStageName, turnCount, stageStartTime, completedStages, commonRules, planContent, stagesByName, } = ctx;
         if (!matched) {
-            // No markers found — retry
+            if (stageConfig.chat) {
+                // Chatting stage: read user input and send to container
+                const userInput = await readUserInput('\n> ');
+                handle.pendingResult = createDeferred();
+                sendToStage(handle, userInput);
+                return {
+                    stageResolved: false,
+                    nextStageName: null,
+                    nextInitialPrompt: null,
+                    lastResult: null,
+                };
+            }
+            // No markers found — retry (autonomous mode)
             logger.warn({ stage: currentStageName, turn: turnCount }, 'No stage markers found');
             handle.pendingResult = createDeferred();
-            sendToStage(handle, `이전 응답에 스테이지 마커가 없었습니다. 작업을 계속하고 완료 시 적절한 마커를 출력하세요.\n\n${stageConfig.prompt}\n${commonRules}`);
+            sendToStage(handle, `No stage markers found in the previous response. Continue working and emit the appropriate marker when done.\n\n${stageConfig.prompt}\n${commonRules}`);
             return {
                 stageResolved: false,
                 nextStageName: null,
@@ -733,11 +922,11 @@ ${markerLines.join('\n')}`;
         }
         if (matched.retry) {
             const errorDesc = payload || matched.marker;
-            await this.notify(`⚠️ [턴 ${turnCount}] ${currentStageName} 에러: ${errorDesc}`);
+            await this.notify(`⚠️ [Turn ${turnCount}] ${currentStageName} error: ${errorDesc}`);
             // Synthetic container exit/error — container is dead, must respawn
             if (matched.marker.startsWith('_CONTAINER')) {
                 if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
-                    await this.notify(`❌ [턴 ${turnCount}] ${currentStageName} 컨테이너 재시작 ${ctx.maxContainerRespawns}회 초과 — 스테이지 실패`);
+                    await this.notify(`❌ [Turn ${turnCount}] ${currentStageName} container respawn limit exceeded (${ctx.maxContainerRespawns}) — stage failed`);
                     return {
                         stageResolved: true,
                         nextStageName: null,
@@ -745,17 +934,17 @@ ${markerLines.join('\n')}`;
                         lastResult: 'error',
                     };
                 }
-                await this.notify(`🔄 [턴 ${turnCount}] ${currentStageName} 컨테이너 재시작 (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`);
+                await this.notify(`🔄 [Turn ${turnCount}] ${currentStageName} container respawn (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`);
                 return {
                     stageResolved: true,
                     nextStageName: currentStageName,
-                    nextInitialPrompt: `이전 시도에서 컨테이너가 비정상 종료되었습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
+                    nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
                     lastResult: null,
                 };
             }
             // Normal retry — container is still alive, re-send prompt via IPC
             handle.pendingResult = createDeferred();
-            sendToStage(handle, `이전 시도에서 에러가 발생했습니다: ${errorDesc}\n\n다시 시도하세요.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`);
+            sendToStage(handle, `An error occurred in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`);
             return {
                 stageResolved: false,
                 nextStageName: null,
@@ -763,18 +952,49 @@ ${markerLines.join('\n')}`;
                 lastResult: null,
             };
         }
-        // Non-retry transition — move to next stage or end pipeline
-        const targetName = matched.next ?? null;
-        const isErrorTransition = matched.marker.includes('ERROR');
-        if (isErrorTransition) {
-            await this.notifyBanner(targetName
-                ? `⚠️ 주의: ${payload || matched.marker}\n🔄 ${targetName}으로 복귀`
-                : `⚠️ 주의: ${payload || matched.marker}`);
+        // Non-retry transition — move to next stage(s) or end pipeline
+        let targetName;
+        if (matched.next_dynamic && payload) {
+            // Dynamic transition: agent picks targets from payload
+            const requested = payload
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean);
+            const allowlist = new Set(PipelineRunner.nextTargets(matched.next));
+            const invalid = requested.filter((t) => !allowlist.has(t));
+            if (invalid.length > 0) {
+                logger.error({ stage: currentStageName, invalid, allowlist: [...allowlist] }, 'Dynamic transition target not in allowlist');
+                await this.notifyBanner(`❌ ${currentStageName}: dynamic transition target not in allowlist: ${invalid.join(', ')}`);
+                return {
+                    stageResolved: true,
+                    nextStageName: null,
+                    nextInitialPrompt: null,
+                    lastResult: 'error',
+                };
+            }
+            targetName =
+                requested.length === 0
+                    ? (matched.next ?? null) // empty payload → fallback to static next
+                    : requested.length === 1
+                        ? requested[0]
+                        : requested;
         }
         else {
-            await this.notifyBanner(targetName
-                ? `✅ ${currentStageName} → ${targetName} (${matched.marker})`
-                : `✅ ${currentStageName} 완료! (${matched.marker})`);
+            targetName = matched.next ?? null;
+        }
+        const targetDisplay = Array.isArray(targetName)
+            ? targetName.join(', ')
+            : targetName;
+        const isErrorTransition = matched.marker.includes('ERROR');
+        if (isErrorTransition) {
+            await this.notifyBanner(targetDisplay
+                ? `⚠️ Warning: ${payload || matched.marker}\n🔄 Returning to ${targetDisplay}`
+                : `⚠️ Warning: ${payload || matched.marker}`);
+        }
+        else {
+            await this.notifyBanner(targetDisplay
+                ? `✅ ${currentStageName} → ${targetDisplay} (${matched.marker})`
+                : `✅ ${currentStageName} completed! (${matched.marker})`);
         }
         // Track completed stage
         completedStages.push(currentStageName);
@@ -796,20 +1016,23 @@ ${markerLines.join('\n')}`;
         if (containerResult.newSessionId) {
             this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
         }
-        this.currentHandle = null;
+        this.activeHandles.delete(currentStageName);
+        // Payload forwarding only works for single-target non-dynamic transitions
+        // (dynamic payloads contain target names, not content to forward)
         let nextInitialPrompt = null;
-        if (targetName && payload) {
-            const targetConfig = stagesByName.get(targetName);
+        const targets = PipelineRunner.nextTargets(targetName);
+        if (targets.length === 1 && payload && !matched.next_dynamic) {
+            const targetConfig = stagesByName.get(targets[0]);
             const targetRules = targetConfig
                 ? this.buildCommonRules(targetConfig)
                 : commonRules;
-            nextInitialPrompt = `이전 스테이지(${currentStageName})에서 전달된 내용:\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}\n\n## Plan\n\n${planContent}`;
+            nextInitialPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}\n\n## Plan\n\n${planContent}`;
         }
         return {
             stageResolved: true,
             nextStageName: targetName,
             nextInitialPrompt,
-            lastResult: targetName ? null : 'success',
+            lastResult: targets.length === 0 ? 'success' : null,
         };
     }
     /**
@@ -825,63 +1048,60 @@ ${markerLines.join('\n')}`;
         this.manifest.endTime = new Date().toISOString();
         this.manifest.status = lastResult;
         writeRunManifest(this.groupDir, this.manifest);
-        removeCurrentRun(this.groupDir);
         pipelineLogStream.write(`\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`);
         pipelineLogStream.end();
         await this.notifyBanner(lastResult === 'success'
-            ? '🏁 전체 파이프라인 완료!'
-            : '❌ 파이프라인이 에러로 종료되었습니다.');
+            ? '🏁 Pipeline completed!'
+            : '❌ Pipeline terminated with errors.');
     }
     /**
-     * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
+     * Run a single stage to completion (spawn → turn loop → close).
+     * Self-contained: handles retries and container respawns internally.
      */
-    async run() {
-        const init = await this.initRun();
-        if (!init)
-            return 'error';
-        const { planContent, stagesByName, pipelineLogStream } = init;
-        let { currentStageName, completedStages } = await this.resolveEntryStage(stagesByName);
-        savePipelineState(this.groupDir, {
-            currentStage: currentStageName,
-            completedStages,
-            lastUpdated: new Date().toISOString(),
-            status: 'running',
-        });
-        let currentStage = currentStageName;
-        let nextInitialPrompt = null;
-        let turnCount = 0;
-        let lastResult = 'success';
-        let containerRespawnCount = 0;
-        const MAX_CONTAINER_RESPAWNS = 3;
-        while (currentStage !== null) {
-            if (this.aborted)
-                break;
-            const stageConfig = stagesByName.get(currentStage);
-            if (!stageConfig) {
-                logger.error({ stage: currentStage }, 'Stage config not found');
-                lastResult = 'error';
-                break;
-            }
-            // Exclusive lock: wait for shared resource
-            let exclusiveLock = null;
-            if (stageConfig.exclusive) {
-                exclusiveLock = getExclusiveLock(stageConfig.exclusive);
-                logger.info({ stage: currentStage, key: stageConfig.exclusive }, 'Waiting for exclusive lock');
-                await this.notify(`🔒 ${currentStage}: 대기 중 (${stageConfig.exclusive} lock)...`);
-                await exclusiveLock.acquire();
-                logger.info({ stage: currentStage, key: stageConfig.exclusive }, 'Exclusive lock acquired');
-            }
-            try {
-                const commonRules = this.buildCommonRules(stageConfig);
+    async runSingleStage(stageName, stagesByName, completedStages, planContent, pipelineLogStream, initialPromptOverride) {
+        const stageConfig = stagesByName.get(stageName);
+        if (!stageConfig) {
+            logger.error({ stage: stageName }, 'Stage config not found');
+            return {
+                stageName,
+                nextStages: null,
+                nextInitialPrompt: null,
+                result: 'error',
+            };
+        }
+        // Exclusive lock: wait for shared resource
+        let exclusiveLock = null;
+        if (stageConfig.exclusive) {
+            exclusiveLock = getExclusiveLock(stageConfig.exclusive);
+            logger.info({ stage: stageName, key: stageConfig.exclusive }, 'Waiting for exclusive lock');
+            await this.notify(`🔒 ${stageName}: waiting (${stageConfig.exclusive} lock)...`);
+            await exclusiveLock.acquire();
+            logger.info({ stage: stageName, key: stageConfig.exclusive }, 'Exclusive lock acquired');
+        }
+        let nextStages = null;
+        let stageResult = null;
+        let outNextInitialPrompt = null;
+        try {
+            const commonRules = this.buildCommonRules(stageConfig);
+            let nextInitialPrompt = initialPromptOverride ?? null;
+            let containerRespawnCount = 0;
+            const MAX_CONTAINER_RESPAWNS = 3;
+            let turnCount = 0;
+            let currentStage = stageName;
+            while (currentStage === stageName) {
+                if (this.aborted) {
+                    stageResult = 'error';
+                    break;
+                }
                 const initialPrompt = nextInitialPrompt ||
                     `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
                 nextInitialPrompt = null;
                 const stageStartTime = Date.now();
                 const handle = this.spawnStageContainer(stageConfig, initialPrompt, pipelineLogStream);
-                this.currentHandle = handle;
-                logger.info({ stage: currentStage }, 'Stage container spawned (on-demand)');
-                logger.info({ stage: currentStage }, 'Entering stage');
-                await this.notifyBanner(`📌 Stage: ${currentStage} 시작`);
+                this.activeHandles.set(stageName, handle);
+                logger.info({ stage: stageName }, 'Stage container spawned (on-demand)');
+                logger.info({ stage: stageName }, 'Entering stage');
+                await this.notifyBanner(`📌 Stage: ${stageName} starting`);
                 let isFirstTurn = true;
                 let stageResolved = false;
                 while (!stageResolved) {
@@ -894,15 +1114,15 @@ ${markerLines.join('\n')}`;
                         sendToStage(handle, prompt);
                     }
                     isFirstTurn = false;
-                    logger.debug({ stage: currentStage, turn: turnCount }, 'Waiting for stage result');
-                    await this.notify(`🔧 [턴 ${turnCount}] ${currentStage} 진행 중...`);
+                    logger.debug({ stage: stageName, turn: turnCount }, 'Waiting for stage result');
+                    await this.notify(`🔧 [Turn ${turnCount}] ${stageName} in progress...`);
                     const result = await handle.pendingResult.promise;
                     handle.pendingResult = null;
-                    logger.info({ stage: currentStage, turn: turnCount, result }, 'Stage result received');
+                    logger.info({ stage: stageName, turn: turnCount, result }, 'Stage result received');
                     const outcome = await this.handleStageResult(result, {
                         handle,
                         stageConfig,
-                        currentStageName: currentStage,
+                        currentStageName: stageName,
                         turnCount,
                         stageStartTime,
                         completedStages,
@@ -914,25 +1134,208 @@ ${markerLines.join('\n')}`;
                     });
                     stageResolved = outcome.stageResolved;
                     if (outcome.stageResolved) {
-                        // Respawn same stage → increment; advance to different stage → reset
-                        if (outcome.nextStageName === currentStage) {
+                        if (outcome.nextStageName === stageName) {
+                            // Container respawn — loop again with same stage
                             containerRespawnCount++;
+                            nextInitialPrompt = outcome.nextInitialPrompt;
+                            currentStage = stageName; // stay in outer while
                         }
                         else {
-                            containerRespawnCount = 0;
-                        }
-                        currentStage = outcome.nextStageName;
-                        nextInitialPrompt = outcome.nextInitialPrompt;
-                        if (outcome.lastResult) {
-                            lastResult = outcome.lastResult;
+                            // Advance to next stage(s) or end
+                            nextStages = outcome.nextStageName;
+                            outNextInitialPrompt = outcome.nextInitialPrompt;
+                            currentStage = null; // exit outer while
+                            if (outcome.lastResult) {
+                                stageResult = outcome.lastResult;
+                            }
                         }
                     }
                 }
             }
-            finally {
-                if (exclusiveLock) {
-                    exclusiveLock.release();
-                    logger.info({ stage: currentStage, key: stageConfig.exclusive }, 'Exclusive lock released');
+        }
+        finally {
+            this.activeHandles.delete(stageName);
+            if (exclusiveLock) {
+                exclusiveLock.release();
+                logger.info({ stage: stageName, key: stageConfig.exclusive }, 'Exclusive lock released');
+            }
+        }
+        return {
+            stageName,
+            nextStages,
+            nextInitialPrompt: outNextInitialPrompt,
+            result: stageResult,
+        };
+    }
+    /**
+     * Main FSM loop with fan-out/fan-in support.
+     * Spawns stage containers on-demand, runs parallel stages concurrently,
+     * and gates fan-in stages until all predecessors complete.
+     */
+    async run() {
+        const init = await this.initRun();
+        if (!init)
+            return 'error';
+        const { planContent, stagesByName, pipelineLogStream } = init;
+        const { initialStages, completedStages, activations, completions } = await this.resolveEntryStage(stagesByName);
+        // Track activations for initial stages
+        for (const name of initialStages) {
+            activations.set(name, (activations.get(name) ?? 0) + 1);
+        }
+        savePipelineState(this.groupDir, {
+            currentStage: initialStages.length === 1 ? initialStages[0] : initialStages,
+            completedStages,
+            lastUpdated: new Date().toISOString(),
+            status: 'running',
+            activations: Object.fromEntries(activations),
+            completions: Object.fromEntries(completions),
+        });
+        const predecessors = this.buildPredecessorMap();
+        const reachability = this.buildReachabilityMap();
+        // Each entry: { name, initialPrompt } — prompt is set when payload forwarding applies
+        let pendingStages = initialStages.map((name) => ({ name }));
+        const waitingForFanIn = new Set();
+        let lastResult = 'success';
+        const resultQueue = [];
+        let notifyResolve = null;
+        const running = new Set();
+        const runningNames = new Set();
+        const waitForResult = () => {
+            if (resultQueue.length > 0)
+                return Promise.resolve();
+            return new Promise((r) => {
+                notifyResolve = r;
+            });
+        };
+        const signalResult = () => {
+            if (notifyResolve) {
+                const r = notifyResolve;
+                notifyResolve = null;
+                r();
+            }
+        };
+        const launchStage = (entry) => {
+            runningNames.add(entry.name);
+            const p = this.runSingleStage(entry.name, stagesByName, completedStages, planContent, pipelineLogStream, entry.initialPrompt)
+                .then((result) => {
+                resultQueue.push(result);
+                running.delete(p);
+                runningNames.delete(result.stageName);
+                signalResult();
+            })
+                .catch((err) => {
+                logger.error({ stage: entry.name, err }, 'Stage threw unexpectedly');
+                resultQueue.push({
+                    stageName: entry.name,
+                    nextStages: null,
+                    nextInitialPrompt: null,
+                    result: 'error',
+                });
+                running.delete(p);
+                runningNames.delete(entry.name);
+                signalResult();
+            });
+            running.add(p);
+        };
+        // Helper: check fan-in readiness for a stage
+        const isFanInReady = (stageName) => {
+            const cfg = stagesByName.get(stageName);
+            const fanInMode = cfg?.fan_in ?? 'all';
+            if (fanInMode === 'dynamic') {
+                // Compute alive stages: running + pending + waiting-for-fan-in, excluding self
+                const aliveStages = new Set([
+                    ...runningNames,
+                    ...pendingStages.map((s) => s.name),
+                    ...waitingForFanIn,
+                ]);
+                aliveStages.delete(stageName);
+                return PipelineRunner.fanInReadyDynamic(stageName, predecessors, activations, completions, reachability, aliveStages);
+            }
+            return PipelineRunner.fanInReady(stageName, predecessors, completedStages);
+        };
+        // Helper: launch a stage, deferring chat stages if pool is busy
+        const tryLaunch = (entry) => {
+            const cfg = stagesByName.get(entry.name);
+            if (cfg?.chat && running.size > 0) {
+                // Chat stages need exclusive stdin — defer until pool drains
+                pendingStages.push(entry);
+                return;
+            }
+            launchStage(entry);
+        };
+        // Launch initial stages
+        for (const entry of pendingStages) {
+            tryLaunch(entry);
+        }
+        pendingStages = [];
+        while (running.size > 0 ||
+            waitingForFanIn.size > 0 ||
+            pendingStages.length > 0) {
+            if (this.aborted)
+                break;
+            // Launch any deferred pending stages (e.g. chat stages waiting for pool to drain)
+            if (pendingStages.length > 0 && running.size === 0) {
+                const deferred = [...pendingStages];
+                pendingStages = [];
+                for (const entry of deferred) {
+                    tryLaunch(entry);
+                }
+            }
+            // Stuck detection: nothing running, nothing queued, only fan-in waiting
+            if (running.size === 0 &&
+                resultQueue.length === 0 &&
+                pendingStages.length === 0) {
+                if (waitingForFanIn.size > 0) {
+                    logger.warn({ waiting: [...waitingForFanIn] }, 'Fan-in stages stuck — predecessors did not complete');
+                    lastResult = 'error';
+                }
+                break;
+            }
+            // Save current active stages
+            const activeNames = [...runningNames];
+            savePipelineState(this.groupDir, {
+                currentStage: activeNames.length === 1 ? activeNames[0] : activeNames,
+                completedStages,
+                lastUpdated: new Date().toISOString(),
+                status: 'running',
+                activations: Object.fromEntries(activations),
+                completions: Object.fromEntries(completions),
+            });
+            // Wait for at least one stage to complete
+            await waitForResult();
+            // Drain all available results and launch ready successors immediately
+            while (resultQueue.length > 0) {
+                const { stageName: finishedStage, nextStages, nextInitialPrompt, result, } = resultQueue.shift();
+                if (result === 'error')
+                    lastResult = 'error';
+                // Track completion for dynamic fan-in
+                completions.set(finishedStage, (completions.get(finishedStage) ?? 0) + 1);
+                const targets = PipelineRunner.nextTargets(nextStages);
+                for (const target of targets) {
+                    // Skip if already running, queued, or waiting for fan-in
+                    if (runningNames.has(target) ||
+                        pendingStages.some((s) => s.name === target) ||
+                        waitingForFanIn.has(target)) {
+                        continue;
+                    }
+                    // Track activation for dynamic fan-in (only when actually queued, not deduped)
+                    activations.set(target, (activations.get(target) ?? 0) + 1);
+                    if (isFanInReady(target)) {
+                        tryLaunch({
+                            name: target,
+                            initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
+                        });
+                    }
+                    else {
+                        waitingForFanIn.add(target);
+                    }
+                }
+            }
+            // Re-check fan-in gates — a newly completed stage may have unblocked waiters
+            for (const w of [...waitingForFanIn]) {
+                if (isFanInReady(w)) {
+                    waitingForFanIn.delete(w);
+                    tryLaunch({ name: w });
                 }
             }
         }
@@ -973,12 +1376,16 @@ export function loadAgentTeamConfig(groupFolder) {
     }
 }
 /**
- * Load and validate PIPELINE.json from a group folder.
+ * Load and validate a pipeline config.
+ * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
+ *   groupFolder/groupDir are ignored and the file is loaded directly.
  * Returns null if the file doesn't exist.
  */
-export function loadPipelineConfig(groupFolder, groupDir) {
+export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
     const dir = groupDir ?? resolveGroupFolderPath(groupFolder);
-    const pipelinePath = path.join(dir, 'PIPELINE.json');
+    if (!pipelinePath) {
+        pipelinePath = path.join(dir, 'PIPELINE.json');
+    }
     if (!fs.existsSync(pipelinePath)) {
         return null;
     }
@@ -989,6 +1396,42 @@ export function loadPipelineConfig(groupFolder, groupDir) {
         if (!Array.isArray(config.stages) || config.stages.length === 0) {
             logger.warn({ groupFolder }, 'PIPELINE.json has no stages');
             return null;
+        }
+        // Validate stage names and transitions
+        const stageNames = new Set(config.stages.map((s) => s.name));
+        for (const stage of config.stages) {
+            // Validate fan_in value
+            if (stage.fan_in !== undefined &&
+                stage.fan_in !== 'all' &&
+                stage.fan_in !== 'dynamic') {
+                logger.error({ groupFolder, stage: stage.name, fan_in: stage.fan_in }, 'Invalid fan_in value (must be "all" or "dynamic")');
+                return null;
+            }
+            for (const t of stage.transitions) {
+                // next_dynamic + retry mutual exclusion
+                if (t.next_dynamic && t.retry) {
+                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'next_dynamic and retry cannot be used together');
+                    return null;
+                }
+                // next_dynamic requires non-null next
+                if (t.next_dynamic && t.next == null) {
+                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'next_dynamic requires next to be a non-null array (allowlist)');
+                    return null;
+                }
+                // Validate transition targets exist
+                if (!t.retry) {
+                    const targets = Array.isArray(t.next)
+                        ? t.next
+                        : t.next != null
+                            ? [t.next]
+                            : [];
+                    for (const target of targets) {
+                        if (!stageNames.has(target)) {
+                            logger.warn({ groupFolder, stage: stage.name, target }, 'Transition target references non-existent stage');
+                        }
+                    }
+                }
+            }
         }
         return config;
     }

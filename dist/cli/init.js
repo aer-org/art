@@ -95,12 +95,12 @@ export async function ensureContainerImage(runtimeBin, engineRoot) {
             output: process.stdout,
         });
         const answer = process.stdin.isTTY
-            ? await new Promise((resolve) => rl.question(`\nAgent 컨테이너 이미지를 빌드하시겠습니까? (${CONTAINER_IMAGE}) (y/N): `, resolve))
+            ? await new Promise((resolve) => rl.question(`\nBuild the agent container image? (${CONTAINER_IMAGE}) (y/N): `, resolve))
             : 'y';
         rl.close();
         if (answer.trim().toLowerCase() === 'y') {
             const scriptDir = path.resolve(engineRoot, 'container');
-            console.log(`\n빌드 중: ${CONTAINER_IMAGE}...`);
+            console.log(`\nBuilding: ${CONTAINER_IMAGE}...`);
             execSync(`${scriptDir}/build.sh`, {
                 stdio: 'inherit',
                 timeout: 600000,

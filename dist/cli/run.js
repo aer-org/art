@@ -69,34 +69,7 @@ export async function run(targetDir, opts) {
     // Set TUI env vars before any engine import so logger routes to file
     process.env.ART_TUI_MODE = 'true';
     process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
-    // Check for existing run (_current.json)
-    const { readCurrentRun, removeCurrentRun, isPidAlive, generateRunId } = await import('../run-manifest.js');
-    const { cleanupRunContainers } = await import('../container-runtime.js');
-    const currentRun = readCurrentRun(artDir);
-    if (currentRun) {
-        if (isPidAlive(currentRun.pid)) {
-            const confirmed = await askConfirmation(`이미 실행 중인 run이 있습니다 (${currentRun.runId}, PID ${currentRun.pid}).\n중지하고 새로 시작하시겠습니까? [Y/n] `);
-            if (!confirmed) {
-                console.log('종료합니다.');
-                process.exit(0);
-            }
-            // Stop the existing run
-            try {
-                process.kill(currentRun.pid, 'SIGTERM');
-            }
-            catch {
-                /* already dead */
-            }
-            cleanupRunContainers(currentRun.runId);
-            removeCurrentRun(artDir);
-        }
-        else {
-            // PID is dead — orphan cleanup
-            console.log(`이전 run이 비정상 종료됨 (${currentRun.runId}, PID ${currentRun.pid}). 정리 중...`);
-            cleanupRunContainers(currentRun.runId);
-            removeCurrentRun(artDir);
-        }
-    }
+    const { generateRunId } = await import('../run-manifest.js');
     // Generate run ID for this execution
     const runId = generateRunId();
     // Ensure Claude authentication is available (before any engine imports)
@@ -120,7 +93,10 @@ export async function run(targetDir, opts) {
     const { getRuntime } = await import('../container-runtime.js');
     const { CONTAINER_IMAGE } = await import('../config.js');
     const { getImageForStage } = await import('../image-registry.js');
-    const pipelineConfig = loadPipelineConfig('', artDir);
+    const pipelineOverride = opts?.pipeline
+        ? path.resolve(projectDir, opts.pipeline)
+        : undefined;
+    const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
     if (pipelineConfig) {
         const rt = getRuntime();
         const images = new Set();
@@ -152,10 +128,10 @@ export async function run(targetDir, opts) {
             }
         }
         if (missing.length > 0) {
-            console.log('\n다음 이미지가 로컬에 없습니다:');
+            console.log('\nThe following images are not available locally:');
             for (const img of missing)
                 console.log(`  - ${img}`);
-            const confirmed = await askConfirmation('미리 다운로드하시겠습니까? [Y/n] ');
+            const confirmed = await askConfirmation('Pull them now? [Y/n] ');
             if (confirmed) {
                 for (const img of missing) {
                     console.log(`\nPulling ${img}...`);
@@ -169,7 +145,7 @@ export async function run(targetDir, opts) {
     }
     // Import manifest functions ahead of signal handler registration
     const { readRunManifest, writeRunManifest } = await import('../run-manifest.js');
-    // Register SIGINT/SIGTERM handlers to clean up _current.json
+    // Register SIGINT/SIGTERM handlers to mark manifest as cancelled
     const cleanupOnSignal = () => {
         try {
             const manifest = readRunManifest(artDir, runId);
@@ -182,7 +158,6 @@ export async function run(targetDir, opts) {
         catch {
             /* best effort */
         }
-        removeCurrentRun(artDir);
     };
     process.on('SIGINT', cleanupOnSignal);
     process.on('SIGTERM', cleanupOnSignal);
@@ -197,6 +172,12 @@ export async function run(targetDir, opts) {
     };
     // Import and run the pipeline engine
     const { runPipeline } = await import('../run-engine.js');
-    await runPipeline({ group: artGroup, runId, artDir, stage: opts?.stage });
+    await runPipeline({
+        group: artGroup,
+        runId,
+        artDir,
+        stage: opts?.stage,
+        pipeline: pipelineOverride,
+    });
 }
 //# sourceMappingURL=run.js.map

@@ -13,16 +13,7 @@ export interface RunManifest {
     logFile?: string;
     outputLogFile?: string;
 }
-export interface CurrentRunInfo {
-    runId: string;
-    pid: number;
-    startTime: string;
-}
-export declare function writeCurrentRun(groupDir: string, info: CurrentRunInfo): void;
-export declare function readCurrentRun(groupDir: string): CurrentRunInfo | null;
-export declare function removeCurrentRun(groupDir: string): void;
 export declare function writeRunManifest(groupDir: string, manifest: RunManifest): void;
 export declare function readRunManifest(groupDir: string, runId: string): RunManifest | null;
 export declare function listRunManifests(groupDir: string): RunManifest[];
-export declare function isPidAlive(pid: number): boolean;
 //# sourceMappingURL=run-manifest.d.ts.map

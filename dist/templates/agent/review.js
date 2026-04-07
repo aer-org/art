@@ -30,9 +30,13 @@ export const review = {
         {
             marker: '[STAGE_COMPLETE]',
             next: null,
-            prompt: '리뷰 리포트 작성 완료',
+            prompt: 'Review report complete',
         },
-        { marker: '[STAGE_ERROR]', next: null, prompt: '환경/도구/설정 에러' },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Environment/tool/config error',
+        },
     ],
 };
 //# sourceMappingURL=review.js.map

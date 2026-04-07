@@ -7,13 +7,7 @@ import { spawn } from 'child_process';
 
 import { ART_DIR_NAME } from '../config.js';
 import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
-import {
-  readCurrentRun,
-  removeCurrentRun,
-  listRunManifests,
-  readRunManifest,
-  isPidAlive,
-} from '../run-manifest.js';
+import { listRunManifests, readRunManifest } from '../run-manifest.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
 import { ensureAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
@@ -783,34 +777,26 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
     // GET /api/runs/current — check currently running pipeline
     if (method === 'GET' && parsed.pathname === '/api/runs/current') {
-      const current = readCurrentRun(artDir);
-      if (current && isPidAlive(current.pid)) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(current));
-      } else {
-        // If PID is dead, clean up stale _current.json
-        if (current) removeCurrentRun(artDir);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('null');
-      }
+      // Find the most recent 'running' manifest
+      const running = listRunManifests(artDir).find(
+        (m) => m.status === 'running',
+      );
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(running ? JSON.stringify(running) : 'null');
       return;
     }
 
     // POST /api/runs/start — spawn `art run .` as a child process
     if (method === 'POST' && parsed.pathname === '/api/runs/start') {
-      const current = readCurrentRun(artDir);
-      if (current && isPidAlive(current.pid)) {
+      if (runProcess) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
             error: 'Run already in progress',
-            runId: current.runId,
           }),
         );
         return;
       }
-      // Clean up stale _current.json if PID is dead
-      if (current) removeCurrentRun(artDir);
 
       // Spawn art run as a child process
       const artBin = process.argv[1]; // path to the running CLI
@@ -894,9 +880,6 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
 
     // POST /api/runs/stop — stop currently running pipeline
     if (method === 'POST' && parsed.pathname === '/api/runs/stop') {
-      const current = readCurrentRun(artDir);
-
-      // Kill the child process via direct reference first (safe, no PID guessing)
       if (runProcess) {
         try {
           runProcess.kill('SIGTERM');
@@ -904,40 +887,12 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
           /* already dead */
         }
         runProcess = null;
-      } else if (
-        current &&
-        isPidAlive(current.pid) &&
-        current.pid !== process.pid
-      ) {
-        // Fallback: kill by PID only if no direct reference AND not self
-        try {
-          process.kill(current.pid, 'SIGTERM');
-        } catch {
-          /* already dead */
-        }
       }
 
       // Respond BEFORE container cleanup — docker stop modifies iptables/bridge
       // networking which triggers Chrome's ERR_NETWORK_CHANGED on all sockets.
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
-
-      // Fallback: if child doesn't exit within 10s, compose cleans up directly
-      if (current) {
-        const fallbackRunId = current.runId;
-        const fallbackPid = current.pid;
-        setTimeout(async () => {
-          try {
-            if (isPidAlive(fallbackPid)) {
-              const { cleanupRunContainers } =
-                await import('../container-runtime.js');
-              cleanupRunContainers(fallbackRunId);
-            }
-          } catch {
-            /* best effort */
-          }
-        }, 10_000);
-      }
       return;
     }
 

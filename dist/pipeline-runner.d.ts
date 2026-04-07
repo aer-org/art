@@ -1,7 +1,8 @@
 import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
     marker: string;
-    next?: string | null;
+    next?: string | string[] | null;
+    next_dynamic?: boolean;
     retry?: boolean;
     prompt?: string;
 }
@@ -10,6 +11,9 @@ export interface PipelineStage {
     prompt: string;
     image?: string;
     command?: string;
+    successMarker?: string;
+    errorMarker?: string;
+    chat?: boolean;
     mounts: Record<string, 'ro' | 'rw' | null | undefined>;
     devices?: string[];
     gpu?: boolean;
@@ -19,6 +23,7 @@ export interface PipelineStage {
     exclusive?: string;
     hostMounts?: AdditionalMount[];
     resumeSession?: boolean;
+    fan_in?: 'all' | 'dynamic';
     transitions: PipelineTransition[];
 }
 export interface PipelineConfig {
@@ -26,10 +31,12 @@ export interface PipelineConfig {
     entryStage?: string;
 }
 export interface PipelineState {
-    currentStage: string | null;
+    currentStage: string | string[] | null;
     completedStages: string[];
     lastUpdated: string;
     status: 'running' | 'error' | 'success';
+    activations?: Record<string, number>;
+    completions?: Record<string, number>;
 }
 export declare function savePipelineState(groupDir: string, state: PipelineState): void;
 export declare function loadPipelineState(groupDir: string): PipelineState | null;
@@ -52,7 +59,7 @@ export declare class PipelineRunner {
     private runId;
     private manifest;
     private aborted;
-    private currentHandle;
+    private activeHandles;
     private stageSessionIds;
     constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string);
     getRunId(): string;
@@ -89,6 +96,37 @@ export declare class PipelineRunner {
      */
     private initRun;
     /**
+     * Normalize transition.next to an array of target names (empty for pipeline end).
+     */
+    private static nextTargets;
+    /**
+     * Build predecessor map: for each stage, which stages have non-retry
+     * transitions pointing to it?
+     */
+    private buildPredecessorMap;
+    /**
+     * Build reachability map: for each stage, which stages can it
+     * transitively reach through the pipeline's transition graph?
+     * Used by dynamic fan-in to determine if an unactivated predecessor
+     * could still be activated by a currently-alive stage.
+     */
+    private buildReachabilityMap;
+    /**
+     * Check if a stage's fan-in gate is satisfied:
+     * all predecessors must appear in completedStages.
+     */
+    private static fanInReady;
+    /**
+     * Check if a stage's dynamic fan-in gate is satisfied:
+     * only predecessors that have been activated are checked.
+     * A predecessor is "done" if its completion count matches its activation count.
+     *
+     * An unactivated predecessor (activation=0) is only skipped if no alive
+     * stage can transitively reach it. If any alive stage could still activate
+     * the predecessor via retry/error paths, the gate stays closed.
+     */
+    private static fanInReadyDynamic;
+    /**
      * Determine entry stage and resume from previous state if applicable.
      */
     private resolveEntryStage;
@@ -102,7 +140,14 @@ export declare class PipelineRunner {
      */
     private finalizeRun;
     /**
-     * Main FSM loop. Spawns each stage container on-demand and closes it when leaving.
+     * Run a single stage to completion (spawn → turn loop → close).
+     * Self-contained: handles retries and container respawns internally.
+     */
+    private runSingleStage;
+    /**
+     * Main FSM loop with fan-out/fan-in support.
+     * Spawns stage containers on-demand, runs parallel stages concurrently,
+     * and gates fan-in stages until all predecessors complete.
      */
     run(): Promise<'success' | 'error'>;
 }
@@ -118,9 +163,11 @@ export interface AgentTeamConfig {
  */
 export declare function loadAgentTeamConfig(groupFolder: string): AgentTeamConfig | null;
 /**
- * Load and validate PIPELINE.json from a group folder.
+ * Load and validate a pipeline config.
+ * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
+ *   groupFolder/groupDir are ignored and the file is loaded directly.
  * Returns null if the file doesn't exist.
  */
-export declare function loadPipelineConfig(groupFolder: string, groupDir?: string): PipelineConfig | null;
+export declare function loadPipelineConfig(groupFolder: string, groupDir?: string, pipelinePath?: string): PipelineConfig | null;
 export {};
 //# sourceMappingURL=pipeline-runner.d.ts.map

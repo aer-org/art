@@ -106,7 +106,7 @@ export async function setupEngine(opts: {
 
     // Prompt to build missing images
     if (missing.length > 0) {
-      console.log(`\n빌드가 필요한 이미지 ${missing.length}개:`);
+      console.log(`\n${missing.length} image(s) need to be built:`);
       for (const m of missing) console.log(`  - ${m.key} (${m.image})`);
 
       const rl = readline.createInterface({
@@ -118,11 +118,11 @@ export async function setupEngine(opts: {
 
       for (const m of missing) {
         const answer = process.stdin.isTTY
-          ? await ask(`\n"${m.key}" 이미지를 빌드하시겠습니까? (y/N): `)
+          ? await ask(`\nBuild image "${m.key}"? (y/N): `)
           : 'y'; // auto-accept in non-interactive (CI)
         if (answer.trim().toLowerCase() !== 'y') {
           console.error(
-            `\n이 이미지를 사용하지 않는 파이프라인으로 수정하세요.`,
+            `\nPlease update the pipeline to not require this image.`,
           );
           rl.close();
           process.exit(1);
@@ -134,7 +134,7 @@ export async function setupEngine(opts: {
           m.key === 'default' || !m.baseImage
             ? `${scriptDir}/build.sh`
             : `${scriptDir}/build.sh ${m.key} ${m.baseImage}`;
-        console.log(`\n빌드 중: ${m.image}...`);
+        console.log(`\nBuilding: ${m.image}...`);
         execSync(buildCmd, {
           stdio: 'inherit',
           timeout: 600000,

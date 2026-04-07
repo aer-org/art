@@ -4,6 +4,15 @@
  */
 import { ChildProcess } from 'child_process';
 import fs from 'fs';
+/**
+ * Prefix each line in a chunk with `[stageName] `.
+ * Handles partial lines: returns { prefixed, remainder }.
+ * Caller should carry `remainder` across chunks and flush it on stream end.
+ */
+export declare function prefixLogLines(chunk: string, stageName: string, remainder: string): {
+    prefixed: string;
+    remainder: string;
+};
 import { RegisteredGroup } from './types.js';
 export interface ContainerInput {
     prompt: string;

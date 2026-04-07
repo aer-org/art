@@ -16,32 +16,6 @@ export function generateRunId() {
 function runsDir(groupDir) {
     return path.join(groupDir, 'runs');
 }
-// --- Current Run ---
-export function writeCurrentRun(groupDir, info) {
-    const dir = runsDir(groupDir);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = path.join(dir, '_current.json.tmp');
-    const filePath = path.join(dir, '_current.json');
-    fs.writeFileSync(tmpPath, JSON.stringify(info, null, 2));
-    fs.renameSync(tmpPath, filePath);
-}
-export function readCurrentRun(groupDir) {
-    try {
-        const raw = fs.readFileSync(path.join(runsDir(groupDir), '_current.json'), 'utf-8');
-        return JSON.parse(raw);
-    }
-    catch {
-        return null;
-    }
-}
-export function removeCurrentRun(groupDir) {
-    try {
-        fs.unlinkSync(path.join(runsDir(groupDir), '_current.json'));
-    }
-    catch {
-        /* file may not exist */
-    }
-}
 // --- Run Manifest ---
 export function writeRunManifest(groupDir, manifest) {
     const dir = runsDir(groupDir);
@@ -78,15 +52,5 @@ export function listRunManifests(groupDir) {
         }
     })
         .filter((m) => m !== null);
-}
-// --- PID ---
-export function isPidAlive(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch {
-        return false;
-    }
 }
 //# sourceMappingURL=run-manifest.js.map

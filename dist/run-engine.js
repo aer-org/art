@@ -9,11 +9,10 @@ import { setCredentialProxyPort } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
 import { loadAgentTeamConfig, loadPipelineConfig, PipelineRunner, } from './pipeline-runner.js';
-import { writeCurrentRun } from './run-manifest.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 export async function runPipeline(opts) {
-    const { group, runId, artDir, stage } = opts;
+    const { group, runId, artDir, stage, pipeline } = opts;
     // Initialize container runtime
     await initRuntime();
     ensureContainerRuntimeRunning();
@@ -23,12 +22,6 @@ export async function runPipeline(opts) {
     // Start credential proxy
     const { server: proxyServer, port: proxyPort } = await startCredentialProxy(0, getProxyBindHost());
     setCredentialProxyPort(proxyPort);
-    // Write _current.json for orphan detection
-    writeCurrentRun(artDir, {
-        runId,
-        pid: process.pid,
-        startTime: new Date().toISOString(),
-    });
     // Graceful shutdown
     let shuttingDown = false;
     const activeRunners = [];
@@ -68,7 +61,7 @@ export async function runPipeline(opts) {
             const agentGroupDir = path.join(parentGroupDir, agent.folder);
             const pipelineConfig = loadPipelineConfig(group.folder, agentGroupDir);
             if (!pipelineConfig) {
-                console.log(`⚠️ ${agent.name}: PIPELINE.json 없음`);
+                console.log(`⚠️ ${agent.name}: PIPELINE.json not found`);
                 return 'error';
             }
             const virtualGroup = {
@@ -85,9 +78,9 @@ export async function runPipeline(opts) {
         process.exit(allSuccess ? 0 : 1);
     }
     // Single pipeline mode
-    let pipelineConfig = loadPipelineConfig(group.folder);
+    let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
     if (!pipelineConfig) {
-        console.error('No PIPELINE.json found');
+        console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
         proxyServer.close();
         process.exit(1);
     }
@@ -102,18 +95,18 @@ export async function runPipeline(opts) {
         // Replace transitions so the stage terminates on completion
         const isolatedStage = {
             ...stageConfig,
-            transitions: [
-                { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
-                { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
-            ],
+            transitions: stageConfig.command
+                ? [
+                    { marker: 'STAGE_COMPLETE', next: null },
+                    { marker: 'STAGE_ERROR', next: null },
+                ]
+                : [
+                    { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
+                    { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
+                ],
         };
-        // For command stages, append success marker if not present
-        if (isolatedStage.command &&
-            !isolatedStage.command.includes('[STAGE_COMPLETE]')) {
-            isolatedStage.command += " && echo '[STAGE_COMPLETE]'";
-        }
         pipelineConfig = { stages: [isolatedStage] };
-        console.log(`\n🔧 단일 스테이지 실행: ${stage}`);
+        console.log(`\n🔧 Running single stage: ${stage}`);
     }
     logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');
     const runner = new PipelineRunner(group, chatJid, pipelineConfig, notify, onProcess, undefined, runId);

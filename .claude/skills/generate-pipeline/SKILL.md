@@ -14,7 +14,8 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a va
 ```typescript
 interface PipelineTransition {
   marker: string;        // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
-  next?: string | null;  // Target stage name, or null to end pipeline
+  next?: string | string[] | null;  // Target stage(s), array for fan-out, null to end pipeline
+  next_dynamic?: boolean; // Agent picks targets at runtime via payload; next becomes allowlist
   retry?: boolean;       // true = retry current stage on this marker
   prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
 }
@@ -29,6 +30,9 @@ interface PipelineStage {
   name: string;          // Unique stage identifier
   prompt: string;        // Agent instructions (must be "" for command stages)
   command?: string;      // Shell command — presence makes this a command stage
+  successMarker?: string; // Command mode only: stdout substring that means success → STAGE_COMPLETE
+  errorMarker?: string;   // Command mode only: stdout substring that means failure → STAGE_ERROR (resolves immediately, kills process)
+  chat?: boolean;        // Interactive chatting stage (agent converses with user via stdin)
   image?: string;        // Docker image (required for command stages, optional for agent)
   mounts: Record<string, "ro" | "rw" | null>;
   hostMounts?: AdditionalMount[]; // Host path mounts (validated against allowlist)
@@ -39,6 +43,7 @@ interface PipelineStage {
   devices?: string[];    // Device passthrough
   exclusive?: string;    // Mutex key — only one stage with same key runs at a time
   resumeSession?: boolean; // false = fresh session every time. default true = resume previous session
+  fan_in?: "all" | "dynamic"; // Default "all". "dynamic" = wait only for activated predecessors
   transitions: PipelineTransition[];
 }
 
@@ -56,7 +61,23 @@ interface PipelineConfig {
 | `command` | Absent or undefined | Shell string (`sh -c`) |
 | `image` | Optional (registry key or omit for default) | **Required** (Docker image name) |
 | Execution | Claude agent with tools | `sh -c <command>`, no agent |
-| Marker emission | Agent prints `[MARKER]` in response | Command must `echo '[MARKER]'` |
+| Marker emission | Agent prints `[MARKER]` in response | Automatic: `STAGE_COMPLETE` / `STAGE_ERROR` based on `successMarker` or exit code |
+| Transitions | N transitions with custom markers | Fixed: `STAGE_COMPLETE` + `STAGE_ERROR` only |
+| Retry | Supported (`retry: true`) | Not supported — fails immediately |
+
+#### Command stage success detection
+
+Markers are detected by **streaming** stdout line-by-line. The first marker found wins — no need to wait for process exit.
+
+1. `successMarker` found in stdout → immediately `STAGE_COMPLETE`
+2. `errorMarker` found in stdout → immediately `STAGE_ERROR` (process is killed)
+3. Neither found, process exits → exit code 0 = `STAGE_COMPLETE`, non-zero = `STAGE_ERROR`
+
+Both fields are optional:
+- Neither set → exit code only
+- `successMarker` only → match = success, no match = exit code fallback
+- `errorMarker` only → match = immediate failure, no match = exit code fallback
+- Both set → first match wins
 
 ---
 
@@ -174,8 +195,8 @@ git-start → (work stages) → git-save → (more stages)
 ```
 Wrap iteration loops with git agent stages. Use `project:ro` + `project:.git:rw`.
 
-### Error retry
-Add to any stage:
+### Error retry (agent stages only)
+Add to any **agent** stage (not command stages — they fail immediately):
 ```json
 { "marker": "STAGE_ERROR", "retry": true, "prompt": "Recoverable error — retry" }
 ```
@@ -185,12 +206,15 @@ Add to any stage:
 {
   "name": "train",
   "prompt": "",
-  "command": "cd /workspace/project && python train.py > /workspace/results/log.txt 2>&1; echo '[STAGE_COMPLETE]'",
+  "command": "cd /workspace/project && python train.py > /workspace/results/log.txt 2>&1",
   "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04",
   "gpu": true,
   "runAsRoot": true,
   "mounts": { "project": "ro", "results": "rw", "cache": "rw" },
-  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "review" },
+    { "marker": "STAGE_ERROR", "next": null }
+  ]
 }
 ```
 
@@ -199,12 +223,129 @@ Add to any stage:
 {
   "name": "fpga-synth",
   "prompt": "",
-  "command": "source /tools/Xilinx/Vivado/2023.2/settings64.sh && cd /workspace/project && make fpga 2>&1; echo '[STAGE_COMPLETE]'",
+  "command": "source /tools/Xilinx/Vivado/2023.2/settings64.sh && cd /workspace/project && make fpga 2>&1",
   "image": "cva6-vivado",
   "privileged": true,
   "mounts": { "project": "ro", "build": "rw" },
-  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }]
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "review" },
+    { "marker": "STAGE_ERROR", "next": null }
+  ]
 }
+```
+
+### Chatting stage (interactive user conversation)
+```json
+{
+  "name": "interview",
+  "prompt": "Discuss requirements with the user. Ask clarifying questions.",
+  "chat": true,
+  "mounts": { "project": "ro", "plan": "rw" },
+  "transitions": [
+    { "marker": "INTERVIEW_COMPLETE", "next": "implement", "prompt": "Requirements clarified" },
+    { "marker": "STAGE_ERROR", "retry": true }
+  ]
+}
+```
+
+### Fan-out / Fan-in (parallel stages)
+`next` can be an array to fan-out into parallel stages. Fan-in is automatic: a stage with multiple predecessors waits for all to complete.
+```json
+{
+  "stages": [
+    {
+      "name": "build",
+      "prompt": "Build the project...",
+      "mounts": { "src": "ro", "build": "rw" },
+      "transitions": [{ "marker": "BUILD_OK", "next": ["test-unit", "test-e2e"] }]
+    },
+    {
+      "name": "test-unit",
+      "prompt": "Run unit tests...",
+      "mounts": { "build": "ro", "results": "rw" },
+      "transitions": [{ "marker": "DONE", "next": "deploy" }]
+    },
+    {
+      "name": "test-e2e",
+      "prompt": "Run e2e tests...",
+      "mounts": { "build": "ro", "results": "rw" },
+      "transitions": [{ "marker": "DONE", "next": "deploy" }]
+    },
+    {
+      "name": "deploy",
+      "prompt": "Deploy after all tests pass...",
+      "mounts": { "build": "ro" },
+      "transitions": [{ "marker": "DEPLOYED", "next": null }]
+    }
+  ]
+}
+```
+
+### Dynamic Transition (selective fan-out)
+`next_dynamic: true`를 쓰면 agent가 런타임에 fan-out target을 선택할 수 있다. `next`는 허용 목록(allowlist)으로 작동하며, agent는 marker payload로 subset을 지정한다.
+
+Agent emission format:
+- `[MARKER:stage1]` → single target
+- `[MARKER:stage1,stage2]` → multiple targets (selective fan-out)
+- `[MARKER]` → payload 없으면 `next` 전체 사용 (fallback)
+
+```json
+{
+  "name": "review-router",
+  "prompt": "Analyze test failure log at /workspace/results/router-test.log.\nDetermine which modules caused the failure.\nEmit [FIX:edit-arbiter] or [FIX:edit-arbiter,edit-crossbar] depending on the cause.",
+  "mounts": { "project": "ro", "results": "ro" },
+  "transitions": [
+    {
+      "marker": "FIX",
+      "next_dynamic": true,
+      "next": ["edit-arbiter", "edit-crossbar", "edit-router"],
+      "prompt": "Agent identified failing modules — re-edit only those"
+    },
+    { "marker": "PASS", "next": "test-system", "prompt": "All modules pass" },
+    { "marker": "STAGE_ERROR", "retry": true, "prompt": "Environment error" }
+  ]
+}
+```
+
+Rules:
+- `next_dynamic` and `retry` cannot be used together
+- `next_dynamic` requires `next` to be a non-null array (allowlist)
+- Agent payload targets must be in the allowlist, otherwise runtime error
+
+### Conditional Fan-in (`fan_in: "dynamic"`)
+기본 fan-in은 모든 predecessor가 완료되어야 실행된다. `fan_in: "dynamic"`이면 **활성화된 predecessor만** 기다린다. Dynamic transition으로 일부 경로만 재실행할 때, 재실행하지 않은 경로를 기다리지 않게 한다.
+
+```json
+{
+  "name": "test-router",
+  "fan_in": "dynamic",
+  "prompt": "",
+  "command": "cd /workspace/project && make test-router 2>&1",
+  "image": "sim-runner:latest",
+  "mounts": { "project": "ro", "results": "rw" },
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "test-system" },
+    { "marker": "STAGE_ERROR", "next": "review-router" }
+  ]
+}
+```
+
+Use `fan_in: "dynamic"` on any stage that:
+- Is the convergence point after a `next_dynamic` transition
+- Might not have all predecessors re-run in every execution cycle
+
+### Hierarchical test promotion (dynamic fan-out + conditional fan-in)
+Bottom-up test promotion pattern. On failure, review agent selectively re-runs only the causal modules.
+```
+plan → [edit-arbiter, edit-crossbar] → [test-arbiter, test-crossbar]
+                                        ↓ fan-in (dynamic)
+                                    edit-router → test-router
+                                        ↓ FAIL
+                                    review-router → [FIX:edit-arbiter] (dynamic)
+                                        ↓ re-run arbiter only
+                                    edit-arbiter → test-arbiter → edit-router (fan-in: dynamic)
+                                        ↓
+                                    test-router → PASS → done
 ```
 
 ---
@@ -265,7 +406,8 @@ Before writing the JSON, verify ALL of the following:
 - [ ] Every stage has a unique `name`
 - [ ] Every transition `next` references an existing stage name or is `null`
 - [ ] Every stage has at least one transition
-- [ ] Command stages have `prompt: ""` and an `image` field
+- [ ] Command stages have `prompt: ""`, an `image` field, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions (no retry)
+- [ ] Command stages use `successMarker` if success depends on stdout content (otherwise exit code is used)
 - [ ] Agent stages have a non-empty `prompt` and no `command` field
 - [ ] At least one path through the graph reaches `next: null`
 - [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`)
@@ -273,4 +415,8 @@ Before writing the JSON, verify ALL of the following:
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
 - [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values
+- [ ] `next_dynamic` transitions have `next` as a non-null array (allowlist)
+- [ ] `next_dynamic` and `retry` are not used on the same transition
+- [ ] `fan_in: "dynamic"` stages have multiple predecessors (otherwise meaningless)
+- [ ] Dynamic fan-out → fan-in paths use `fan_in: "dynamic"` at convergence points
 - [ ] The JSON is valid and parseable

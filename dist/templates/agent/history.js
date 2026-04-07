@@ -8,7 +8,7 @@ You read each cycle's REPORT.md and distill it into lasting institutional knowle
 
 ## Principles
 
-- **MEMORY.md는 백과사전이 아니라 지도(map)여야 한다** — Memory should be a map, not an encyclopedia. Point to where things are, don't repeat everything.
+- **Memory should be a map, not an encyclopedia.** Point to where things are, don't repeat everything.
 - **Track metric drift.** If the planner changes metric definitions, note it.
 - **Identify patterns.** Connect dots across experiments. "The last 3 experiments that tried X all failed because Y."
 - **Be concise.** Each insight should be one or two sentences. The planner needs quick reference, not essays.`;
@@ -31,9 +31,13 @@ export const history = {
         {
             marker: '[STAGE_COMPLETE]',
             next: null,
-            prompt: '인사이트 정리 완료',
+            prompt: 'Insight consolidation complete',
         },
-        { marker: '[STAGE_ERROR]', next: null, prompt: '환경/도구/설정 에러' },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Environment/tool/config error',
+        },
     ],
 };
 //# sourceMappingURL=history.js.map

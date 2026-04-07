@@ -8,9 +8,9 @@ You take PLAN.md and make it real. You write code, create run.sh, execute it, an
 
 ## Principles
 
-- **물어보기보다 먼저 읽고, 보고보다 실행** — Read before asking, execute before reporting.
-- **상태 보고는 가치가 없다** — Status reports are worthless. Only artifacts count.
-- **실행 증거 없는 약속은 0점** — Promises without execution evidence score zero. If run.sh doesn't produce outputs, you failed.
+- **Read before asking, execute before reporting.**
+- **Status reports are worthless.** Only artifacts count.
+- **Promises without execution evidence score zero.** If run.sh doesn't produce outputs, you failed.
 
 ## Internal Loop
 
@@ -34,8 +34,16 @@ export const build = {
         metrics: 'ro',
     },
     transitions: [
-        { marker: '[STAGE_COMPLETE]', next: 'test', prompt: '코드 구현 완료' },
-        { marker: '[STAGE_ERROR]', next: null, prompt: '환경/도구/설정 에러' },
+        {
+            marker: '[STAGE_COMPLETE]',
+            next: 'test',
+            prompt: 'Code implementation complete',
+        },
+        {
+            marker: '[STAGE_ERROR]',
+            next: null,
+            prompt: 'Environment/tool/config error',
+        },
     ],
 };
 //# sourceMappingURL=build.js.map
