@@ -724,10 +724,7 @@ export class PipelineRunner {
         (t) => t.marker === 'STAGE_ERROR',
       );
 
-      const resolveMarker = (
-        isSuccess: boolean,
-        payload: string | null,
-      ) => {
+      const resolveMarker = (isSuccess: boolean, payload: string | null) => {
         if (markerResolved || !handle.pendingResult) return;
         markerResolved = true;
         const transition = isSuccess ? completeTransition : errorTransition;
@@ -777,7 +774,10 @@ export class PipelineRunner {
             stageConfig.errorMarker &&
             stdout.includes(stageConfig.errorMarker)
           ) {
-            resolveMarker(false, `errorMarker detected: ${stageConfig.errorMarker}`);
+            resolveMarker(
+              false,
+              `errorMarker detected: ${stageConfig.errorMarker}`,
+            );
           }
         }
       });
