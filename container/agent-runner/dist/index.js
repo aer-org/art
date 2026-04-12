@@ -288,7 +288,7 @@ function waitForIpcMessage() {
  * allowing agent teams subagents to run to completion.
  * Also pipes IPC messages into the stream during the query.
  */
-async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, endOnResult) {
+async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, endOnResult, ephemeralAppend) {
     const stream = new MessageStream();
     stream.push(prompt);
     // Poll IPC for follow-up messages and _close sentinel during the query
@@ -349,9 +349,12 @@ async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv
             additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
             resume: sessionId,
             resumeSessionAt: resumeAt,
-            systemPrompt: globalClaudeMd
-                ? { type: 'preset', preset: 'claude_code', append: globalClaudeMd }
-                : undefined,
+            systemPrompt: (() => {
+                const appendParts = [globalClaudeMd, ephemeralAppend].filter(Boolean);
+                if (appendParts.length === 0)
+                    return undefined;
+                return { type: 'preset', preset: 'claude_code', append: appendParts.join('\n\n') };
+            })(),
             allowedTools: [
                 'Bash',
                 'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -648,10 +651,14 @@ async function main() {
     }
     // Query loop: run query → wait for IPC message → run new query → repeat
     let resumeAt;
+    // One-shot system-prompt append: consumed by the first query only, then cleared
+    // so subsequent IPC-driven queries don't re-inject it.
+    let pendingEphemeral = containerInput.ephemeralSystemPrompt;
     try {
         while (true) {
-            log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
-            const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.endOnFirstResult);
+            log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}${pendingEphemeral ? ', ephemeral system prompt attached' : ''})...`);
+            const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.endOnFirstResult, pendingEphemeral);
+            pendingEphemeral = undefined;
             if (queryResult.newSessionId) {
                 sessionId = queryResult.newSessionId;
             }

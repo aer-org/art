@@ -29,6 +29,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   endOnFirstResult?: boolean;
+  ephemeralSystemPrompt?: string;
 }
 
 interface ContainerOutput {
@@ -359,6 +360,7 @@ async function runQuery(
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
   endOnResult?: boolean,
+  ephemeralAppend?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; resultTexts: string[] }> {
   const stream = new MessageStream();
   stream.push(prompt);
@@ -425,9 +427,11 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
+      systemPrompt: (() => {
+        const appendParts = [globalClaudeMd, ephemeralAppend].filter(Boolean) as string[];
+        if (appendParts.length === 0) return undefined;
+        return { type: 'preset' as const, preset: 'claude_code' as const, append: appendParts.join('\n\n') };
+      })(),
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -735,9 +739,12 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  // One-shot system-prompt append: consumed by the first query only, then cleared
+  // so subsequent IPC-driven queries don't re-inject it.
+  let pendingEphemeral = containerInput.ephemeralSystemPrompt;
   try {
     while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
+      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}${pendingEphemeral ? ', ephemeral system prompt attached' : ''})...`);
 
       const queryResult = await runQuery(
         prompt,
@@ -747,7 +754,9 @@ async function main(): Promise<void> {
         sdkEnv,
         resumeAt,
         containerInput.endOnFirstResult,
+        pendingEphemeral,
       );
+      pendingEphemeral = undefined;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

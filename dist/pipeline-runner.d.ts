@@ -46,7 +46,18 @@ interface StageMarkerResult {
 }
 /**
  * Parse stage markers dynamically from the stage's transitions array.
- * Matches `[MARKER]` or `[MARKER: payload]` patterns, first match wins.
+ *
+ * Supported forms (first match wins across transitions):
+ *   [MARKER]                                          — no payload
+ *   [MARKER: short inline payload]                    — single-line payload
+ *   [MARKER]
+ *   ---PAYLOAD_START---
+ *   free-form multi-line payload (any chars incl. ])
+ *   ---PAYLOAD_END---                                 — fenced payload
+ *
+ * The fenced form is preferred for anything non-trivial. Payload must not
+ * contain the literal sentinel `---PAYLOAD_END---` (non-greedy match stops
+ * at the first occurrence).
  */
 export declare function parseStageMarkers(resultTexts: string[], transitions: PipelineTransition[]): StageMarkerResult;
 export declare class PipelineRunner {
