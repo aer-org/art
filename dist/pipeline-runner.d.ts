@@ -38,8 +38,14 @@ export interface PipelineState {
     activations?: Record<string, number>;
     completions?: Record<string, number>;
 }
-export declare function savePipelineState(groupDir: string, state: PipelineState): void;
-export declare function loadPipelineState(groupDir: string): PipelineState | null;
+/**
+ * Derive a short tag from a custom pipeline file path.
+ * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
+ *      undefined (default PIPELINE.json) → undefined
+ */
+export declare function pipelineTagFromPath(pipelinePath: string | undefined): string | undefined;
+export declare function savePipelineState(groupDir: string, state: PipelineState, tag?: string): void;
+export declare function loadPipelineState(groupDir: string, tag?: string): PipelineState | null;
 interface StageMarkerResult {
     matched: PipelineTransition | null;
     payload: string | null;
@@ -68,11 +74,12 @@ export declare class PipelineRunner {
     private onProcess;
     private groupDir;
     private runId;
+    private pipelineTag;
     private manifest;
     private aborted;
     private activeHandles;
     private stageSessionIds;
-    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string);
+    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string);
     getRunId(): string;
     abort(): Promise<void>;
     /** Send a visually prominent banner to TUI for stage transitions */

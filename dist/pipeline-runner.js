@@ -53,12 +53,35 @@ function getExclusiveLock(key) {
     return lock;
 }
 const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
-export function savePipelineState(groupDir, state) {
-    const filepath = path.join(groupDir, PIPELINE_STATE_FILE);
+/**
+ * Derive the state file name for a given pipeline tag.
+ * - undefined / 'PIPELINE' → 'PIPELINE_STATE.json' (backward compatible)
+ * - 'my-pipeline'          → 'PIPELINE_STATE.my-pipeline.json'
+ */
+function pipelineStateFileName(tag) {
+    if (!tag || tag === 'PIPELINE')
+        return PIPELINE_STATE_FILE;
+    return `PIPELINE_STATE.${tag}.json`;
+}
+/**
+ * Derive a short tag from a custom pipeline file path.
+ * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
+ *      undefined (default PIPELINE.json) → undefined
+ */
+export function pipelineTagFromPath(pipelinePath) {
+    if (!pipelinePath)
+        return undefined;
+    const base = path.basename(pipelinePath, '.json');
+    if (base === 'PIPELINE')
+        return undefined;
+    return base;
+}
+export function savePipelineState(groupDir, state, tag) {
+    const filepath = path.join(groupDir, pipelineStateFileName(tag));
     atomicWrite(filepath, JSON.stringify(state, null, 2));
 }
-export function loadPipelineState(groupDir) {
-    const filepath = path.join(groupDir, PIPELINE_STATE_FILE);
+export function loadPipelineState(groupDir, tag) {
+    const filepath = path.join(groupDir, pipelineStateFileName(tag));
     try {
         const raw = fs.readFileSync(filepath, 'utf-8');
         return JSON.parse(raw);
@@ -159,11 +182,12 @@ export class PipelineRunner {
     onProcess;
     groupDir;
     runId;
+    pipelineTag;
     manifest;
     aborted = false;
     activeHandles = new Map();
     stageSessionIds = new Map();
-    constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId) {
+    constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId, pipelineTag) {
         this.group = group;
         this.chatJid = chatJid;
         this.config = pipelineConfig;
@@ -171,6 +195,7 @@ export class PipelineRunner {
         this.onProcess = onProcess;
         this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
         this.runId = runId ?? generateRunId();
+        this.pipelineTag = pipelineTag;
         this.manifest = {
             runId: this.runId,
             pid: process.pid,
@@ -886,23 +911,24 @@ PAYLOAD FORMATS:
             return this.config.stages[0].name;
         };
         // Resume from last completed stage if pipeline was interrupted
-        const existingState = loadPipelineState(this.groupDir);
+        const existingState = loadPipelineState(this.groupDir, this.pipelineTag);
         if (existingState &&
             existingState.status !== 'success' &&
             existingState.completedStages.length > 0) {
             const completedStages = [...existingState.completedStages];
-            // Find where to resume: look at the last completed stage's forward transition
-            const lastCompleted = completedStages[completedStages.length - 1];
-            const lastConfig = stagesByName.get(lastCompleted);
-            const completeTransition = lastConfig?.transitions.find((t) => !t.retry && t.next);
+            // Resume from currentStage directly — it captures exactly what was
+            // running at interruption, handling cyclic and fan-out cases correctly.
             let initialStages;
-            if (completeTransition?.next) {
-                const targets = PipelineRunner.nextTargets(completeTransition.next);
-                // Only resume targets not yet completed
-                const remaining = targets.filter((t) => !completedStages.includes(t));
-                initialStages = remaining.length > 0 ? remaining : [resolveEntry()];
+            if (existingState.currentStage) {
+                const current = Array.isArray(existingState.currentStage)
+                    ? existingState.currentStage
+                    : [existingState.currentStage];
+                initialStages = current.filter((s) => stagesByName.has(s));
             }
             else {
+                initialStages = [];
+            }
+            if (initialStages.length === 0) {
                 initialStages = [resolveEntry()];
             }
             await this.notifyBanner(`🔄 Resuming from ${initialStages.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`);
@@ -1038,7 +1064,7 @@ PAYLOAD FORMATS:
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: 'running',
-        });
+        }, this.pipelineTag);
         // Close the container first, then retrieve session ID
         await this.closeAndWait(handle);
         const containerResult = await handle.containerPromise;
@@ -1088,7 +1114,7 @@ PAYLOAD FORMATS:
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: lastResult,
-        });
+        }, this.pipelineTag);
         this.manifest.endTime = new Date().toISOString();
         this.manifest.status = lastResult;
         writeRunManifest(this.groupDir, this.manifest);
@@ -1243,7 +1269,7 @@ PAYLOAD FORMATS:
             status: 'running',
             activations: Object.fromEntries(activations),
             completions: Object.fromEntries(completions),
-        });
+        }, this.pipelineTag);
         const predecessors = this.buildPredecessorMap();
         const reachability = this.buildReachabilityMap();
         // Each entry: { name, initialPrompt, ephemeralSystemPrompt }
@@ -1357,7 +1383,7 @@ PAYLOAD FORMATS:
                 status: 'running',
                 activations: Object.fromEntries(activations),
                 completions: Object.fromEntries(completions),
-            });
+            }, this.pipelineTag);
             // Wait for at least one stage to complete
             await waitForResult();
             // Drain all available results and launch ready successors immediately

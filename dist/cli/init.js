@@ -63,7 +63,7 @@ export function scaffoldArtDir(projectDir) {
         }
     }
     // .gitignore
-    fs.writeFileSync(path.join(artDir, '.gitignore'), 'logs/\nsessions/\nPIPELINE_STATE.json\n.tmp/\n');
+    fs.writeFileSync(path.join(artDir, '.gitignore'), 'logs/\nsessions/\nPIPELINE_STATE*.json\n.tmp/\n');
     console.log(`  ${ART_DIR_NAME}/ created with default pipeline.`);
     console.log(`  Pipeline: ${stages.map((s) => s.name).join(' → ')}\n`);
     // Ensure default image is registered

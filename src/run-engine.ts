@@ -17,6 +17,7 @@ import {
 import {
   loadAgentTeamConfig,
   loadPipelineConfig,
+  pipelineTagFromPath,
   PipelineRunner,
 } from './pipeline-runner.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -167,6 +168,7 @@ export async function runPipeline(opts: {
     onProcess,
     undefined,
     runId,
+    pipelineTagFromPath(pipeline),
   );
   activeRunners.push(runner);
   const result = await runner.run();

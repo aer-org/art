@@ -8,7 +8,7 @@ import path from 'path';
 import { setCredentialProxyPort } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
-import { loadAgentTeamConfig, loadPipelineConfig, PipelineRunner, } from './pipeline-runner.js';
+import { loadAgentTeamConfig, loadPipelineConfig, pipelineTagFromPath, PipelineRunner, } from './pipeline-runner.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 export async function runPipeline(opts) {
@@ -109,7 +109,7 @@ export async function runPipeline(opts) {
         console.log(`\n🔧 Running single stage: ${stage}`);
     }
     logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');
-    const runner = new PipelineRunner(group, chatJid, pipelineConfig, notify, onProcess, undefined, runId);
+    const runner = new PipelineRunner(group, chatJid, pipelineConfig, notify, onProcess, undefined, runId, pipelineTagFromPath(pipeline));
     activeRunners.push(runner);
     const result = await runner.run();
     proxyServer.close();
