@@ -158,7 +158,18 @@ interface StageHandle {
 
 /**
  * Parse stage markers dynamically from the stage's transitions array.
- * Matches `[MARKER]` or `[MARKER: payload]` patterns, first match wins.
+ *
+ * Supported forms (first match wins across transitions):
+ *   [MARKER]                                          — no payload
+ *   [MARKER: short inline payload]                    — single-line payload
+ *   [MARKER]
+ *   ---PAYLOAD_START---
+ *   free-form multi-line payload (any chars incl. ])
+ *   ---PAYLOAD_END---                                 — fenced payload
+ *
+ * The fenced form is preferred for anything non-trivial. Payload must not
+ * contain the literal sentinel `---PAYLOAD_END---` (non-greedy match stops
+ * at the first occurrence).
  */
 export function parseStageMarkers(
   resultTexts: string[],
@@ -166,9 +177,18 @@ export function parseStageMarkers(
 ): StageMarkerResult {
   const combined = resultTexts.join('\n');
   for (const transition of transitions) {
-    // Match [MARKER] or [MARKER: payload]
+    const markerName = escapeRegExp(transition.marker);
+    // Fenced payload: [MARKER] followed by ---PAYLOAD_START---...---PAYLOAD_END---
+    const fencedRegex = new RegExp(
+      `\\[${markerName}\\][ \\t]*\\r?\\n[ \\t]*---PAYLOAD_START---[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*---PAYLOAD_END---`,
+    );
+    const fencedMatch = fencedRegex.exec(combined);
+    if (fencedMatch) {
+      return { matched: transition, payload: fencedMatch[1] };
+    }
+    // Inline / no payload: [MARKER] or [MARKER: payload]
     const regex = new RegExp(
-      `\\[${escapeRegExp(transition.marker)}(?::\\s*(.+?))?\\]`,
+      `\\[${markerName}(?::\\s*(.+?))?\\]`,
     );
     const match = regex.exec(combined);
     if (match) {
@@ -441,6 +461,7 @@ export class PipelineRunner {
     stageConfig: PipelineStage,
     initialPrompt: string,
     logStream?: fs.WriteStream,
+    ephemeralSystemPrompt?: string,
   ): StageHandle {
     const subFolder = `${this.group.folder}__pipeline_${stageConfig.name}`;
 
@@ -598,6 +619,7 @@ export class PipelineRunner {
           isMain: false,
           assistantName: `pipeline-${stageConfig.name}`,
           runId: this.runId,
+          ephemeralSystemPrompt,
         },
         (proc, containerName) => this.onProcess(proc, containerName),
         onOutput,
@@ -919,7 +941,16 @@ ${modeRule}
 - Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
 
 STAGE MARKERS — use the correct one:
-${markerLines.join('\n')}`;
+${markerLines.join('\n')}
+
+PAYLOAD FORMATS:
+- Short, single-line payload: [MARKER: payload text]
+- Long or multi-line payload (preferred for anything non-trivial), emit the bare marker on its own line followed by a fenced block:
+    [MARKER]
+    ---PAYLOAD_START---
+    free-form content, any characters or line count allowed
+    ---PAYLOAD_END---
+  Do NOT include the literal string "---PAYLOAD_END---" inside the payload.`;
   }
 
   /**
@@ -932,13 +963,9 @@ ${markerLines.join('\n')}`;
     pipelineLogStream: fs.WriteStream;
   } | null> {
     const planPath = path.join(this.groupDir, 'plan', 'PLAN.md');
-
-    if (!fs.existsSync(planPath)) {
-      await this.notify(
-        '⚠️ PLAN.md not found. Please write an implementation plan first.',
-      );
-      return null;
-    }
+    const planContent = fs.existsSync(planPath)
+      ? fs.readFileSync(planPath, 'utf-8')
+      : '';
 
     // Ensure project directory is a git repo (containers need it for branching/committing)
     const projectRoot = path.dirname(this.groupDir);
@@ -962,8 +989,6 @@ ${markerLines.join('\n')}`;
 
     // Write initial manifest
     writeRunManifest(this.groupDir, this.manifest);
-
-    const planContent = fs.readFileSync(planPath, 'utf-8');
     logger.info(
       {
         group: this.group.name,
@@ -998,7 +1023,10 @@ ${markerLines.join('\n')}`;
       stagesByName.set(s.name, s);
     }
 
-    return { planContent, stagesByName, pipelineLogStream };
+    const planSuffix = planContent
+      ? `\n\n## Plan\n\n${planContent}`
+      : '';
+    return { planContent: planSuffix, stagesByName, pipelineLogStream };
   }
 
   /**
@@ -1239,6 +1267,7 @@ ${markerLines.join('\n')}`;
     stageResolved: boolean;
     nextStageName: string | string[] | null;
     nextInitialPrompt: string | null;
+    nextEphemeralSystemPrompt?: string | null;
     lastResult: 'success' | 'error' | null;
   }> {
     const { matched, payload } = result;
@@ -1311,7 +1340,7 @@ ${markerLines.join('\n')}`;
         return {
           stageResolved: true,
           nextStageName: currentStageName,
-          nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
+          nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}${planContent}`,
           lastResult: null,
         };
       }
@@ -1320,7 +1349,7 @@ ${markerLines.join('\n')}`;
       handle.pendingResult = createDeferred();
       sendToStage(
         handle,
-        `An error occurred in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`,
+        `An error occurred in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}${planContent}`,
       );
       return {
         stageResolved: false,
@@ -1406,21 +1435,36 @@ ${markerLines.join('\n')}`;
     this.activeHandles.delete(currentStageName);
 
     // Payload forwarding only works for single-target non-dynamic transitions
-    // (dynamic payloads contain target names, not content to forward)
+    // (dynamic payloads contain target names, not content to forward).
+    //
+    // Routing rule:
+    //   - Target has a resumed session (re-entry) → send payload via ephemeral
+    //     system-prompt append so it does NOT persist in the transcript.
+    //   - Target is entering fresh → bundle payload into the initial user
+    //     prompt like before (no session to pollute).
     let nextInitialPrompt: string | null = null;
+    let nextEphemeralSystemPrompt: string | null = null;
     const targets = PipelineRunner.nextTargets(targetName);
     if (targets.length === 1 && payload && !matched.next_dynamic) {
       const targetConfig = stagesByName.get(targets[0]);
       const targetRules = targetConfig
         ? this.buildCommonRules(targetConfig)
         : commonRules;
-      nextInitialPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}\n\n## Plan\n\n${planContent}`;
+      const isResumedTarget =
+        targetConfig?.resumeSession !== false &&
+        this.stageSessionIds.has(targets[0]);
+      if (isResumedTarget) {
+        nextEphemeralSystemPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}`;
+      } else {
+        nextInitialPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}${planContent}`;
+      }
     }
 
     return {
       stageResolved: true,
       nextStageName: targetName,
       nextInitialPrompt,
+      nextEphemeralSystemPrompt,
       lastResult: targets.length === 0 ? 'success' : null,
     };
   }
@@ -1467,10 +1511,12 @@ ${markerLines.join('\n')}`;
     planContent: string,
     pipelineLogStream: fs.WriteStream,
     initialPromptOverride?: string | null,
+    ephemeralSystemPromptOverride?: string | null,
   ): Promise<{
     stageName: string;
     nextStages: string | string[] | null;
     nextInitialPrompt: string | null;
+    nextEphemeralSystemPrompt: string | null;
     result: 'success' | 'error' | null;
   }> {
     const stageConfig = stagesByName.get(stageName);
@@ -1480,6 +1526,7 @@ ${markerLines.join('\n')}`;
         stageName,
         nextStages: null,
         nextInitialPrompt: null,
+        nextEphemeralSystemPrompt: null,
         result: 'error',
       };
     }
@@ -1505,10 +1552,15 @@ ${markerLines.join('\n')}`;
     let nextStages: string | string[] | null = null;
     let stageResult: 'success' | 'error' | null = null;
     let outNextInitialPrompt: string | null = null;
+    let outNextEphemeralSystemPrompt: string | null = null;
 
     try {
       const commonRules = this.buildCommonRules(stageConfig);
       let nextInitialPrompt: string | null = initialPromptOverride ?? null;
+      // Ephemeral system-prompt append consumed only by the next spawn in this stage.
+      // Used when re-entering a resumed stage with a handoff payload from a predecessor.
+      let nextEphemeralSystemPrompt: string | null =
+        ephemeralSystemPromptOverride ?? null;
       let containerRespawnCount = 0;
       const MAX_CONTAINER_RESPAWNS = 3;
       let turnCount = 0;
@@ -1522,14 +1574,17 @@ ${markerLines.join('\n')}`;
 
         const initialPrompt =
           nextInitialPrompt ||
-          `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
+          `${stageConfig.prompt}\n${commonRules}${planContent}`;
         nextInitialPrompt = null;
+        const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
+        nextEphemeralSystemPrompt = null;
 
         const stageStartTime = Date.now();
         const handle = this.spawnStageContainer(
           stageConfig,
           initialPrompt,
           pipelineLogStream,
+          ephemeralForSpawn,
         );
         this.activeHandles.set(stageName, handle);
 
@@ -1551,7 +1606,7 @@ ${markerLines.join('\n')}`;
           }
 
           if (!isFirstTurn) {
-            const prompt = `${stageConfig.prompt}\n${commonRules}\n\n## Plan\n\n${planContent}`;
+            const prompt = `${stageConfig.prompt}\n${commonRules}${planContent}`;
             sendToStage(handle, prompt);
           }
           isFirstTurn = false;
@@ -1592,11 +1647,13 @@ ${markerLines.join('\n')}`;
               // Container respawn — loop again with same stage
               containerRespawnCount++;
               nextInitialPrompt = outcome.nextInitialPrompt;
+              nextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
               currentStage = stageName; // stay in outer while
             } else {
               // Advance to next stage(s) or end
               nextStages = outcome.nextStageName;
               outNextInitialPrompt = outcome.nextInitialPrompt;
+              outNextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
               currentStage = null; // exit outer while
               if (outcome.lastResult) {
                 stageResult = outcome.lastResult;
@@ -1620,6 +1677,7 @@ ${markerLines.join('\n')}`;
       stageName,
       nextStages,
       nextInitialPrompt: outNextInitialPrompt,
+      nextEphemeralSystemPrompt: outNextEphemeralSystemPrompt,
       result: stageResult,
     };
   }
@@ -1654,9 +1712,14 @@ ${markerLines.join('\n')}`;
 
     const predecessors = this.buildPredecessorMap();
     const reachability = this.buildReachabilityMap();
-    // Each entry: { name, initialPrompt } — prompt is set when payload forwarding applies
-    let pendingStages: Array<{ name: string; initialPrompt?: string | null }> =
-      initialStages.map((name) => ({ name }));
+    // Each entry: { name, initialPrompt, ephemeralSystemPrompt }
+    // — set when payload forwarding applies (initialPrompt for fresh entries,
+    //   ephemeralSystemPrompt for re-entry into a resumed stage).
+    let pendingStages: Array<{
+      name: string;
+      initialPrompt?: string | null;
+      ephemeralSystemPrompt?: string | null;
+    }> = initialStages.map((name) => ({ name }));
     const waitingForFanIn = new Set<string>();
     let lastResult: 'success' | 'error' = 'success';
 
@@ -1685,6 +1748,7 @@ ${markerLines.join('\n')}`;
     const launchStage = (entry: {
       name: string;
       initialPrompt?: string | null;
+      ephemeralSystemPrompt?: string | null;
     }): void => {
       runningNames.add(entry.name);
       const p = this.runSingleStage(
@@ -1694,6 +1758,7 @@ ${markerLines.join('\n')}`;
         planContent,
         pipelineLogStream,
         entry.initialPrompt,
+        entry.ephemeralSystemPrompt,
       )
         .then((result) => {
           resultQueue.push(result);
@@ -1707,6 +1772,7 @@ ${markerLines.join('\n')}`;
             stageName: entry.name,
             nextStages: null,
             nextInitialPrompt: null,
+            nextEphemeralSystemPrompt: null,
             result: 'error',
           });
           running.delete(p);
@@ -1748,6 +1814,7 @@ ${markerLines.join('\n')}`;
     const tryLaunch = (entry: {
       name: string;
       initialPrompt?: string | null;
+      ephemeralSystemPrompt?: string | null;
     }): void => {
       const cfg = stagesByName.get(entry.name);
       if (cfg?.chat && running.size > 0) {
@@ -1816,6 +1883,7 @@ ${markerLines.join('\n')}`;
           stageName: finishedStage,
           nextStages,
           nextInitialPrompt,
+          nextEphemeralSystemPrompt,
           result,
         } = resultQueue.shift()!;
 
@@ -1844,6 +1912,8 @@ ${markerLines.join('\n')}`;
             tryLaunch({
               name: target,
               initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
+              ephemeralSystemPrompt:
+                targets.length === 1 ? nextEphemeralSystemPrompt : null,
             });
           } else {
             waitingForFanIn.add(target);

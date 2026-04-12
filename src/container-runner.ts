@@ -64,6 +64,12 @@ export interface ContainerInput {
   assistantName?: string;
   endOnFirstResult?: boolean;
   runId?: string;
+  /**
+   * One-shot system-prompt append consumed only by the first query of the
+   * container. Used to deliver stage handoff payloads without polluting the
+   * resumed session transcript (which only stores user/assistant turns).
+   */
+  ephemeralSystemPrompt?: string;
 }
 
 export interface ContainerOutput {
