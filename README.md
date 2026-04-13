@@ -14,7 +14,10 @@ Turn any existing project into a self-improving pipeline. Draw your own harness 
 
 ### Install
 
-Prerequisites: **Docker**, **Git**, **Node.js ≥ 20**, **Claude Code CLI**
+Prerequisites: **Docker**, **Git**, **Node.js ≥ 20**, and one agent CLI:
+
+- **Codex**: `npm install -g @openai/codex` then log in on the host with `codex`
+- **Claude Code**: `npm install -g @anthropic-ai/claude-code`
 
 ```bash
 # Install ART (pick one)
@@ -29,6 +32,12 @@ art run /my/project
 ```
 
 Requires **Node.js ≥ 20** and **Docker** (or Podman).
+
+Use `--codex` to run with Codex, or `--claude` to force Claude Code:
+
+```bash
+art run --codex /my/project
+```
 
 ## Quick example demo: [autoresearch](https://github.com/karpathy/autoresearch) as a pipeline
 
@@ -174,8 +183,10 @@ ART is designed to reduce accidental access and constrain agent execution, but i
 ```bash
 art compose <path>              # Open visual pipeline editor
 art compose --headless <path>   # One-shot planning agent (no browser, CI-friendly)
-art run <path>                  # Execute pipeline
-art run --skip-preflight <path> # Skip Claude CLI/auth check (command-mode only)
+art run <path>                  # Execute pipeline (default provider: Claude)
+art run --codex <path>          # Execute pipeline with Codex
+art run --claude <path>         # Execute pipeline with Claude Code
+art run --skip-preflight <path> # Skip local CLI/auth preflight (command-mode only)
 art update                      # Rebuild all images in the registry
 ```
 
