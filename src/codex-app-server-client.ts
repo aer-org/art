@@ -50,9 +50,7 @@ export interface CodexAppServerInitOptions {
 export interface CodexAppServerClientOptions {
   codexBin?: string;
   env?: Record<string, string | undefined>;
-  onServerRequest?: (
-    request: JsonRpcRequest,
-  ) => Promise<unknown> | unknown;
+  onServerRequest?: (request: JsonRpcRequest) => Promise<unknown> | unknown;
   onNotification?: (notification: JsonRpcNotification) => void;
 }
 
@@ -67,19 +65,41 @@ function cleanEnv(
 }
 
 function isNotification(message: unknown): message is JsonRpcNotification {
-  return !!message && typeof message === 'object' && 'method' in message && !('id' in message);
+  return (
+    !!message &&
+    typeof message === 'object' &&
+    'method' in message &&
+    !('id' in message)
+  );
 }
 
 function isRequest(message: unknown): message is JsonRpcRequest {
-  return !!message && typeof message === 'object' && 'method' in message && 'id' in message;
+  return (
+    !!message &&
+    typeof message === 'object' &&
+    'method' in message &&
+    'id' in message
+  );
 }
 
-function isSuccessResponse(message: unknown): message is JsonRpcSuccessResponse {
-  return !!message && typeof message === 'object' && 'id' in message && 'result' in message;
+function isSuccessResponse(
+  message: unknown,
+): message is JsonRpcSuccessResponse {
+  return (
+    !!message &&
+    typeof message === 'object' &&
+    'id' in message &&
+    'result' in message
+  );
 }
 
 function isErrorResponse(message: unknown): message is JsonRpcErrorResponse {
-  return !!message && typeof message === 'object' && 'id' in message && 'error' in message;
+  return (
+    !!message &&
+    typeof message === 'object' &&
+    'id' in message &&
+    'error' in message
+  );
 }
 
 export class CodexAppServerClient {

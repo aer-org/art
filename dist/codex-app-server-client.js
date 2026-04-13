@@ -9,16 +9,28 @@ function cleanEnv(env) {
     return cleaned;
 }
 function isNotification(message) {
-    return !!message && typeof message === 'object' && 'method' in message && !('id' in message);
+    return (!!message &&
+        typeof message === 'object' &&
+        'method' in message &&
+        !('id' in message));
 }
 function isRequest(message) {
-    return !!message && typeof message === 'object' && 'method' in message && 'id' in message;
+    return (!!message &&
+        typeof message === 'object' &&
+        'method' in message &&
+        'id' in message);
 }
 function isSuccessResponse(message) {
-    return !!message && typeof message === 'object' && 'id' in message && 'result' in message;
+    return (!!message &&
+        typeof message === 'object' &&
+        'id' in message &&
+        'result' in message);
 }
 function isErrorResponse(message) {
-    return !!message && typeof message === 'object' && 'id' in message && 'error' in message;
+    return (!!message &&
+        typeof message === 'object' &&
+        'id' in message &&
+        'error' in message);
 }
 export class CodexAppServerClient {
     codexBin;

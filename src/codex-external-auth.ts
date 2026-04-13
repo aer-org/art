@@ -1,8 +1,10 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import * as lockfile from 'proper-lockfile';
 
 import { CodexExternalLogin } from './codex-app-server-client.js';
+import { logger } from './logger.js';
 
 const DEFAULT_CODEX_HOME = path.join(os.homedir(), '.codex');
 const REFRESH_TOKEN_URL = 'https://auth.openai.com/oauth/token';
@@ -57,8 +59,7 @@ function parseIdTokenInfo(idToken: string): CodexIdTokenInfo {
   return claims['https://api.openai.com/auth'] ?? claims.auth ?? {};
 }
 
-function loadHostAuth(): CodexAuthDotJson {
-  const authPath = getAuthPath();
+function loadHostAuth(authPath: string): CodexAuthDotJson {
   if (!fs.existsSync(authPath)) {
     throw new Error(
       `Codex auth not found at ${authPath}. Run Codex login on the host first.`,
@@ -67,10 +68,14 @@ function loadHostAuth(): CodexAuthDotJson {
   return JSON.parse(fs.readFileSync(authPath, 'utf-8')) as CodexAuthDotJson;
 }
 
-function persistHostAuth(auth: CodexAuthDotJson): void {
-  const authPath = getAuthPath();
+function persistHostAuth(authPath: string, auth: CodexAuthDotJson): void {
   fs.mkdirSync(path.dirname(authPath), { recursive: true });
-  fs.writeFileSync(authPath, JSON.stringify(auth, null, 2) + '\n', 'utf8');
+  const tmpPath = `${authPath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(auth, null, 2) + '\n', {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  fs.renameSync(tmpPath, authPath);
   try {
     fs.chmodSync(authPath, 0o600);
   } catch {
@@ -98,12 +103,62 @@ function toExternalLogin(auth: CodexAuthDotJson): CodexExternalLogin {
 }
 
 export class CodexExternalAuthManager {
+  private inflight: Promise<CodexExternalLogin> | null = null;
+  private readonly authPath: string;
+
+  constructor(opts: { authPath?: string } = {}) {
+    this.authPath = opts.authPath ?? getAuthPath();
+  }
+
   getExternalLogin(): CodexExternalLogin {
-    return toExternalLogin(loadHostAuth());
+    return toExternalLogin(loadHostAuth(this.authPath));
   }
 
   async refreshExternalLogin(): Promise<CodexExternalLogin> {
-    const auth = loadHostAuth();
+    const before = loadHostAuth(this.authPath);
+    if (this.inflight) return this.inflight;
+
+    this.inflight = this.refreshLocked(before).finally(() => {
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
+  private async refreshLocked(
+    before: CodexAuthDotJson,
+  ): Promise<CodexExternalLogin> {
+    const release = await lockfile.lock(this.authPath, {
+      retries: { retries: 5, factor: 1.5, minTimeout: 500, maxTimeout: 2000 },
+      stale: 30_000,
+      realpath: false,
+    });
+    try {
+      const auth = loadHostAuth(this.authPath);
+      if (
+        auth.tokens?.access_token &&
+        auth.tokens?.access_token !== before.tokens?.access_token
+      ) {
+        return toExternalLogin(auth);
+      }
+
+      if (
+        auth.tokens?.refresh_token &&
+        auth.tokens?.refresh_token !== before.tokens?.refresh_token
+      ) {
+        return toExternalLogin(auth);
+      }
+
+      if (auth.tokens?.id_token && auth.tokens?.id_token !== before.tokens?.id_token) {
+        return toExternalLogin(auth);
+      }
+
+      return this.refreshViaHttp(auth);
+    } finally {
+      await release();
+    }
+  }
+
+  private async refreshViaHttp(auth: CodexAuthDotJson): Promise<CodexExternalLogin> {
     const refreshToken = auth.tokens?.refresh_token;
     if (!refreshToken) {
       throw new Error('Codex auth is missing refresh_token');
@@ -123,7 +178,9 @@ export class CodexExternalAuthManager {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Failed to refresh Codex OAuth token: ${response.status} ${body}`);
+      throw new Error(
+        `Failed to refresh Codex OAuth token: ${response.status} ${body}`,
+      );
     }
 
     const refreshed = (await response.json()) as RefreshResponse;
@@ -137,7 +194,12 @@ export class CodexExternalAuthManager {
       access_token: refreshed.access_token ?? auth.tokens.access_token,
       refresh_token: refreshed.refresh_token ?? auth.tokens.refresh_token,
     };
-    persistHostAuth(auth);
-    return toExternalLogin(auth);
+    persistHostAuth(this.authPath, auth);
+    const login = toExternalLogin(auth);
+    logger.info(
+      { authPath: this.authPath, accountId: login.chatgptAccountId },
+      'Codex OAuth token refreshed',
+    );
+    return login;
   }
 }

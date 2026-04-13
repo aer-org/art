@@ -64,7 +64,8 @@ export function startCodexAuthProxy(
       } catch (error) {
         logger.error({ err: error, url: req.url }, 'Codex auth proxy error');
         writeJson(res, 500, {
-          error: error instanceof Error ? error.message : 'Internal server error',
+          error:
+            error instanceof Error ? error.message : 'Internal server error',
         });
       }
     });
