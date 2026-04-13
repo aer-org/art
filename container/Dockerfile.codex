@@ -1,5 +1,5 @@
-# AerArt Agent Container
-# Runs Claude Agent SDK in isolated Linux VM with browser automation
+# AerArt Agent Container for Codex
+# Runs the shared agent runner with Codex CLI/SDK available inside the container.
 
 ARG BASE_IMAGE=node:22-slim
 FROM ${BASE_IMAGE}
@@ -25,10 +25,10 @@ ENV LC_ALL=en_US.UTF-8
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser, Claude Code, and Codex globally
+# Install tools needed by the shared runner. Keep Claude available so one image can
+# still run either provider when needed.
 RUN npm install -g agent-browser @anthropic-ai/claude-code @openai/codex
 
-# Create app directory
 WORKDIR /app
 
 # Copy package files first for better caching
@@ -47,19 +47,11 @@ RUN npm run build
 RUN mkdir -p /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
 # Create entrypoint script
-# Container input (prompt, group info) is passed via stdin JSON.
-# Credentials are injected by the host's credential proxy — never passed here.
-# Follow-up messages arrive via IPC files in /workspace/ipc/input/
 RUN printf '#!/bin/sh\nset -e\ncd /app && node node_modules/typescript/bin/tsc -p tsconfig.json --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node
 
-# Switch to non-root user (required for --dangerously-skip-permissions)
 USER node
-
-# Set working directory to workspace root
 WORKDIR /workspace
-
-# Entry point reads JSON from stdin, outputs JSON to stdout
 ENTRYPOINT ["/app/entrypoint.sh"]

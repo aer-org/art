@@ -46,6 +46,7 @@ import {
   stopContainer,
   writableMountArgs,
 } from './container-runtime.js';
+import { ensureCodexSessionAuth } from './codex-auth.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
@@ -57,6 +58,7 @@ const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  provider?: 'claude' | 'codex';
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -85,9 +87,33 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+type AgentProvider = 'claude' | 'codex';
+
+function resolveProvider(
+  group: RegisteredGroup,
+  inputProvider?: AgentProvider,
+): AgentProvider {
+  if (inputProvider) return inputProvider;
+  if (group.containerConfig?.provider) return group.containerConfig.provider;
+  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
+
+function getProviderHomeDirName(provider: AgentProvider): '.claude' | '.codex' {
+  return provider === 'codex' ? '.codex' : '.claude';
+}
+
+function getProviderHomeMountPath(
+  provider: AgentProvider,
+  runAsRoot: boolean | undefined,
+): string {
+  const homeDir = runAsRoot ? '/root' : '/home/node';
+  return `${homeDir}/${getProviderHomeDirName(provider)}`;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
+  provider: AgentProvider,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -129,57 +155,73 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
+  // Per-group provider sessions directory (isolated from other groups)
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
     group.folder,
-    '.claude',
+    getProviderHomeDirName(provider),
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-            // Increase max output tokens (default 32000 is too small for complex tasks)
-            CLAUDE_CODE_MAX_OUTPUT_TOKENS: '65536',
+  if (provider === 'claude') {
+    const settingsFile = path.join(groupSessionsDir, 'settings.json');
+    if (!fs.existsSync(settingsFile)) {
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify(
+          {
+            env: {
+              // Enable agent swarms (subagent orchestration)
+              CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+              // Load CLAUDE.md from additional mounted directories
+              CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+              // Enable Claude's memory feature (persists user preferences between sessions)
+              CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+              // Increase max output tokens (default 32000 is too small for complex tasks)
+              CLAUDE_CODE_MAX_OUTPUT_TOKENS: '65536',
+            },
           },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
+          null,
+          2,
+        ) + '\n',
+      );
+    }
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(getProjectRoot(), 'container', 'skills');
-  const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
+    // Sync skills from container/skills/ into each group's .claude/skills/
+    const skillsSrc = path.join(getProjectRoot(), 'container', 'skills');
+    const skillsDst = path.join(groupSessionsDir, 'skills');
+    if (fs.existsSync(skillsSrc)) {
+      for (const skillDir of fs.readdirSync(skillsSrc)) {
+        const srcDir = path.join(skillsSrc, skillDir);
+        if (!fs.statSync(srcDir).isDirectory()) continue;
+        const dstDir = path.join(skillsDst, skillDir);
+        fs.cpSync(srcDir, dstDir, { recursive: true });
+      }
+    }
+  } else {
+    ensureCodexSessionAuth(groupSessionsDir);
+    const configFile = path.join(groupSessionsDir, 'config.toml');
+    if (!fs.existsSync(configFile)) {
+      fs.writeFileSync(
+        configFile,
+        [
+          'approval_policy = "never"',
+          'sandbox_mode = "danger-full-access"',
+          '',
+          '[mcp_servers.aer_art]',
+          'command = "node"',
+          'args = ["/tmp/dist/ipc-mcp-stdio.js"]',
+          '',
+        ].join('\n'),
+      );
     }
   }
   mounts.push({
     hostPath: groupSessionsDir,
-    containerPath: group.containerConfig?.runAsRoot
-      ? '/root/.claude'
-      : '/home/node/.claude',
+    containerPath: getProviderHomeMountPath(
+      provider,
+      group.containerConfig?.runAsRoot,
+    ),
     readonly: false,
   });
 
@@ -278,6 +320,7 @@ export function buildContainerArgs(
   runId?: string,
   privileged = false,
   env?: Record<string, string>,
+  provider: AgentProvider = 'claude',
 ): string[] {
   const rt = getRuntime();
   const args: string[] = ['run'];
@@ -313,21 +356,23 @@ export function buildContainerArgs(
     }
   }
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${rt.hostGateway}:${getCredentialProxyPort()}`,
-  );
+  if (provider === 'claude') {
+    // Route API traffic through the credential proxy (containers never see real secrets)
+    args.push(
+      '-e',
+      `ANTHROPIC_BASE_URL=http://${rt.hostGateway}:${getCredentialProxyPort()}`,
+    );
 
-  // Mirror the host's auth method with a placeholder value.
-  // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   SDK exchanges placeholder token for temp API key,
-  //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode();
-  if (authMode === 'api-key') {
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    // Mirror the host's auth method with a placeholder value.
+    const authMode = detectAuthMode();
+    if (authMode === 'api-key') {
+      args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    } else {
+      args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+    }
   } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+    const openaiBaseUrl = process.env.OPENAI_BASE_URL;
+    if (openaiBaseUrl) args.push('-e', `OPENAI_BASE_URL=${openaiBaseUrl}`);
   }
 
   // Pass host git identity so containers can commit without extra config
@@ -446,11 +491,12 @@ export async function runContainerAgent(
   logStream?: fs.WriteStream,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
+  const provider = resolveProvider(group, input.provider);
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group, input.isMain, provider);
   const devices = group.containerConfig?.additionalDevices || [];
   const gpu = group.containerConfig?.gpu === true;
   const runAsRoot = group.containerConfig?.runAsRoot === true;
@@ -458,7 +504,13 @@ export async function runContainerAgent(
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `aer-art-${safeName}-${Date.now()}`;
   const image = group.containerConfig?.image || CONTAINER_IMAGE;
-  const env = group.containerConfig?.env;
+  const env = {
+    ...(group.containerConfig?.env || {}),
+    AER_ART_CHAT_JID: input.chatJid,
+    AER_ART_GROUP_FOLDER: input.groupFolder,
+    AER_ART_IS_MAIN: input.isMain ? '1' : '0',
+    AER_ART_PROVIDER: provider,
+  };
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
@@ -470,6 +522,7 @@ export async function runContainerAgent(
     input.runId,
     privileged,
     env,
+    provider,
   );
 
   logger.debug(
@@ -482,6 +535,7 @@ export async function runContainerAgent(
       ),
       devices,
       runAsRoot,
+      provider,
       containerArgs: containerArgs.join(' '),
     },
     'Container mount configuration',
@@ -493,6 +547,7 @@ export async function runContainerAgent(
       containerName,
       mountCount: mounts.length,
       isMain: input.isMain,
+      provider,
     },
     'Spawning container agent',
   );

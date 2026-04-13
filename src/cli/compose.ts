@@ -26,6 +26,10 @@ const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
 const TOOL_START_MARKER = '---AER_ART_TOOL_START---';
 const TOOL_END_MARKER = '---AER_ART_TOOL_END---';
 
+function resolveProvider(): 'claude' | 'codex' {
+  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
+
 interface ToolActivity {
   id: string;
   name: string;
@@ -206,14 +210,15 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     parseBuffer = '';
     lastSegmentIsText = false;
 
-    // Start the credential proxy for container auth
-    const { startCredentialProxy } = await import('../credential-proxy.js');
-    const { setCredentialProxyPort } = await import('../config.js');
-    try {
-      const { port: actualPort } = await startCredentialProxy(0, '0.0.0.0');
-      setCredentialProxyPort(actualPort);
-    } catch {
-      // May already be running if reused
+    if (resolveProvider() === 'claude') {
+      const { startCredentialProxy } = await import('../credential-proxy.js');
+      const { setCredentialProxyPort } = await import('../config.js');
+      try {
+        const { port: actualPort } = await startCredentialProxy(0, '0.0.0.0');
+        setCredentialProxyPort(actualPort);
+      } catch {
+        // May already be running if reused
+      }
     }
 
     // Fire and forget — the container runs in the background
@@ -1309,17 +1314,18 @@ Use Korean if the project contains Korean documentation, otherwise use English.`
     endOnFirstResult: true, // one-shot: exit after first result
   };
 
-  // Start credential proxy
   let proxyServer: import('http').Server | undefined;
-  try {
-    const { server, port: actualPort } = await startCredentialProxy(
-      0,
-      '0.0.0.0',
-    );
-    proxyServer = server;
-    setCredentialProxyPort(actualPort);
-  } catch {
-    // May already be running
+  if (resolveProvider() === 'claude') {
+    try {
+      const { server, port: actualPort } = await startCredentialProxy(
+        0,
+        '0.0.0.0',
+      );
+      proxyServer = server;
+      setCredentialProxyPort(actualPort);
+    } catch {
+      // May already be running
+    }
   }
 
   console.log('🔍 Headless compose: running planning agent...');

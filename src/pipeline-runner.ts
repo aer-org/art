@@ -31,6 +31,10 @@ import {
 } from './run-manifest.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
 
+function resolveProvider(): 'claude' | 'codex' {
+  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
+
 // --- Pipeline JSON Schema ---
 
 export interface PipelineTransition {
@@ -524,6 +528,7 @@ export class PipelineRunner {
       trigger: '',
       added_at: new Date().toISOString(),
       containerConfig: {
+        provider: this.group.containerConfig?.provider || resolveProvider(),
         image: resolvedImage,
         additionalMounts: filteredParentMounts,
         additionalDevices: stageConfig.devices || [],
@@ -645,6 +650,7 @@ export class PipelineRunner {
             stageConfig.resumeSession !== false
               ? this.stageSessionIds.get(stageConfig.name)
               : undefined,
+          provider: virtualGroup.containerConfig?.provider,
           groupFolder: subFolder,
           chatJid: this.chatJid,
           isMain: false,

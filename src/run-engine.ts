@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { ChildProcess } from 'child_process';
 
-import { getCredentialProxyPort, setCredentialProxyPort } from './config.js';
+import { setCredentialProxyPort } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import {
   ensureContainerRuntimeRunning,
@@ -23,6 +23,10 @@ import {
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
+
+function resolveProvider(): 'claude' | 'codex' {
+  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
 
 export async function runPipeline(opts: {
   group: RegisteredGroup;
@@ -41,12 +45,16 @@ export async function runPipeline(opts: {
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
-  // Start credential proxy
-  const { server: proxyServer, port: proxyPort } = await startCredentialProxy(
-    0,
-    getProxyBindHost(),
-  );
-  setCredentialProxyPort(proxyPort);
+  const provider = resolveProvider();
+  let proxyServer: import('http').Server | null = null;
+  if (provider === 'claude') {
+    const { server, port: proxyPort } = await startCredentialProxy(
+      0,
+      getProxyBindHost(),
+    );
+    proxyServer = server;
+    setCredentialProxyPort(proxyPort);
+  }
 
   // Graceful shutdown
   let shuttingDown = false;
@@ -62,7 +70,7 @@ export async function runPipeline(opts: {
     } catch {
       /* best effort */
     }
-    proxyServer.close();
+    proxyServer?.close();
     process.exit(1);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -119,7 +127,7 @@ export async function runPipeline(opts: {
     );
 
     const allSuccess = results.every((r) => r === 'success');
-    proxyServer.close();
+    proxyServer?.close();
     process.exit(allSuccess ? 0 : 1);
   }
 
@@ -127,7 +135,7 @@ export async function runPipeline(opts: {
   let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
   if (!pipelineConfig) {
     console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
-    proxyServer.close();
+    proxyServer?.close();
     process.exit(1);
   }
 
@@ -138,7 +146,7 @@ export async function runPipeline(opts: {
       console.error(
         `Stage "${stage}" not found. Available: ${pipelineConfig.stages.map((s) => s.name).join(', ')}`,
       );
-      proxyServer.close();
+      proxyServer?.close();
       process.exit(1);
     }
     // Replace transitions so the stage terminates on completion
@@ -173,6 +181,6 @@ export async function runPipeline(opts: {
   activeRunners.push(runner);
   const result = await runner.run();
 
-  proxyServer.close();
+  proxyServer?.close();
   process.exit(result === 'success' ? 0 : 1);
 }

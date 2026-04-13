@@ -2,6 +2,19 @@
 
 const [command, ...args] = process.argv.slice(2);
 
+function applyProviderFlag(flags: string[]): void {
+  const wantsCodex = flags.includes('--codex');
+  const wantsClaude = flags.includes('--claude');
+
+  if (wantsCodex && wantsClaude) {
+    console.error('Choose only one provider flag: --codex or --claude');
+    process.exit(1);
+  }
+
+  if (wantsCodex) process.env.ART_AGENT_PROVIDER = 'codex';
+  if (wantsClaude) process.env.ART_AGENT_PROVIDER = 'claude';
+}
+
 async function main(): Promise<void> {
   if (command === '--version' || command === '-v') {
     const { readFileSync } = await import('fs');
@@ -26,6 +39,7 @@ async function main(): Promise<void> {
     }
     case 'run': {
       const runFlags = args.filter((a) => a.startsWith('--'));
+      applyProviderFlag(runFlags);
       const runPositional = args.filter((a) => !a.startsWith('--'));
       const skipPreflight = runFlags.includes('--skip-preflight');
       const stageIdx = args.indexOf('--stage');
@@ -43,6 +57,7 @@ async function main(): Promise<void> {
     }
     case 'compose': {
       const composeFlags = args.filter((a) => a.startsWith('--'));
+      applyProviderFlag(composeFlags);
       const composePositional = args.filter((a) => !a.startsWith('--'));
       const headless = composeFlags.includes('--headless');
       const { compose } = await import('./compose.js');

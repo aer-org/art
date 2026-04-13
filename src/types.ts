@@ -28,6 +28,7 @@ export interface AllowedRoot {
 }
 
 export interface ContainerConfig {
+  provider?: 'claude' | 'codex';
   image?: string; // Override container image for this group/stage
   additionalMounts?: AdditionalMount[];
   additionalDevices?: string[];

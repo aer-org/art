@@ -180,6 +180,9 @@ export async function setupEngine(opts: {
   fs.mkdirSync(path.join(dataDir, 'sessions', folderName, '.claude'), {
     recursive: true,
   });
+  fs.mkdirSync(path.join(dataDir, 'sessions', folderName, '.codex'), {
+    recursive: true,
+  });
 
   return { engineRoot, folderName, dataDir, runtimeBin: rt.bin };
 }
