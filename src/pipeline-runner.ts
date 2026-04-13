@@ -219,9 +219,7 @@ export function parseStageMarkers(
       return { matched: transition, payload: fencedMatch[1] };
     }
     // Inline / no payload: [MARKER] or [MARKER: payload]
-    const regex = new RegExp(
-      `\\[${markerName}(?::\\s*(.+?))?\\]`,
-    );
+    const regex = new RegExp(`\\[${markerName}(?::\\s*(.+?))?\\]`);
     const match = regex.exec(combined);
     if (match) {
       return { matched: transition, payload: match[1] ?? null };
@@ -1060,9 +1058,7 @@ PAYLOAD FORMATS:
       stagesByName.set(s.name, s);
     }
 
-    const planSuffix = planContent
-      ? `\n\n## Plan\n\n${planContent}`
-      : '';
+    const planSuffix = planContent ? `\n\n## Plan\n\n${planContent}` : '';
     return { planContent: planSuffix, stagesByName, pipelineLogStream };
   }
 
@@ -1691,13 +1687,15 @@ PAYLOAD FORMATS:
               // Container respawn — loop again with same stage
               containerRespawnCount++;
               nextInitialPrompt = outcome.nextInitialPrompt;
-              nextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+              nextEphemeralSystemPrompt =
+                outcome.nextEphemeralSystemPrompt ?? null;
               currentStage = stageName; // stay in outer while
             } else {
               // Advance to next stage(s) or end
               nextStages = outcome.nextStageName;
               outNextInitialPrompt = outcome.nextInitialPrompt;
-              outNextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+              outNextEphemeralSystemPrompt =
+                outcome.nextEphemeralSystemPrompt ?? null;
               currentStage = null; // exit outer while
               if (outcome.lastResult) {
                 stageResult = outcome.lastResult;

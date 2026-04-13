@@ -49,9 +49,7 @@ export function startCredentialProxy(
     secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN
   );
   const refresher =
-    authMode === 'oauth' &&
-    !hasExplicitEnvToken &&
-    OAuthRefresher.isAvailable()
+    authMode === 'oauth' && !hasExplicitEnvToken && OAuthRefresher.isAvailable()
       ? new OAuthRefresher()
       : null;
   if (authMode === 'oauth') {
@@ -176,37 +174,41 @@ export function startCredentialProxy(
           upRes.pipe(res);
         };
 
-        forward(buildHeaders(), async (upRes) => {
-          // 401 in OAuth mode with refresh available → force-refresh + retry
-          if (
-            upRes.statusCode === 401 &&
-            authMode === 'oauth' &&
-            refresher &&
-            !!(req.headers['authorization'] as string | undefined)
-          ) {
-            // Drain and discard the 401 body; we're going to retry.
-            upRes.resume();
-            let fresh: string | undefined;
-            try {
-              fresh = await refresher.getAccessToken(true);
-            } catch (err) {
-              logger.error({ err }, 'OAuth force-refresh after 401 failed');
-            }
-            if (!fresh || fresh === oauthToken) {
-              // Nothing changed — give up and proxy the original 401 response.
-              // Re-issue a throwaway upstream just to surface 401 cleanly.
-              forward(buildHeaders(), pipeToClient, onUpstreamError);
+        forward(
+          buildHeaders(),
+          async (upRes) => {
+            // 401 in OAuth mode with refresh available → force-refresh + retry
+            if (
+              upRes.statusCode === 401 &&
+              authMode === 'oauth' &&
+              refresher &&
+              !!(req.headers['authorization'] as string | undefined)
+            ) {
+              // Drain and discard the 401 body; we're going to retry.
+              upRes.resume();
+              let fresh: string | undefined;
+              try {
+                fresh = await refresher.getAccessToken(true);
+              } catch (err) {
+                logger.error({ err }, 'OAuth force-refresh after 401 failed');
+              }
+              if (!fresh || fresh === oauthToken) {
+                // Nothing changed — give up and proxy the original 401 response.
+                // Re-issue a throwaway upstream just to surface 401 cleanly.
+                forward(buildHeaders(), pipeToClient, onUpstreamError);
+                return;
+              }
+              logger.info(
+                { url: req.url },
+                'Retrying request with refreshed OAuth token',
+              );
+              forward(buildHeaders(fresh), pipeToClient, onUpstreamError);
               return;
             }
-            logger.info(
-              { url: req.url },
-              'Retrying request with refreshed OAuth token',
-            );
-            forward(buildHeaders(fresh), pipeToClient, onUpstreamError);
-            return;
-          }
-          pipeToClient(upRes);
-        }, onUpstreamError);
+            pipeToClient(upRes);
+          },
+          onUpstreamError,
+        );
       });
     });
 

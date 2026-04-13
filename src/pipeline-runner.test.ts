@@ -295,10 +295,7 @@ describe('parseStageMarkers', () => {
   });
 
   it('falls back to inline form when fence is absent', () => {
-    const result = parseStageMarkers(
-      ['[ERROR: plain inline]'],
-      transitions,
-    );
+    const result = parseStageMarkers(['[ERROR: plain inline]'], transitions);
     expect(result.payload).toBe('plain inline');
   });
 });

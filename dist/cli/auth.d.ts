@@ -1,6 +1,7 @@
 export declare function readSavedToken(): string | null;
 export declare function saveToken(token: string): void;
 export declare function readClaudeCliToken(): string | null;
+export declare function hasCodexCliAuth(): boolean;
 /**
  * Resolve an auth token from available sources.
  * Chain: _ART_OAUTH_TOKEN → .env ANTHROPIC_API_KEY → ~/.config/aer-art/token → ~/.claude/.credentials.json

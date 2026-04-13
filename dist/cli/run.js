@@ -2,10 +2,14 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import { ensureAuth } from './auth.js';
+import { ensureAuth, hasCodexCliAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
+function resolveProvider() {
+    return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
 function preflight(opts) {
     const errors = [];
+    const provider = resolveProvider();
     // Node.js version
     const [major] = process.versions.node.split('.').map(Number);
     if (major < 20) {
@@ -27,13 +31,25 @@ function preflight(opts) {
     if (!hasRuntime) {
         errors.push('No container runtime found. Install Docker, Podman, or udocker.');
     }
-    // Claude CLI (skippable for command-mode-only pipelines)
     if (!opts?.skipClaudeCli) {
-        try {
-            execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
+        if (provider === 'codex') {
+            try {
+                execSync('codex --version', { stdio: 'pipe', timeout: 5000 });
+            }
+            catch {
+                errors.push('Codex CLI not found. Run: npm install -g @openai/codex');
+            }
+            if (!hasCodexCliAuth()) {
+                errors.push('Codex auth not found. Log in with Codex on the host first.');
+            }
         }
-        catch {
-            errors.push('Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code');
+        else {
+            try {
+                execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
+            }
+            catch {
+                errors.push('Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code');
+            }
         }
     }
     if (errors.length > 0) {
@@ -75,7 +91,9 @@ export async function run(targetDir, opts) {
     // Ensure Claude authentication is available (before any engine imports)
     if (opts?.skipPreflight) {
         // Set placeholder so credential proxy can start without real auth
-        if (!process.env.ANTHROPIC_API_KEY && !process.env._ART_OAUTH_TOKEN) {
+        if (resolveProvider() === 'claude' &&
+            !process.env.ANTHROPIC_API_KEY &&
+            !process.env._ART_OAUTH_TOKEN) {
             process.env.ANTHROPIC_API_KEY = 'placeholder';
         }
     }

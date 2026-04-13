@@ -48,7 +48,9 @@ function preflight(opts?: { skipClaudeCli?: boolean }): void {
         errors.push('Codex CLI not found. Run: npm install -g @openai/codex');
       }
       if (!hasCodexCliAuth()) {
-        errors.push('Codex auth not found. Log in with Codex on the host first.');
+        errors.push(
+          'Codex auth not found. Log in with Codex on the host first.',
+        );
       }
     } else {
       try {

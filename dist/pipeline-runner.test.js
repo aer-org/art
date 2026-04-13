@@ -180,6 +180,38 @@ describe('parseStageMarkers', () => {
         const result = parseStageMarkers(['first chunk', 'second chunk [STAGE_COMPLETE]'], transitions);
         expect(result.matched.marker).toBe('STAGE_COMPLETE');
     });
+    it('extracts fenced multi-line payload', () => {
+        const text = [
+            'Here is the handoff:',
+            '[ERROR]',
+            '---PAYLOAD_START---',
+            'line one',
+            'line two with ] bracket and "quotes"',
+            '',
+            'line four after blank',
+            '---PAYLOAD_END---',
+            'trailing text',
+        ].join('\n');
+        const result = parseStageMarkers([text], transitions);
+        expect(result.matched.marker).toBe('ERROR');
+        expect(result.payload).toBe('line one\nline two with ] bracket and "quotes"\n\nline four after blank');
+    });
+    it('fenced form takes precedence over inline form for the same marker', () => {
+        const text = [
+            'pre [ERROR: short] mid',
+            '[ERROR]',
+            '---PAYLOAD_START---',
+            'long payload',
+            '---PAYLOAD_END---',
+        ].join('\n');
+        const result = parseStageMarkers([text], transitions);
+        expect(result.matched.marker).toBe('ERROR');
+        expect(result.payload).toBe('long payload');
+    });
+    it('falls back to inline form when fence is absent', () => {
+        const result = parseStageMarkers(['[ERROR: plain inline]'], transitions);
+        expect(result.payload).toBe('plain inline');
+    });
 });
 // generateRunId tests are in run-manifest.test.ts
 describe('loadPipelineConfig', () => {

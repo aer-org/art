@@ -19,6 +19,7 @@ export interface AllowedRoot {
     description?: string;
 }
 export interface ContainerConfig {
+    provider?: 'claude' | 'codex';
     image?: string;
     additionalMounts?: AdditionalMount[];
     additionalDevices?: string[];

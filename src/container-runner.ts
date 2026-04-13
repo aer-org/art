@@ -25,6 +25,7 @@ export function prefixLogLines(
 import path from 'path';
 
 import {
+  getCodexAuthProxyPort,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -88,6 +89,12 @@ interface VolumeMount {
 }
 
 type AgentProvider = 'claude' | 'codex';
+
+function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
+  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
+    ? 'host-managed'
+    : 'passthrough';
+}
 
 function resolveProvider(
   group: RegisteredGroup,
@@ -199,7 +206,13 @@ function buildVolumeMounts(
       }
     }
   } else {
-    ensureCodexSessionAuth(groupSessionsDir);
+    const authMode = resolveCodexAuthMode();
+    if (authMode === 'passthrough') {
+      ensureCodexSessionAuth(groupSessionsDir);
+    } else {
+      const authFile = path.join(groupSessionsDir, 'auth.json');
+      if (fs.existsSync(authFile)) fs.rmSync(authFile, { force: true });
+    }
     const configFile = path.join(groupSessionsDir, 'config.toml');
     if (!fs.existsSync(configFile)) {
       fs.writeFileSync(
@@ -373,6 +386,13 @@ export function buildContainerArgs(
   } else {
     const openaiBaseUrl = process.env.OPENAI_BASE_URL;
     if (openaiBaseUrl) args.push('-e', `OPENAI_BASE_URL=${openaiBaseUrl}`);
+    args.push('-e', `ART_CODEX_AUTH_MODE=${resolveCodexAuthMode()}`);
+    if (resolveCodexAuthMode() === 'host-managed') {
+      args.push(
+        '-e',
+        `ART_CODEX_AUTH_PROXY_URL=http://${rt.hostGateway}:${getCodexAuthProxyPort()}`,
+      );
+    }
   }
 
   // Pass host git identity so containers can commit without extra config

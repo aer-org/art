@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
+import { hasHostCodexAuth } from '../codex-auth.js';
 const TOKEN_FILE = path.join(os.homedir(), '.config', 'aer-art', 'token');
 export function readSavedToken() {
     try {
@@ -33,12 +34,21 @@ export function readClaudeCliToken() {
         return null;
     }
 }
+export function hasCodexCliAuth() {
+    return hasHostCodexAuth();
+}
+function resolveProvider() {
+    return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
 /**
  * Resolve an auth token from available sources.
  * Chain: _ART_OAUTH_TOKEN → .env ANTHROPIC_API_KEY → ~/.config/aer-art/token → ~/.claude/.credentials.json
  * Returns null if no token found (no interactive prompt).
  */
 export function resolveAuthToken() {
+    if (resolveProvider() === 'codex') {
+        return hasCodexCliAuth() ? 'codex-oauth-configured' : null;
+    }
     // 0. Token set by ensureAuth() in current process
     if (process.env._ART_OAUTH_TOKEN) {
         return process.env._ART_OAUTH_TOKEN;
@@ -104,6 +114,15 @@ function setAuthEnvVars(token) {
  * Also sets ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN for the credential proxy.
  */
 export async function ensureAuth() {
+    if (resolveProvider() === 'codex') {
+        if (!hasCodexCliAuth()) {
+            console.error('No Codex OAuth authentication found.\n\n' +
+                'Log in on the host with Codex first, then retry.\n');
+            process.exit(1);
+        }
+        console.log('Using Codex CLI OAuth from host ~/.codex/auth.json');
+        return;
+    }
     let token = null;
     let source = '';
     // 1. Check .env in project dir for a non-empty token

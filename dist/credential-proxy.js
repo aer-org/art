@@ -19,9 +19,7 @@ export function startCredentialProxy(port, host = '127.0.0.1') {
     // via env vars. If they did, respect that choice — we can't refresh an
     // opaque env-var token anyway (no refresh_token alongside it).
     const hasExplicitEnvToken = !!(secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN);
-    const refresher = authMode === 'oauth' &&
-        !hasExplicitEnvToken &&
-        OAuthRefresher.isAvailable()
+    const refresher = authMode === 'oauth' && !hasExplicitEnvToken && OAuthRefresher.isAvailable()
         ? new OAuthRefresher()
         : null;
     if (authMode === 'oauth') {

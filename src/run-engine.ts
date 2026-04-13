@@ -7,7 +7,8 @@ import fs from 'fs';
 import path from 'path';
 import { ChildProcess } from 'child_process';
 
-import { setCredentialProxyPort } from './config.js';
+import { setCodexAuthProxyPort, setCredentialProxyPort } from './config.js';
+import { startCodexAuthProxy } from './codex-auth-proxy.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import {
   ensureContainerRuntimeRunning,
@@ -26,6 +27,12 @@ import { RegisteredGroup } from './types.js';
 
 function resolveProvider(): 'claude' | 'codex' {
   return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
+
+function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
+  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
+    ? 'host-managed'
+    : 'passthrough';
 }
 
 export async function runPipeline(opts: {
@@ -47,6 +54,7 @@ export async function runPipeline(opts: {
 
   const provider = resolveProvider();
   let proxyServer: import('http').Server | null = null;
+  let codexAuthProxyServer: import('http').Server | null = null;
   if (provider === 'claude') {
     const { server, port: proxyPort } = await startCredentialProxy(
       0,
@@ -54,6 +62,10 @@ export async function runPipeline(opts: {
     );
     proxyServer = server;
     setCredentialProxyPort(proxyPort);
+  } else if (resolveCodexAuthMode() === 'host-managed') {
+    const { server, port } = await startCodexAuthProxy(0, getProxyBindHost());
+    codexAuthProxyServer = server;
+    setCodexAuthProxyPort(port);
   }
 
   // Graceful shutdown
@@ -71,6 +83,7 @@ export async function runPipeline(opts: {
       /* best effort */
     }
     proxyServer?.close();
+    codexAuthProxyServer?.close();
     process.exit(1);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -128,6 +141,7 @@ export async function runPipeline(opts: {
 
     const allSuccess = results.every((r) => r === 'success');
     proxyServer?.close();
+    codexAuthProxyServer?.close();
     process.exit(allSuccess ? 0 : 1);
   }
 
@@ -147,6 +161,7 @@ export async function runPipeline(opts: {
         `Stage "${stage}" not found. Available: ${pipelineConfig.stages.map((s) => s.name).join(', ')}`,
       );
       proxyServer?.close();
+      codexAuthProxyServer?.close();
       process.exit(1);
     }
     // Replace transitions so the stage terminates on completion
@@ -182,5 +197,6 @@ export async function runPipeline(opts: {
   const result = await runner.run();
 
   proxyServer?.close();
+  codexAuthProxyServer?.close();
   process.exit(result === 'success' ? 0 : 1);
 }

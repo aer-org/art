@@ -18,6 +18,9 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { generateRunId, writeRunManifest, } from './run-manifest.js';
+function resolveProvider() {
+    return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
 // --- Exclusive stage lock ---
 // Stages with the same `exclusive` key share a mutex.
 // Only one container runs at a time per key (e.g. "vivado" for bitstream + board_upload).
@@ -351,6 +354,7 @@ export class PipelineRunner {
             trigger: '',
             added_at: new Date().toISOString(),
             containerConfig: {
+                provider: this.group.containerConfig?.provider || resolveProvider(),
                 image: resolvedImage,
                 additionalMounts: filteredParentMounts,
                 additionalDevices: stageConfig.devices || [],
@@ -445,6 +449,7 @@ export class PipelineRunner {
                 sessionId: stageConfig.resumeSession !== false
                     ? this.stageSessionIds.get(stageConfig.name)
                     : undefined,
+                provider: virtualGroup.containerConfig?.provider,
                 groupFolder: subFolder,
                 chatJid: this.chatJid,
                 isMain: false,
@@ -750,9 +755,7 @@ PAYLOAD FORMATS:
         for (const s of this.config.stages) {
             stagesByName.set(s.name, s);
         }
-        const planSuffix = planContent
-            ? `\n\n## Plan\n\n${planContent}`
-            : '';
+        const planSuffix = planContent ? `\n\n## Plan\n\n${planContent}` : '';
         return { planContent: planSuffix, stagesByName, pipelineLogStream };
     }
     /**
@@ -1215,14 +1218,16 @@ PAYLOAD FORMATS:
                             // Container respawn — loop again with same stage
                             containerRespawnCount++;
                             nextInitialPrompt = outcome.nextInitialPrompt;
-                            nextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+                            nextEphemeralSystemPrompt =
+                                outcome.nextEphemeralSystemPrompt ?? null;
                             currentStage = stageName; // stay in outer while
                         }
                         else {
                             // Advance to next stage(s) or end
                             nextStages = outcome.nextStageName;
                             outNextInitialPrompt = outcome.nextInitialPrompt;
-                            outNextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+                            outNextEphemeralSystemPrompt =
+                                outcome.nextEphemeralSystemPrompt ?? null;
                             currentStage = null; // exit outer while
                             if (outcome.lastResult) {
                                 stageResult = outcome.lastResult;
