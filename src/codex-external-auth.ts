@@ -148,7 +148,10 @@ export class CodexExternalAuthManager {
         return toExternalLogin(auth);
       }
 
-      if (auth.tokens?.id_token && auth.tokens?.id_token !== before.tokens?.id_token) {
+      if (
+        auth.tokens?.id_token &&
+        auth.tokens?.id_token !== before.tokens?.id_token
+      ) {
         return toExternalLogin(auth);
       }
 
@@ -158,7 +161,9 @@ export class CodexExternalAuthManager {
     }
   }
 
-  private async refreshViaHttp(auth: CodexAuthDotJson): Promise<CodexExternalLogin> {
+  private async refreshViaHttp(
+    auth: CodexAuthDotJson,
+  ): Promise<CodexExternalLogin> {
     const refreshToken = auth.tokens?.refresh_token;
     if (!refreshToken) {
       throw new Error('Codex auth is missing refresh_token');

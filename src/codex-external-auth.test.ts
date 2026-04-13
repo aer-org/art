@@ -31,9 +31,9 @@ interface AuthFile {
 }
 
 function makeIdToken(accountId: string, plan = 'plus'): string {
-  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString(
-    'base64url',
-  );
+  const header = Buffer.from(
+    JSON.stringify({ alg: 'none', typ: 'JWT' }),
+  ).toString('base64url');
   const payload = Buffer.from(
     JSON.stringify({
       auth: {
