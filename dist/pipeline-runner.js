@@ -18,6 +18,7 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { generateRunId, writeRunManifest, } from './run-manifest.js';
+import { resolveStagePrompt } from './prompt-store.js';
 function resolveProvider() {
     return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
 }
@@ -926,7 +927,18 @@ PAYLOAD FORMATS:
                 const current = Array.isArray(existingState.currentStage)
                     ? existingState.currentStage
                     : [existingState.currentStage];
-                initialStages = current.filter((s) => stagesByName.has(s));
+                initialStages = current
+                    .flatMap((name) => {
+                    if (!stagesByName.has(name))
+                        return [];
+                    if (!completedStages.includes(name))
+                        return [name];
+                    const stage = stagesByName.get(name);
+                    const primary = stage.transitions.find((t) => !t.retry);
+                    return primary ? PipelineRunner.nextTargets(primary.next) : [];
+                })
+                    .filter((s, index, items) => items.indexOf(s) === index)
+                    .filter((s) => stagesByName.has(s));
             }
             else {
                 initialStages = [];
@@ -1171,15 +1183,20 @@ PAYLOAD FORMATS:
                     stageResult = 'error';
                     break;
                 }
+                const resolvedStagePrompt = resolveStagePrompt(stageConfig);
                 const initialPrompt = nextInitialPrompt ||
-                    `${stageConfig.prompt}\n${commonRules}${planContent}`;
+                    `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
                 nextInitialPrompt = null;
                 const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
                 nextEphemeralSystemPrompt = null;
                 const stageStartTime = Date.now();
                 const handle = this.spawnStageContainer(stageConfig, initialPrompt, pipelineLogStream, ephemeralForSpawn);
                 this.activeHandles.set(stageName, handle);
-                logger.info({ stage: stageName }, 'Stage container spawned (on-demand)');
+                logger.info({
+                    stage: stageName,
+                    promptIds: resolvedStagePrompt.promptIds,
+                    promptHash: resolvedStagePrompt.promptHash,
+                }, 'Stage container spawned (on-demand)');
                 logger.info({ stage: stageName }, 'Entering stage');
                 await this.notifyBanner(`📌 Stage: ${stageName} starting`);
                 let isFirstTurn = true;
@@ -1190,7 +1207,7 @@ PAYLOAD FORMATS:
                         handle.pendingResult = createDeferred();
                     }
                     if (!isFirstTurn) {
-                        const prompt = `${stageConfig.prompt}\n${commonRules}${planContent}`;
+                        const prompt = `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
                         sendToStage(handle, prompt);
                     }
                     isFirstTurn = false;
@@ -1489,6 +1506,33 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
         // Validate stage names and transitions
         const stageNames = new Set(config.stages.map((s) => s.name));
         for (const stage of config.stages) {
+            if (stage.prompts !== undefined &&
+                (!Array.isArray(stage.prompts) ||
+                    stage.prompts.some((promptId) => typeof promptId !== 'string'))) {
+                logger.error({ groupFolder, stage: stage.name, prompts: stage.prompts }, 'Invalid prompts field (must be an array of prompt DB ids)');
+                return null;
+            }
+            if (stage.prompt_append !== undefined &&
+                typeof stage.prompt_append !== 'string') {
+                logger.error({
+                    groupFolder,
+                    stage: stage.name,
+                    prompt_append: stage.prompt_append,
+                }, 'Invalid prompt_append field (must be a string)');
+                return null;
+            }
+            if (stage.prompt !== undefined &&
+                typeof stage.prompt !== 'string') {
+                logger.error({ groupFolder, stage: stage.name, prompt: stage.prompt }, 'Invalid prompt field (must be a string)');
+                return null;
+            }
+            if (!stage.command &&
+                !stage.prompt &&
+                !stage.prompt_append &&
+                (!stage.prompts || stage.prompts.length === 0)) {
+                logger.error({ groupFolder, stage: stage.name }, 'Agent stage must define prompt, prompts, or prompt_append');
+                return null;
+            }
             // Validate fan_in value
             if (stage.fan_in !== undefined &&
                 stage.fan_in !== 'all' &&

@@ -1171,6 +1171,46 @@ describe('loadPipelineConfig validation for dynamic features', () => {
     expect(result).not.toBeNull();
     expect(result!.stages[0].transitions[0].next_dynamic).toBe(true);
   });
+
+  it('accepts prompt DB ids for agent stages', () => {
+    const config = {
+      stages: [
+        {
+          name: 'scope_plan',
+          prompts: ['db_id_1', 'db_id_2'],
+          prompt_append: 'Target module is fixed to VPU.',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stages[0].prompts).toEqual(['db_id_1', 'db_id_2']);
+  });
+
+  it('rejects non-string prompt ids', () => {
+    const config = {
+      stages: [
+        {
+          name: 'scope_plan',
+          prompts: ['db_id_1', 2],
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).toBeNull();
+  });
 });
 
 describe('Dynamic Transition FSM', () => {

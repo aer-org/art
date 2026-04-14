@@ -69,12 +69,18 @@ async function main(): Promise<void> {
       await update();
       break;
     }
+    case 'prompts': {
+      const { promptsCli } = await import('./prompts.js');
+      await promptsCli(args);
+      break;
+    }
     default:
       console.log(`aer-art — AI agent pipeline runner
 
 Usage:
   art compose [dir]   Initialize (if needed) and open pipeline editor
   art run [dir]       Start the agent pipeline engine
+  art prompts ...     Inspect prompt DB entries and pipeline prompt ids
   art update          Pull latest container images from registry`);
       if (command && command !== 'help' && command !== '--help') {
         console.error(`\nUnknown command: ${command}`);

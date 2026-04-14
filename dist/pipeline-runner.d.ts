@@ -8,7 +8,9 @@ export interface PipelineTransition {
 }
 export interface PipelineStage {
     name: string;
-    prompt: string;
+    prompt?: string;
+    prompts?: string[];
+    prompt_append?: string;
     image?: string;
     command?: string;
     successMarker?: string;
