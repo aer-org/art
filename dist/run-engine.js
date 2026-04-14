@@ -9,7 +9,7 @@ import { setCodexAuthProxyPort, setCredentialProxyPort } from './config.js';
 import { startCodexAuthProxy } from './codex-auth-proxy.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
-import { loadAgentTeamConfig, loadPipelineConfig, pipelineTagFromPath, PipelineRunner, } from './pipeline-runner.js';
+import { loadPipelineConfig, pipelineTagFromPath, PipelineRunner, } from './pipeline-runner.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 function resolveProvider() {
@@ -72,33 +72,6 @@ export async function runPipeline(opts) {
     const notify = async (text) => {
         console.log(text);
     };
-    // Team pipeline mode
-    const teamConfig = loadAgentTeamConfig(group.folder);
-    if (teamConfig) {
-        const parentGroupDir = resolveGroupFolderPath(group.folder);
-        logger.info({ agentCount: teamConfig.agents.length }, 'Agent team pipeline mode');
-        const results = await Promise.all(teamConfig.agents.map(async (agent) => {
-            const agentGroupDir = path.join(parentGroupDir, agent.folder);
-            const pipelineConfig = loadPipelineConfig(group.folder, agentGroupDir);
-            if (!pipelineConfig) {
-                console.log(`⚠️ ${agent.name}: PIPELINE.json not found`);
-                return 'error';
-            }
-            const virtualGroup = {
-                ...group,
-                name: `team-${agent.name}`,
-                folder: `${group.folder}__team_${agent.folder}`,
-            };
-            const runner = new PipelineRunner(virtualGroup, chatJid, pipelineConfig, async (text) => console.log(`[${agent.name}] ${text}`), onProcess, agentGroupDir, runId);
-            activeRunners.push(runner);
-            return runner.run();
-        }));
-        const allSuccess = results.every((r) => r === 'success');
-        proxyServer?.close();
-        codexAuthProxyServer?.close();
-        process.exit(allSuccess ? 0 : 1);
-    }
-    // Single pipeline mode
     let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
     if (!pipelineConfig) {
         console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);

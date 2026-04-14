@@ -79,7 +79,7 @@ export async function run(targetDir, opts) {
     const artDirName = '__art__';
     const artDir = path.join(projectDir, artDirName);
     if (!fs.existsSync(artDir)) {
-        console.error(`No ${artDirName}/ found in ${projectDir}. Run 'art compose .' first.`);
+        console.error(`No ${artDirName}/ found in ${projectDir}. Run 'art init .' first.`);
         process.exit(1);
     }
     // Set TUI env vars before any engine import so logger routes to file

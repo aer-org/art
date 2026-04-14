@@ -1450,38 +1450,6 @@ PAYLOAD FORMATS:
     }
 }
 /**
- * Load and validate AGENT_TEAM.json from a group folder.
- * Returns null if the file doesn't exist.
- */
-export function loadAgentTeamConfig(groupFolder) {
-    const groupDir = resolveGroupFolderPath(groupFolder);
-    const teamPath = path.join(groupDir, 'AGENT_TEAM.json');
-    if (!fs.existsSync(teamPath)) {
-        return null;
-    }
-    try {
-        const raw = fs.readFileSync(teamPath, 'utf-8');
-        const config = JSON.parse(raw);
-        if (!Array.isArray(config.agents) || config.agents.length === 0) {
-            logger.warn({ groupFolder }, 'AGENT_TEAM.json has no agents');
-            return null;
-        }
-        // Validate folder names: no path traversal, alphanumeric + underscore/hyphen only
-        const folderPattern = /^[a-zA-Z0-9_-]+$/;
-        for (const agent of config.agents) {
-            if (!agent.name || !agent.folder || !folderPattern.test(agent.folder)) {
-                logger.warn({ groupFolder, agent }, 'AGENT_TEAM.json has invalid agent entry');
-                return null;
-            }
-        }
-        return config;
-    }
-    catch (err) {
-        logger.error({ groupFolder, err }, 'Failed to parse AGENT_TEAM.json');
-        return null;
-    }
-}
-/**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
  *   groupFolder/groupDir are ignored and the file is loaded directly.
@@ -1521,8 +1489,7 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
                 }, 'Invalid prompt_append field (must be a string)');
                 return null;
             }
-            if (stage.prompt !== undefined &&
-                typeof stage.prompt !== 'string') {
+            if (stage.prompt !== undefined && typeof stage.prompt !== 'string') {
                 logger.error({ groupFolder, stage: stage.name, prompt: stage.prompt }, 'Invalid prompt field (must be a string)');
                 return null;
             }

@@ -48,10 +48,7 @@ describe('prompt-store', () => {
     });
     it('resolves prompt ids in order', () => {
         const resolved = resolvePromptIds(['db_id_2', 'db_id_1']);
-        expect(resolved.map((prompt) => prompt.id)).toEqual([
-            'db_id_2',
-            'db_id_1',
-        ]);
+        expect(resolved.map((prompt) => prompt.id)).toEqual(['db_id_2', 'db_id_1']);
     });
     it('composes stage prompts from DB ids and prompt_append', () => {
         const resolved = resolveStagePrompt({

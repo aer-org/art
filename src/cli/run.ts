@@ -99,7 +99,7 @@ export async function run(
 
   if (!fs.existsSync(artDir)) {
     console.error(
-      `No ${artDirName}/ found in ${projectDir}. Run 'art compose .' first.`,
+      `No ${artDirName}/ found in ${projectDir}. Run 'art init .' first.`,
     );
     process.exit(1);
   }

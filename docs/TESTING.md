@@ -74,8 +74,6 @@ npx vitest run src/pipeline-runner.test.ts  # Single file
 | loadPipelineConfig — valid JSON | Parses stages |
 | loadPipelineConfig — file missing | Returns null |
 | loadPipelineConfig — empty stages | Returns null |
-| loadAgentTeamConfig — valid | Returns agents array |
-| loadAgentTeamConfig — path traversal | Returns null for `../` folders |
 | savePipelineState / loadPipelineState | Round-trip save/load |
 | writeRunManifest / readRunManifest | Round-trip save/load |
 | writeCurrentRun / readCurrentRun / removeCurrentRun | CRUD operations |
@@ -106,7 +104,7 @@ npx vitest run src/pipeline-runner.test.ts  # Single file
 
 ## E2E Tests
 
-Real container pipelines on Docker. No mocking — exercises `art run` / `art compose` end-to-end.
+Real container pipelines on Docker. No mocking — exercises `art init` / `art run` end-to-end.
 
 ```bash
 npm run test:e2e                    # All E2E tests (Docker required)
@@ -125,8 +123,8 @@ The E2E suite installs the package globally via `npm pack → npm install -g` to
 | 3 | Single command pipeline | Yes | No | `echo '[STAGE_COMPLETE]'` → exit 0, state=success |
 | 4 | Multi-stage command pipeline | Yes | No | 3 stages (a→b→c) complete in order |
 | 5 | Agent-mode pipeline | Yes | Yes | Claude API call → `[STAGE_COMPLETE]` marker |
-| 6 | Headless compose | Yes | Yes | `art compose --headless` → PLAN.md created |
-| 7 | Compose + Run full flow | Yes | Yes | headless compose → overwrite PLAN.md → `art run` succeeds |
+| 6 | Init scaffold | No | No | `art init` → PLAN.md created |
+| 7 | Init + Run full flow | Yes | Yes | `art init` → overwrite PLAN.md → `art run` succeeds |
 
 - Command-mode tests (#3-4) use `--skip-preflight` to bypass Claude CLI/auth checks.
 - API-dependent tests (#5-7) auto-skip when `ANTHROPIC_API_KEY` is absent.
@@ -156,7 +154,7 @@ The E2E suite installs the package globally via `npm pack → npm install -g` to
 | `minimal-command/` | Single command-mode stage |
 | `multi-stage/` | 3 command stages with transitions |
 | `minimal-agent/` | Single agent stage (API required) |
-| `minimal-compose/` | Empty project for headless compose |
+| `minimal-init/` | Empty project for init scaffold |
 | `mount-ro/` | Read-only group mount verification |
 | `mount-rw/` | Read-write group mount verification |
 | `mount-hidden/` | Hidden (null) mount verification |

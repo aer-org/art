@@ -97,7 +97,8 @@ export class CodexExternalAuthManager {
                 auth.tokens?.refresh_token !== before.tokens?.refresh_token) {
                 return toExternalLogin(auth);
             }
-            if (auth.tokens?.id_token && auth.tokens?.id_token !== before.tokens?.id_token) {
+            if (auth.tokens?.id_token &&
+                auth.tokens?.id_token !== before.tokens?.id_token) {
                 return toExternalLogin(auth);
             }
             return this.refreshViaHttp(auth);

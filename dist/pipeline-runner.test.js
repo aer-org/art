@@ -148,7 +148,7 @@ vi.mock('child_process', async () => {
         spawn: vi.fn(() => fakeProc),
     };
 });
-import { parseStageMarkers, loadPipelineConfig, loadAgentTeamConfig, savePipelineState, loadPipelineState, PipelineRunner, } from './pipeline-runner.js';
+import { parseStageMarkers, loadPipelineConfig, savePipelineState, loadPipelineState, PipelineRunner, } from './pipeline-runner.js';
 // ============================================================
 // Group A: Pure functions (no mocks needed)
 // ============================================================
@@ -245,44 +245,6 @@ describe('loadPipelineConfig', () => {
     it('returns null when stages is empty array', () => {
         fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify({ stages: [] }));
         const result = loadPipelineConfig('test', tmpDir);
-        expect(result).toBeNull();
-    });
-});
-describe('loadAgentTeamConfig', () => {
-    let tmpDir;
-    let originalFolder;
-    beforeEach(() => {
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-team-cfg-'));
-        // loadAgentTeamConfig uses resolveGroupFolderPath(folder) which is mocked
-        // We need to create the file in the mocked path
-        originalFolder = `team-test-${Date.now()}`;
-        const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-        fs.mkdirSync(groupDir, { recursive: true });
-    });
-    afterEach(() => {
-        const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-        fs.rmSync(groupDir, { recursive: true, force: true });
-    });
-    it('returns agents array for valid config', () => {
-        const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-        const config = {
-            agents: [
-                { name: 'agent-a', folder: 'agent-a' },
-                { name: 'agent-b', folder: 'agent-b' },
-            ],
-        };
-        fs.writeFileSync(path.join(groupDir, 'AGENT_TEAM.json'), JSON.stringify(config));
-        const result = loadAgentTeamConfig(originalFolder);
-        expect(result).not.toBeNull();
-        expect(result.agents).toHaveLength(2);
-    });
-    it('returns null for path traversal in folder', () => {
-        const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-        const config = {
-            agents: [{ name: 'evil', folder: '../../../etc' }],
-        };
-        fs.writeFileSync(path.join(groupDir, 'AGENT_TEAM.json'), JSON.stringify(config));
-        const result = loadAgentTeamConfig(originalFolder);
         expect(result).toBeNull();
     });
 });

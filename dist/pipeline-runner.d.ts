@@ -171,17 +171,6 @@ export declare class PipelineRunner {
      */
     run(): Promise<'success' | 'error'>;
 }
-export interface AgentTeamConfig {
-    agents: Array<{
-        name: string;
-        folder: string;
-    }>;
-}
-/**
- * Load and validate AGENT_TEAM.json from a group folder.
- * Returns null if the file doesn't exist.
- */
-export declare function loadAgentTeamConfig(groupFolder: string): AgentTeamConfig | null;
 /**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,

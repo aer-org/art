@@ -224,26 +224,21 @@ describe.skipIf(!hasDocker || !hasApiKey)('Agent-mode pipeline @api', () => {
   });
 });
 
-// ─── Test 6: Headless compose (API required) ─────────────────────────────────
+// ─── Test 6: Init scaffold (API required) ────────────────────────────────────
 
-describe.skipIf(!hasDocker || !hasApiKey)('Headless compose @api', () => {
+describe('Init scaffold', () => {
   let fixtureDir: string;
 
   beforeAll(() => {
-    fixtureDir = copyFixture('minimal-compose');
+    fixtureDir = copyFixture('minimal-init');
   });
 
   afterAll(() => {
     cleanupFixture(fixtureDir);
   });
 
-  it('creates PLAN.md via headless compose', () => {
-    const result = runArt(
-      ['compose', '--headless', '.'],
-      fixtureDir,
-      undefined,
-      600_000,
-    );
+  it('creates __art__ scaffold via init', () => {
+    const result = runArt(['init', '.'], fixtureDir, undefined, 120_000);
 
     expect(result.code).toBe(0);
 
@@ -255,37 +250,29 @@ describe.skipIf(!hasDocker || !hasApiKey)('Headless compose @api', () => {
   });
 });
 
-// ─── Test 7: Compose + Run full flow (API required) ──────────────────────────
+// ─── Test 7: Init + Run full flow (API required) ─────────────────────────────
 
-describe.skipIf(!hasDocker || !hasApiKey)('Compose + Run full flow @api', () => {
+describe.skipIf(!hasDocker || !hasApiKey)('Init + Run full flow @api', () => {
   let fixtureDir: string;
 
   beforeAll(() => {
-    fixtureDir = copyFixture('minimal-compose');
+    fixtureDir = copyFixture('minimal-init');
   });
 
   afterAll(() => {
     cleanupFixture(fixtureDir);
   });
 
-  it('headless compose then run completes successfully', () => {
-    // Step 1: headless compose to scaffold and create plan
-    const composeResult = runArt(
-      ['compose', '--headless', '.'],
-      fixtureDir,
-      undefined,
-      600_000,
-    );
-    expect(composeResult.code).toBe(0);
+  it('init then run completes successfully', () => {
+    const initResult = runArt(['init', '.'], fixtureDir, undefined, 120_000);
+    expect(initResult.code).toBe(0);
 
-    // Step 2: overwrite PLAN.md with minimal instruction
     const planPath = path.join(fixtureDir, '__art__', 'plan', 'PLAN.md');
     fs.writeFileSync(
       planPath,
       'Just return [STAGE_COMPLETE]. Do nothing else.\n',
     );
 
-    // Step 3: run the pipeline
     const runResult = runArt(['run', '.'], fixtureDir, undefined, 600_000);
     expect(runResult.code).toBe(0);
 

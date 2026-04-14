@@ -10,7 +10,7 @@ Turn any existing project into a self-improving pipeline. Draw your own harness 
 - 🧑‍🔬 **Manual Mode** — Human can interfere via chat and instill their intuition for next trial
 - 📊 **Automated Experiment Tracking** via Git
 - 🔒 **Isolated containers** for each agent, for proper sandboxing during evaluation
-- 🔄 **Agentic loop customizable** via `art compose /my/project`
+- 🧱 **Simple project scaffold** via `art init /my/project`
 
 ### Install
 
@@ -25,9 +25,10 @@ npm install -g @aer-org/art
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 ```
 
-For your own projects, just point ART at any directory:
+Initialize a project once, then run it:
 
 ```bash
+art init /my/project
 art run /my/project
 ```
 
@@ -65,7 +66,15 @@ art run .  # requires NVIDIA Ampere+ GPU
 
 ## 30-Second Walkthrough
 
-**1. Run it:**
+**1. Initialize it:**
+
+```bash
+art init /my/project
+```
+
+ART creates a minimal `__art__/` scaffold with a default pipeline and the files that pipeline expects.
+
+**2. Run it:**
 
 ```bash
 art run /my/project
@@ -85,23 +94,7 @@ my-project/
     └── runs/                       # Run history manifests
 ```
 
-**2. Customize your pipeline:**
-
-```bash
-art compose /my/project
-```
-
-Opens a browser-based visual editor with an AI chat. Collaboratively design your pipeline — it becomes the contract that stages execute against. The default template: **plan → build → test → review**, but you can design any pipeline.
-
----
-
-## Two Ways to Run
-
-**🤖 Auto Mode** — Goes full auto 24/7. The planner agent sets up its own intuition into each experiment plan, runs trials, reviews results, and loops back. You wake up to a git log of everything it tried.
-
-**🧑‍🔬 Manual Mode** — Human in the loop. You can interfere via chat at any point and instill your own intuition for the next trial. Good for early exploration where you want to steer.
-
-All experiment history is tracked automatically via Git — every run, every plan revision, every result.
+Edit `__art__/PIPELINE.json` and the files under `__art__/` directly if you want to customize the pipeline.
 
 ---
 
@@ -109,7 +102,7 @@ All experiment history is tracked automatically via Git — every run, every pla
 
 A pipeline is a list of stages connected by transitions. Each stage runs in its own container and communicates via **output markers**.
 
-Here's what the **default template** looks like — but ART has no hardcoded stage knowledge. It understands stages, transitions, mounts, and markers. Design any pipeline via `art compose`.
+Here's what the **default template** looks like. ART understands stages, transitions, mounts, and markers from `PIPELINE.json`.
 
 ```
     ┌──────────┐
@@ -147,23 +140,6 @@ Completed stages are checkpointed. On restart, execution resumes from the next i
 
 ---
 
-## Customizing Pipelines
-
-```bash
-art compose /my/project
-```
-
-Opens a ComfyUI-style browser-based visual editor (React + ReactFlow) where you can:
-
-- Drag-and-drop stage nodes and wire them with transition edges
-- Configure per-stage: prompt, mount policies (rw/ro/hidden), container image
-- Browse your project's mount tree and override sub-directory permissions
-- Pick from preset base images (Ubuntu, CUDA, Python, Node, ROS)
-- Chat with an AI agent to collaboratively design your plan
-- Review diffs with hunk-based AI edit suggestions
-
----
-
 ## Security
 
 Agents run in containers with minimal access:
@@ -181,20 +157,19 @@ ART is designed to reduce accidental access and constrain agent execution, but i
 ## CLI Reference
 
 ```bash
-art compose <path>              # Open visual pipeline editor
-art compose --headless <path>   # One-shot planning agent (no browser, CI-friendly)
+art init <path>                 # Create __art__/ scaffold and default PIPELINE.json
 art run <path>                  # Execute pipeline (default provider: Claude)
 art run --codex <path>          # Execute pipeline with Codex
 art run --claude <path>         # Execute pipeline with Claude Code
 art run --skip-preflight <path> # Skip local CLI/auth preflight (command-mode only)
-art update                      # Rebuild all images in the registry
+art prompts ...                 # Inspect prompt DB entries and pipeline prompt ids
 ```
 
 ---
 
 ## Status
 
-ART is under active development. Core pipeline execution, the visual editor, and container isolation are functional. The API surface may change between minor versions.
+ART is under active development. Core pipeline execution and container isolation are functional. The API surface may change between minor versions.
 
 **Supported:** Linux, macOS · **Not supported:** Windows (use WSL)
 

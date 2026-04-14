@@ -92,8 +92,6 @@ function buildVolumeMounts(group, isMain, provider) {
         if (!fs.existsSync(settingsFile)) {
             fs.writeFileSync(settingsFile, JSON.stringify({
                 env: {
-                    // Enable agent swarms (subagent orchestration)
-                    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
                     // Load CLAUDE.md from additional mounted directories
                     CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
                     // Enable Claude's memory feature (persists user preferences between sessions)

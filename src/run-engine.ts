@@ -16,7 +16,6 @@ import {
   initRuntime,
 } from './container-runtime.js';
 import {
-  loadAgentTeamConfig,
   loadPipelineConfig,
   pipelineTagFromPath,
   PipelineRunner,
@@ -101,51 +100,6 @@ export async function runPipeline(opts: {
     console.log(text);
   };
 
-  // Team pipeline mode
-  const teamConfig = loadAgentTeamConfig(group.folder);
-  if (teamConfig) {
-    const parentGroupDir = resolveGroupFolderPath(group.folder);
-    logger.info(
-      { agentCount: teamConfig.agents.length },
-      'Agent team pipeline mode',
-    );
-
-    const results = await Promise.all(
-      teamConfig.agents.map(async (agent) => {
-        const agentGroupDir = path.join(parentGroupDir, agent.folder);
-        const pipelineConfig = loadPipelineConfig(group.folder, agentGroupDir);
-        if (!pipelineConfig) {
-          console.log(`⚠️ ${agent.name}: PIPELINE.json not found`);
-          return 'error' as const;
-        }
-
-        const virtualGroup: RegisteredGroup = {
-          ...group,
-          name: `team-${agent.name}`,
-          folder: `${group.folder}__team_${agent.folder}`,
-        };
-
-        const runner = new PipelineRunner(
-          virtualGroup,
-          chatJid,
-          pipelineConfig,
-          async (text) => console.log(`[${agent.name}] ${text}`),
-          onProcess,
-          agentGroupDir,
-          runId,
-        );
-        activeRunners.push(runner);
-        return runner.run();
-      }),
-    );
-
-    const allSuccess = results.every((r) => r === 'success');
-    proxyServer?.close();
-    codexAuthProxyServer?.close();
-    process.exit(allSuccess ? 0 : 1);
-  }
-
-  // Single pipeline mode
   let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
   if (!pipelineConfig) {
     console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
