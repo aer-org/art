@@ -1,6 +1,5 @@
 /**
- * Shared engine bootstrap for art init / art run / art compose.
- * Extracts common setup from run.ts so init and compose can reuse it.
+ * Shared engine bootstrap for art run.
  */
 import { execSync } from 'child_process';
 import fs from 'fs';
@@ -178,6 +177,9 @@ export async function setupEngine(opts: {
     recursive: true,
   });
   fs.mkdirSync(path.join(dataDir, 'sessions', folderName, '.claude'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(dataDir, 'sessions', folderName, '.codex'), {
     recursive: true,
   });
 

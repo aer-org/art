@@ -29,7 +29,18 @@ import {
   writeRunManifest,
   type RunManifest,
 } from './run-manifest.js';
+import {
+  formatStageMcpAccessSummary,
+  loadMcpRegistry,
+  resolveStageMcpServers,
+  type ExternalMcpRegistry,
+} from './mcp-registry.js';
+import { resolveStagePrompt } from './prompt-store.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
+
+function resolveProvider(): 'claude' | 'codex' {
+  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
 
 // --- Pipeline JSON Schema ---
 
@@ -43,7 +54,9 @@ export interface PipelineTransition {
 
 export interface PipelineStage {
   name: string;
-  prompt: string;
+  prompt?: string;
+  prompts?: string[];
+  prompt_append?: string;
   image?: string; // Registry key (agent mode) or image name (command mode)
   command?: string; // Shell command mode (runs sh -c, no agent)
   successMarker?: string; // Command mode: stdout substring that indicates success → STAGE_COMPLETE
@@ -57,6 +70,7 @@ export interface PipelineStage {
   env?: Record<string, string>; // Environment variables passed to container
   exclusive?: string;
   hostMounts?: AdditionalMount[]; // Host path mounts validated against allowlist
+  mcpAccess?: string[]; // External MCP registry refs available to this stage
   resumeSession?: boolean; // false = always start fresh session. default true = resume
   fan_in?: 'all' | 'dynamic'; // Fan-in mode: "all" (default) waits for all predecessors; "dynamic" waits only for activated ones
   transitions: PipelineTransition[];
@@ -119,16 +133,44 @@ export interface PipelineState {
 
 const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
 
+/**
+ * Derive the state file name for a given pipeline tag.
+ * - undefined / 'PIPELINE' → 'PIPELINE_STATE.json' (backward compatible)
+ * - 'my-pipeline'          → 'PIPELINE_STATE.my-pipeline.json'
+ */
+function pipelineStateFileName(tag?: string): string {
+  if (!tag || tag === 'PIPELINE') return PIPELINE_STATE_FILE;
+  return `PIPELINE_STATE.${tag}.json`;
+}
+
+/**
+ * Derive a short tag from a custom pipeline file path.
+ * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
+ *      undefined (default PIPELINE.json) → undefined
+ */
+export function pipelineTagFromPath(
+  pipelinePath: string | undefined,
+): string | undefined {
+  if (!pipelinePath) return undefined;
+  const base = path.basename(pipelinePath, '.json');
+  if (base === 'PIPELINE') return undefined;
+  return base;
+}
+
 export function savePipelineState(
   groupDir: string,
   state: PipelineState,
+  tag?: string,
 ): void {
-  const filepath = path.join(groupDir, PIPELINE_STATE_FILE);
+  const filepath = path.join(groupDir, pipelineStateFileName(tag));
   atomicWrite(filepath, JSON.stringify(state, null, 2));
 }
 
-export function loadPipelineState(groupDir: string): PipelineState | null {
-  const filepath = path.join(groupDir, PIPELINE_STATE_FILE);
+export function loadPipelineState(
+  groupDir: string,
+  tag?: string,
+): PipelineState | null {
+  const filepath = path.join(groupDir, pipelineStateFileName(tag));
   try {
     const raw = fs.readFileSync(filepath, 'utf-8');
     return JSON.parse(raw) as PipelineState;
@@ -187,9 +229,7 @@ export function parseStageMarkers(
       return { matched: transition, payload: fencedMatch[1] };
     }
     // Inline / no payload: [MARKER] or [MARKER: payload]
-    const regex = new RegExp(
-      `\\[${markerName}(?::\\s*(.+?))?\\]`,
-    );
+    const regex = new RegExp(`\\[${markerName}(?::\\s*(.+?))?\\]`);
     const match = regex.exec(combined);
     if (match) {
       return { matched: transition, payload: match[1] ?? null };
@@ -270,6 +310,7 @@ export class PipelineRunner {
   ) => void;
   private groupDir: string;
   private runId: string;
+  private pipelineTag: string | undefined;
   private manifest: RunManifest;
   private aborted = false;
   private activeHandles = new Map<string, StageHandle>();
@@ -285,6 +326,7 @@ export class PipelineRunner {
     ) => void,
     groupDir?: string,
     runId?: string,
+    pipelineTag?: string,
   ) {
     this.group = group;
     this.chatJid = chatJid;
@@ -293,6 +335,7 @@ export class PipelineRunner {
     this.onProcess = onProcess;
     this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
     this.runId = runId ?? generateRunId();
+    this.pipelineTag = pipelineTag;
     this.manifest = {
       runId: this.runId,
       pid: process.pid,
@@ -473,6 +516,11 @@ export class PipelineRunner {
     if (!stageConfig.command) {
       resolvedImage = getImageForStage(stageConfig.image, false);
     }
+    const resolvedExternalMcpServers = stageConfig.command
+      ? []
+      : resolveStageMcpServers(stageConfig.mcpAccess, {
+          hostGateway: getRuntime().hostGateway,
+        });
 
     // Parent's additional mounts stay in additionalMounts (security-validated).
     // Filter out any that conflict with stage-level hostMounts (stage wins).
@@ -493,6 +541,7 @@ export class PipelineRunner {
       trigger: '',
       added_at: new Date().toISOString(),
       containerConfig: {
+        provider: this.group.containerConfig?.provider || resolveProvider(),
         image: resolvedImage,
         additionalMounts: filteredParentMounts,
         additionalDevices: stageConfig.devices || [],
@@ -500,6 +549,7 @@ export class PipelineRunner {
         runAsRoot: stageConfig.runAsRoot === true,
         privileged: stageConfig.privileged === true,
         env: stageConfig.env,
+        externalMcpServers: resolvedExternalMcpServers,
         internalMounts,
       },
     };
@@ -614,12 +664,14 @@ export class PipelineRunner {
             stageConfig.resumeSession !== false
               ? this.stageSessionIds.get(stageConfig.name)
               : undefined,
+          provider: virtualGroup.containerConfig?.provider,
           groupFolder: subFolder,
           chatJid: this.chatJid,
           isMain: false,
           assistantName: `pipeline-${stageConfig.name}`,
           runId: this.runId,
           ephemeralSystemPrompt,
+          externalMcpServers: resolvedExternalMcpServers,
         },
         (proc, containerName) => this.onProcess(proc, containerName),
         onOutput,
@@ -932,6 +984,19 @@ export class PipelineRunner {
     const modeRule = stageConfig.chat
       ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
       : '- Do NOT ask questions. Always assume "yes" and proceed autonomously.\n- Do not stop until this stage is complete or you hit a blocking error.';
+    const externalMcpLines = (() => {
+      if (!stageConfig.mcpAccess || stageConfig.mcpAccess.length === 0) {
+        return '- External MCP access for this stage: none.';
+      }
+
+      const servers = resolveStageMcpServers(stageConfig.mcpAccess, {
+        hostGateway: getRuntime().hostGateway,
+      });
+      return [
+        '- External MCP access is limited to the following servers/tools:',
+        ...formatStageMcpAccessSummary(servers),
+      ].join('\n');
+    })();
 
     return `
 RULES:
@@ -939,6 +1004,7 @@ ${modeRule}
 - Read files before editing. Use tools freely.
 - Project source is available read-only at /workspace/project/.
 - Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
+${externalMcpLines}
 
 STAGE MARKERS — use the correct one:
 ${markerLines.join('\n')}
@@ -1023,9 +1089,7 @@ PAYLOAD FORMATS:
       stagesByName.set(s.name, s);
     }
 
-    const planSuffix = planContent
-      ? `\n\n## Plan\n\n${planContent}`
-      : '';
+    const planSuffix = planContent ? `\n\n## Plan\n\n${planContent}` : '';
     return { planContent: planSuffix, stagesByName, pipelineLogStream };
   }
 
@@ -1201,26 +1265,34 @@ PAYLOAD FORMATS:
     };
 
     // Resume from last completed stage if pipeline was interrupted
-    const existingState = loadPipelineState(this.groupDir);
+    const existingState = loadPipelineState(this.groupDir, this.pipelineTag);
     if (
       existingState &&
       existingState.status !== 'success' &&
       existingState.completedStages.length > 0
     ) {
       const completedStages = [...existingState.completedStages];
-      // Find where to resume: look at the last completed stage's forward transition
-      const lastCompleted = completedStages[completedStages.length - 1];
-      const lastConfig = stagesByName.get(lastCompleted);
-      const completeTransition = lastConfig?.transitions.find(
-        (t) => !t.retry && t.next,
-      );
+      // Resume from currentStage directly — it captures exactly what was
+      // running at interruption, handling cyclic and fan-out cases correctly.
       let initialStages: string[];
-      if (completeTransition?.next) {
-        const targets = PipelineRunner.nextTargets(completeTransition.next);
-        // Only resume targets not yet completed
-        const remaining = targets.filter((t) => !completedStages.includes(t));
-        initialStages = remaining.length > 0 ? remaining : [resolveEntry()];
+      if (existingState.currentStage) {
+        const current = Array.isArray(existingState.currentStage)
+          ? existingState.currentStage
+          : [existingState.currentStage];
+        initialStages = current
+          .flatMap((name) => {
+            if (!stagesByName.has(name)) return [];
+            if (!completedStages.includes(name)) return [name];
+            const stage = stagesByName.get(name)!;
+            const primary = stage.transitions.find((t) => !t.retry);
+            return primary ? PipelineRunner.nextTargets(primary.next) : [];
+          })
+          .filter((s, index, items) => items.indexOf(s) === index)
+          .filter((s) => stagesByName.has(s));
       } else {
+        initialStages = [];
+      }
+      if (initialStages.length === 0) {
         initialStages = [resolveEntry()];
       }
       await this.notifyBanner(
@@ -1419,12 +1491,16 @@ PAYLOAD FORMATS:
       duration: Date.now() - stageStartTime,
     });
     writeRunManifest(this.groupDir, this.manifest);
-    savePipelineState(this.groupDir, {
-      currentStage: targetName,
-      completedStages,
-      lastUpdated: new Date().toISOString(),
-      status: 'running',
-    });
+    savePipelineState(
+      this.groupDir,
+      {
+        currentStage: targetName,
+        completedStages,
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+      },
+      this.pipelineTag,
+    );
 
     // Close the container first, then retrieve session ID
     await this.closeAndWait(handle);
@@ -1477,12 +1553,16 @@ PAYLOAD FORMATS:
     lastResult: 'success' | 'error',
     pipelineLogStream: fs.WriteStream,
   ): Promise<void> {
-    savePipelineState(this.groupDir, {
-      currentStage: null,
-      completedStages,
-      lastUpdated: new Date().toISOString(),
-      status: lastResult,
-    });
+    savePipelineState(
+      this.groupDir,
+      {
+        currentStage: null,
+        completedStages,
+        lastUpdated: new Date().toISOString(),
+        status: lastResult,
+      },
+      this.pipelineTag,
+    );
 
     this.manifest.endTime = new Date().toISOString();
     this.manifest.status = lastResult;
@@ -1572,9 +1652,10 @@ PAYLOAD FORMATS:
           break;
         }
 
+        const resolvedStagePrompt = resolveStagePrompt(stageConfig);
         const initialPrompt =
           nextInitialPrompt ||
-          `${stageConfig.prompt}\n${commonRules}${planContent}`;
+          `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
         nextInitialPrompt = null;
         const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
         nextEphemeralSystemPrompt = null;
@@ -1589,7 +1670,11 @@ PAYLOAD FORMATS:
         this.activeHandles.set(stageName, handle);
 
         logger.info(
-          { stage: stageName },
+          {
+            stage: stageName,
+            promptIds: resolvedStagePrompt.promptIds,
+            promptHash: resolvedStagePrompt.promptHash,
+          },
           'Stage container spawned (on-demand)',
         );
         logger.info({ stage: stageName }, 'Entering stage');
@@ -1606,7 +1691,7 @@ PAYLOAD FORMATS:
           }
 
           if (!isFirstTurn) {
-            const prompt = `${stageConfig.prompt}\n${commonRules}${planContent}`;
+            const prompt = `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
             sendToStage(handle, prompt);
           }
           isFirstTurn = false;
@@ -1647,13 +1732,15 @@ PAYLOAD FORMATS:
               // Container respawn — loop again with same stage
               containerRespawnCount++;
               nextInitialPrompt = outcome.nextInitialPrompt;
-              nextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+              nextEphemeralSystemPrompt =
+                outcome.nextEphemeralSystemPrompt ?? null;
               currentStage = stageName; // stay in outer while
             } else {
               // Advance to next stage(s) or end
               nextStages = outcome.nextStageName;
               outNextInitialPrompt = outcome.nextInitialPrompt;
-              outNextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+              outNextEphemeralSystemPrompt =
+                outcome.nextEphemeralSystemPrompt ?? null;
               currentStage = null; // exit outer while
               if (outcome.lastResult) {
                 stageResult = outcome.lastResult;
@@ -1700,15 +1787,19 @@ PAYLOAD FORMATS:
       activations.set(name, (activations.get(name) ?? 0) + 1);
     }
 
-    savePipelineState(this.groupDir, {
-      currentStage:
-        initialStages.length === 1 ? initialStages[0] : initialStages,
-      completedStages,
-      lastUpdated: new Date().toISOString(),
-      status: 'running',
-      activations: Object.fromEntries(activations),
-      completions: Object.fromEntries(completions),
-    });
+    savePipelineState(
+      this.groupDir,
+      {
+        currentStage:
+          initialStages.length === 1 ? initialStages[0] : initialStages,
+        completedStages,
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+        activations: Object.fromEntries(activations),
+        completions: Object.fromEntries(completions),
+      },
+      this.pipelineTag,
+    );
 
     const predecessors = this.buildPredecessorMap();
     const reachability = this.buildReachabilityMap();
@@ -1865,14 +1956,18 @@ PAYLOAD FORMATS:
 
       // Save current active stages
       const activeNames = [...runningNames];
-      savePipelineState(this.groupDir, {
-        currentStage: activeNames.length === 1 ? activeNames[0] : activeNames,
-        completedStages,
-        lastUpdated: new Date().toISOString(),
-        status: 'running',
-        activations: Object.fromEntries(activations),
-        completions: Object.fromEntries(completions),
-      });
+      savePipelineState(
+        this.groupDir,
+        {
+          currentStage: activeNames.length === 1 ? activeNames[0] : activeNames,
+          completedStages,
+          lastUpdated: new Date().toISOString(),
+          status: 'running',
+          activations: Object.fromEntries(activations),
+          completions: Object.fromEntries(completions),
+        },
+        this.pipelineTag,
+      );
 
       // Wait for at least one stage to complete
       await waitForResult();
@@ -1935,54 +2030,6 @@ PAYLOAD FORMATS:
   }
 }
 
-// --- Agent Team Config ---
-
-export interface AgentTeamConfig {
-  agents: Array<{ name: string; folder: string }>;
-}
-
-/**
- * Load and validate AGENT_TEAM.json from a group folder.
- * Returns null if the file doesn't exist.
- */
-export function loadAgentTeamConfig(
-  groupFolder: string,
-): AgentTeamConfig | null {
-  const groupDir = resolveGroupFolderPath(groupFolder);
-  const teamPath = path.join(groupDir, 'AGENT_TEAM.json');
-
-  if (!fs.existsSync(teamPath)) {
-    return null;
-  }
-
-  try {
-    const raw = fs.readFileSync(teamPath, 'utf-8');
-    const config: AgentTeamConfig = JSON.parse(raw);
-
-    if (!Array.isArray(config.agents) || config.agents.length === 0) {
-      logger.warn({ groupFolder }, 'AGENT_TEAM.json has no agents');
-      return null;
-    }
-
-    // Validate folder names: no path traversal, alphanumeric + underscore/hyphen only
-    const folderPattern = /^[a-zA-Z0-9_-]+$/;
-    for (const agent of config.agents) {
-      if (!agent.name || !agent.folder || !folderPattern.test(agent.folder)) {
-        logger.warn(
-          { groupFolder, agent },
-          'AGENT_TEAM.json has invalid agent entry',
-        );
-        return null;
-      }
-    }
-
-    return config;
-  } catch (err) {
-    logger.error({ groupFolder, err }, 'Failed to parse AGENT_TEAM.json');
-    return null;
-  }
-}
-
 /**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
@@ -2006,6 +2053,7 @@ export function loadPipelineConfig(
   try {
     const raw = fs.readFileSync(pipelinePath, 'utf-8');
     const config: PipelineConfig = JSON.parse(raw);
+    let mcpRegistry: ExternalMcpRegistry | undefined;
 
     // Basic validation
     if (!Array.isArray(config.stages) || config.stages.length === 0) {
@@ -2016,6 +2064,87 @@ export function loadPipelineConfig(
     // Validate stage names and transitions
     const stageNames = new Set(config.stages.map((s) => s.name));
     for (const stage of config.stages) {
+      if (
+        stage.prompts !== undefined &&
+        (!Array.isArray(stage.prompts) ||
+          stage.prompts.some((promptId) => typeof promptId !== 'string'))
+      ) {
+        logger.error(
+          { groupFolder, stage: stage.name, prompts: stage.prompts },
+          'Invalid prompts field (must be an array of prompt DB ids)',
+        );
+        return null;
+      }
+
+      if (
+        stage.prompt_append !== undefined &&
+        typeof stage.prompt_append !== 'string'
+      ) {
+        logger.error(
+          {
+            groupFolder,
+            stage: stage.name,
+            prompt_append: stage.prompt_append,
+          },
+          'Invalid prompt_append field (must be a string)',
+        );
+        return null;
+      }
+
+      if (stage.prompt !== undefined && typeof stage.prompt !== 'string') {
+        logger.error(
+          { groupFolder, stage: stage.name, prompt: stage.prompt },
+          'Invalid prompt field (must be a string)',
+        );
+        return null;
+      }
+
+      if (
+        stage.mcpAccess !== undefined &&
+        (!Array.isArray(stage.mcpAccess) ||
+          stage.mcpAccess.some((ref) => typeof ref !== 'string'))
+      ) {
+        logger.error(
+          { groupFolder, stage: stage.name, mcpAccess: stage.mcpAccess },
+          'Invalid mcpAccess field (must be an array of registry ref strings)',
+        );
+        return null;
+      }
+
+      if (
+        !stage.command &&
+        !stage.prompt &&
+        !stage.prompt_append &&
+        (!stage.prompts || stage.prompts.length === 0)
+      ) {
+        logger.error(
+          { groupFolder, stage: stage.name },
+          'Agent stage must define prompt, prompts, or prompt_append',
+        );
+        return null;
+      }
+
+      if (stage.command && stage.mcpAccess && stage.mcpAccess.length > 0) {
+        logger.error(
+          { groupFolder, stage: stage.name },
+          'Command stages cannot declare mcpAccess',
+        );
+        return null;
+      }
+
+      if (stage.mcpAccess && stage.mcpAccess.length > 0) {
+        try {
+          mcpRegistry ??= loadMcpRegistry();
+          resolveStageMcpServers(stage.mcpAccess, { registry: mcpRegistry });
+        } catch (err) {
+          logger.error(
+            { groupFolder, stage: stage.name, err },
+            'Invalid mcpAccess configuration',
+          );
+          return null;
+        }
+      }
+
       // Validate fan_in value
       if (
         stage.fan_in !== undefined &&

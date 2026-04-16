@@ -17,20 +17,13 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
-interface ContainerInput {
-  prompt: string;
-  sessionId?: string;
-  groupFolder: string;
-  chatJid: string;
-  isMain: boolean;
-  isScheduledTask?: boolean;
-  assistantName?: string;
-  endOnFirstResult?: boolean;
-  ephemeralSystemPrompt?: string;
-}
+import { ClaudeEngine } from './engines/claude-engine.js';
+import { AgentProvider, EngineContainerInput, NormalizedEvent } from './engines/types.js';
+
+interface ContainerInput extends EngineContainerInput {}
 
 interface ContainerOutput {
   status: 'success' | 'error';
@@ -50,52 +43,9 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-interface SDKUserMessage {
-  type: 'user';
-  message: { role: 'user'; content: string };
-  parent_tool_use_id: null;
-  session_id: string;
-}
-
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
-
-/**
- * Push-based async iterable for streaming user messages to the SDK.
- * Keeps the iterable alive until end() is called, preventing isSingleUserTurn.
- */
-class MessageStream {
-  private queue: SDKUserMessage[] = [];
-  private waiting: (() => void) | null = null;
-  private done = false;
-
-  push(text: string): void {
-    this.queue.push({
-      type: 'user',
-      message: { role: 'user', content: text },
-      parent_tool_use_id: null,
-      session_id: '',
-    });
-    this.waiting?.();
-  }
-
-  end(): void {
-    this.done = true;
-    this.waiting?.();
-  }
-
-  async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> {
-    while (true) {
-      while (this.queue.length > 0) {
-        yield this.queue.shift()!;
-      }
-      if (this.done) return;
-      await new Promise<void>(r => { this.waiting = r; });
-      this.waiting = null;
-    }
-  }
-}
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -111,24 +61,6 @@ const OUTPUT_START_MARKER = '---AER_ART_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
 const TOOL_START_MARKER = '---AER_ART_TOOL_START---';
 const TOOL_END_MARKER = '---AER_ART_TOOL_END---';
-
-function summarizeToolInput(name: string, input: any): string {
-  if (!input) return name;
-  switch (name) {
-    case 'Bash':
-      return typeof input.command === 'string' ? input.command.slice(0, 80) : name;
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-      return typeof input.file_path === 'string' ? input.file_path : name;
-    case 'Grep':
-      return typeof input.pattern === 'string' ? input.pattern : name;
-    case 'Glob':
-      return typeof input.pattern === 'string' ? input.pattern : name;
-    default:
-      return name;
-  }
-}
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
@@ -348,9 +280,6 @@ function waitForIpcMessage(): Promise<string | null> {
 
 /**
  * Run a single query and stream results via writeOutput.
- * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
- * allowing agent teams subagents to run to completion.
- * Also pipes IPC messages into the stream during the query.
  */
 async function runQuery(
   prompt: string,
@@ -362,280 +291,172 @@ async function runQuery(
   endOnResult?: boolean,
   ephemeralAppend?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; resultTexts: string[] }> {
-  const stream = new MessageStream();
-  stream.push(prompt);
-
-  // Poll IPC for follow-up messages and _close sentinel during the query
-  let ipcPolling = true;
-  let closedDuringQuery = false;
-  const pollIpcDuringQuery = () => {
-    if (!ipcPolling) return;
-    if (shouldClose()) {
-      log('Close sentinel detected during query, ending stream');
-      closedDuringQuery = true;
-      stream.end();
-      ipcPolling = false;
-      return;
-    }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
-    }
-    setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
-  };
-  setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
-
+  const provider: AgentProvider = containerInput.provider || 'claude';
+  const engine =
+    provider === 'codex'
+      ? new (await import('./engines/codex-engine.js')).CodexEngine()
+      : new ClaudeEngine();
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
-  let messageCount = 0;
   let resultCount = 0;
   const resultTexts: string[] = [];
-
-  // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-  }
-
-  // Discover additional directories mounted at /workspace/extra/*
-  // These are passed to the SDK so their CLAUDE.md files are loaded automatically
-  const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
-    for (const entry of fs.readdirSync(extraBase)) {
-      const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) {
-        extraDirs.push(fullPath);
-      }
-    }
-  }
-  if (extraDirs.length > 0) {
-    log(`Additional directories: ${extraDirs.join(', ')}`);
-  }
-
-  // Issue tracking: map tool_use IDs to their metadata, track errored input hashes
+  let closedDuringQuery = false;
   const pendingToolUses = new Map<string, { name: string; input: unknown; assistantText: string }>();
   const erroredHashes = new Set<string>();
   const stageName = containerInput.assistantName || 'unknown';
+  let eventCount = 0;
 
-  for await (const message of query({
-    prompt: stream,
-    options: {
-      cwd: '/workspace',
-      additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId,
-      resumeSessionAt: resumeAt,
-      systemPrompt: (() => {
-        const appendParts = [globalClaudeMd, ephemeralAppend].filter(Boolean) as string[];
-        if (appendParts.length === 0) return undefined;
-        return { type: 'preset' as const, preset: 'claude_code' as const, append: appendParts.join('\n\n') };
-      })(),
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__aer-art__*'
-      ],
-      env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      settingSources: ['project', 'user'],
-      mcpServers: {
-        'aer-art': {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            AER_ART_CHAT_JID: containerInput.chatJid,
-            AER_ART_GROUP_FOLDER: containerInput.groupFolder,
-            AER_ART_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-      },
-      hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-      },
-    }
+  for await (const event of engine.runTurn({
+    prompt,
+    sessionId,
+    mcpServerPath,
+    containerInput,
+    sdkEnv,
+    resumeAt,
+    ephemeralAppend,
+    onCloseRequested: () => {
+      if (shouldClose()) {
+        log('Close sentinel detected during query');
+        closedDuringQuery = true;
+        return true;
+      }
+      return false;
+    },
+    pollIpcMessages: () => {
+      const messages = drainIpcInput();
+      for (const text of messages) {
+        log(`Piping IPC message into active ${provider} turn (${text.length} chars)`);
+      }
+      return messages;
+    },
+    preCompactHookFactory: createPreCompactHook,
   })) {
-    messageCount++;
-    const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
-
-    // Detailed logging for debugging
-    let detail = '';
-    if (message.type === 'assistant' && 'message' in message) {
-      const msg = (message as any).message;
-      if (msg?.content) {
-        const parts = Array.isArray(msg.content) ? msg.content : [msg.content];
-        const summary = parts.map((p: any) => {
-          if (p.type === 'tool_use') {
-            const input = p.input ? JSON.stringify(p.input).slice(0, 150) : '';
-            return `tool_use:${p.name}(${input})`;
-          }
-          if (p.type === 'text' && p.text) return `text:${p.text.slice(0, 80)}`;
-          return p.type || '?';
-        }).join(', ');
-        detail = ` [${summary}]`;
-      }
-    }
-    if (message.type === 'user' && 'message' in message) {
-      const msg = (message as any).message;
-      if (msg?.content) {
-        const parts = Array.isArray(msg.content) ? msg.content : [msg.content];
-        const summary = parts.map((p: any) => {
-          if (p.type === 'tool_result') {
-            const content = Array.isArray(p.content) ? p.content.map((c: any) => c.text || '').join('') : (p.content || '');
-            const preview = typeof content === 'string' ? content.slice(0, 200) : JSON.stringify(content).slice(0, 200);
-            return `tool_result(${p.tool_use_id?.slice(-8) || '?'}):${preview}`;
-          }
-          if (p.type === 'text' && p.text) return `text:${p.text.slice(0, 80)}`;
-          return p.type || '?';
-        }).join(', ');
-        detail = ` [${summary}]`;
-      }
-    }
-    log(`[msg #${messageCount}] type=${msgType}${detail}`);
-
-    // Stream assistant text and tool_use info to stdout so compose.ts relays as SSE.
-    if (message.type === 'assistant' && 'message' in message) {
-      const msg = (message as any).message;
-      if (msg?.content) {
-        const parts = Array.isArray(msg.content) ? msg.content : [msg.content];
-        for (const p of parts) {
-          if (p.type === 'text' && p.text) {
-            process.stdout.write(p.text);
-          } else if (p.type === 'tool_use') {
-            const info = { id: p.id, name: p.name, input_preview: summarizeToolInput(p.name, p.input) };
-            process.stdout.write(TOOL_START_MARKER + '\n' + JSON.stringify(info) + '\n' + TOOL_END_MARKER + '\n');
-          }
-        }
-      }
-    }
-
-    // --- Issue tracking: capture tool_use from assistant, detect errors from tool_result ---
-    if (message.type === 'assistant' && 'message' in message) {
-      const msg = (message as any).message;
-      if (msg?.content && Array.isArray(msg.content)) {
-        // Collect text blocks for assistantContext
-        const textParts = msg.content
-          .filter((p: any) => p.type === 'text' && p.text)
-          .map((p: any) => p.text as string);
-        const assistantText = textParts.join('\n').slice(0, 1000);
-
-        // Record pending tool_use blocks
-        for (const block of msg.content) {
-          if (block.type === 'tool_use' && block.id && block.name) {
-            pendingToolUses.set(block.id, {
-              name: block.name,
-              input: block.input,
-              assistantText,
-            });
-          }
-        }
-      }
-    }
-
-    if (message.type === 'user' && 'message' in message) {
-      const msg = (message as any).message;
-      if (msg?.content && Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block.type !== 'tool_result' || !block.tool_use_id) continue;
-
-          const pending = pendingToolUses.get(block.tool_use_id);
-          if (!pending) continue;
-
-          const inputHash = computeInputHash(pending.name, pending.input);
-
-          if (block.is_error) {
-            // Extract error content from tool_result
-            let errorContent = '';
-            if (typeof block.content === 'string') {
-              errorContent = block.content;
-            } else if (Array.isArray(block.content)) {
-              errorContent = block.content.map((c: any) => c.text || '').join('');
-            }
-            errorContent = errorContent.slice(0, 4000);
-
-            erroredHashes.add(inputHash);
-
-            try {
-              writeIpcTask({
-                type: 'report_issue',
-                stage: stageName,
-                tool: pending.name,
-                toolUseId: block.tool_use_id,
-                input: JSON.stringify(pending.input).slice(0, 2000),
-                inputHash,
-                errorContent,
-                assistantContext: pending.assistantText,
-                turnIndex: messageCount,
-              });
-            } catch (err) {
-              log(`Failed to write report_issue IPC: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          } else if (erroredHashes.has(inputHash)) {
-            // Previously errored command now succeeded → resolve
-            try {
-              writeIpcTask({
-                type: 'resolve_issue',
-                stage: stageName,
-                inputHash,
-              });
-            } catch (err) {
-              log(`Failed to write resolve_issue IPC: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
-
-          // Clean up processed tool_use
-          pendingToolUses.delete(block.tool_use_id);
-        }
-      }
-    }
-
-    if (message.type === 'assistant' && 'uuid' in message) {
-      lastAssistantUuid = (message as { uuid: string }).uuid;
-    }
-
-    if (message.type === 'system' && message.subtype === 'init') {
-      newSessionId = message.session_id;
-      log(`Session initialized: ${newSessionId}`);
-    }
-
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-      const tn = message as { task_id: string; status: string; summary: string };
-      log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
-    }
-
-    if (message.type === 'result') {
-      resultCount++;
-      const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      if (textResult) resultTexts.push(textResult);
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
-      if (endOnResult) {
-        log('endOnResult: closing stream after result');
-        stream.end();
-        ipcPolling = false;
-      }
-    }
+    eventCount++;
+    log(`[event #${eventCount}] provider=${provider} type=${event.type}`);
+    handleNormalizedEvent(
+      event,
+      pendingToolUses,
+      erroredHashes,
+      stageName,
+      resultTexts,
+      endOnResult,
+      (value) => {
+        newSessionId = value;
+      },
+      () => newSessionId,
+      (value) => {
+        lastAssistantUuid = value;
+      },
+      () => {
+        resultCount++;
+      },
+    );
   }
 
-  ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+  log(`Query done. Provider: ${provider}, events: ${eventCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery, resultTexts };
 }
 
 // (FSM helpers removed — pipeline FSM is now host-side)
 
 // (Stage prompts and FSM removed — now managed by host-side pipeline-runner.ts)
+
+function handleNormalizedEvent(
+  event: NormalizedEvent,
+  pendingToolUses: Map<string, { name: string; input: unknown; assistantText: string }>,
+  erroredHashes: Set<string>,
+  stageName: string,
+  resultTexts: string[],
+  endOnResult: boolean | undefined,
+  setSessionId: (value: string) => void,
+  getSessionId: () => string | undefined,
+  setLastAssistantUuid: (value: string | undefined) => void,
+  incrementResultCount: () => void,
+): void {
+  switch (event.type) {
+    case 'session.started':
+      setSessionId(event.sessionId);
+      log(`Session initialized: ${event.sessionId}`);
+      return;
+    case 'assistant.text':
+      process.stdout.write(event.text);
+      return;
+    case 'tool.started':
+      pendingToolUses.set(event.id, {
+        name: event.name,
+        input: event.input,
+        assistantText: event.assistantText || '',
+      });
+      process.stdout.write(
+        TOOL_START_MARKER +
+          '\n' +
+          JSON.stringify({
+            id: event.id,
+            name: event.name,
+            input_preview: event.preview || event.name,
+          }) +
+          '\n' +
+          TOOL_END_MARKER +
+          '\n',
+      );
+      return;
+    case 'tool.result': {
+      const pending = pendingToolUses.get(event.id);
+      if (pending) {
+        const inputHash = computeInputHash(pending.name, pending.input);
+        if (event.isError) {
+          erroredHashes.add(inputHash);
+          try {
+            writeIpcTask({
+              type: 'report_issue',
+              stage: stageName,
+              tool: pending.name,
+              toolUseId: event.id,
+              input: JSON.stringify(pending.input).slice(0, 2000),
+              inputHash,
+              errorContent: (event.errorText || '').slice(0, 4000),
+              assistantContext: pending.assistantText,
+            });
+          } catch (err) {
+            log(`Failed to write report_issue IPC: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else if (erroredHashes.has(inputHash)) {
+          try {
+            writeIpcTask({
+              type: 'resolve_issue',
+              stage: stageName,
+              inputHash,
+            });
+          } catch (err) {
+            log(`Failed to write resolve_issue IPC: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+      pendingToolUses.delete(event.id);
+      return;
+    }
+    case 'assistant.checkpoint':
+      setLastAssistantUuid(event.messageId);
+      return;
+    case 'task.notification':
+      log(`Task notification: task=${event.taskId} status=${event.status} summary=${event.summary}`);
+      return;
+    case 'turn.result':
+      incrementResultCount();
+      if (event.result) resultTexts.push(event.result);
+      writeOutput({
+        status: 'success',
+        result: event.result,
+        newSessionId: getSessionId(),
+      });
+      if (endOnResult) {
+        log('endOnResult: turn finished');
+      }
+      return;
+    case 'turn.error':
+      throw new Error(event.error);
+  }
+}
 
 const IPC_TASKS_DIR = '/workspace/ipc/tasks';
 

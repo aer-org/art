@@ -3,11 +3,16 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 
-import { ensureAuth } from './auth.js';
+import { ensureAuth, hasCodexCliAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
+
+function resolveProvider(): 'claude' | 'codex' {
+  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
 
 function preflight(opts?: { skipClaudeCli?: boolean }): void {
   const errors: string[] = [];
+  const provider = resolveProvider();
 
   // Node.js version
   const [major] = process.versions.node.split('.').map(Number);
@@ -35,14 +40,26 @@ function preflight(opts?: { skipClaudeCli?: boolean }): void {
     );
   }
 
-  // Claude CLI (skippable for command-mode-only pipelines)
   if (!opts?.skipClaudeCli) {
-    try {
-      execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
-    } catch {
-      errors.push(
-        'Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code',
-      );
+    if (provider === 'codex') {
+      try {
+        execSync('codex --version', { stdio: 'pipe', timeout: 5000 });
+      } catch {
+        errors.push('Codex CLI not found. Run: npm install -g @openai/codex');
+      }
+      if (!hasCodexCliAuth()) {
+        errors.push(
+          'Codex auth not found. Log in with Codex on the host first.',
+        );
+      }
+    } else {
+      try {
+        execSync('claude --version', { stdio: 'pipe', timeout: 5000 });
+      } catch {
+        errors.push(
+          'Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code',
+        );
+      }
     }
   }
 
@@ -82,7 +99,7 @@ export async function run(
 
   if (!fs.existsSync(artDir)) {
     console.error(
-      `No ${artDirName}/ found in ${projectDir}. Run 'art compose .' first.`,
+      `No ${artDirName}/ found in ${projectDir}. Run 'art init .' first.`,
     );
     process.exit(1);
   }
@@ -99,7 +116,11 @@ export async function run(
   // Ensure Claude authentication is available (before any engine imports)
   if (opts?.skipPreflight) {
     // Set placeholder so credential proxy can start without real auth
-    if (!process.env.ANTHROPIC_API_KEY && !process.env._ART_OAUTH_TOKEN) {
+    if (
+      resolveProvider() === 'claude' &&
+      !process.env.ANTHROPIC_API_KEY &&
+      !process.env._ART_OAUTH_TOKEN
+    ) {
       process.env.ANTHROPIC_API_KEY = 'placeholder';
     }
   } else {

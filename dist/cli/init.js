@@ -1,9 +1,6 @@
-import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import readline from 'readline';
-import { ART_DIR_NAME, CONTAINER_IMAGE } from '../config.js';
-import { loadImageRegistry, saveImageRegistry } from '../image-registry.js';
+import { ART_DIR_NAME } from '../config.js';
 import { STAGE_TEMPLATES } from '../stage-templates.js';
 const DEFAULT_TEMPLATE_NAMES = ['build', 'test', 'review', 'history'];
 function buildStages() {
@@ -45,8 +42,6 @@ export function scaffoldArtDir(projectDir) {
     fs.mkdirSync(path.join(artDir, 'memory'), { recursive: true });
     fs.mkdirSync(path.join(artDir, 'outputs'), { recursive: true });
     fs.mkdirSync(path.join(artDir, 'tests'), { recursive: true });
-    // CLAUDE.md
-    fs.writeFileSync(path.join(artDir, 'CLAUDE.md'), '# Project Context\n\nDescribe your project here. Agents will read this for context.\n');
     // Pipeline
     const stages = buildStages();
     const pipeline = {
@@ -63,50 +58,17 @@ export function scaffoldArtDir(projectDir) {
         }
     }
     // .gitignore
-    fs.writeFileSync(path.join(artDir, '.gitignore'), 'logs/\nsessions/\nPIPELINE_STATE.json\n.tmp/\n');
+    fs.writeFileSync(path.join(artDir, '.gitignore'), 'logs/\nsessions/\nPIPELINE_STATE*.json\n.tmp/\n');
     console.log(`  ${ART_DIR_NAME}/ created with default pipeline.`);
     console.log(`  Pipeline: ${stages.map((s) => s.name).join(' → ')}\n`);
-    // Ensure default image is registered
-    const registry = loadImageRegistry();
-    if (!registry['default']) {
-        registry['default'] = {
-            image: CONTAINER_IMAGE,
-            hasAgent: true,
-        };
-        saveImageRegistry(registry);
-    }
 }
-/** Check if container image exists; prompt to build if missing */
-export async function ensureContainerImage(runtimeBin, engineRoot) {
-    let hasDefaultImage = false;
-    try {
-        execSync(`${runtimeBin} image inspect ${CONTAINER_IMAGE}`, {
-            stdio: 'pipe',
-            timeout: 10000,
-        });
-        hasDefaultImage = true;
+export async function init(targetDir) {
+    const projectDir = path.resolve(targetDir);
+    const artDir = path.join(projectDir, ART_DIR_NAME);
+    if (fs.existsSync(path.join(artDir, 'PIPELINE.json'))) {
+        console.log(`${ART_DIR_NAME}/ already initialized in ${projectDir}`);
+        return;
     }
-    catch {
-        // image not found
-    }
-    if (!hasDefaultImage) {
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-        });
-        const answer = process.stdin.isTTY
-            ? await new Promise((resolve) => rl.question(`\nBuild the agent container image? (${CONTAINER_IMAGE}) (y/N): `, resolve))
-            : 'y';
-        rl.close();
-        if (answer.trim().toLowerCase() === 'y') {
-            const scriptDir = path.resolve(engineRoot, 'container');
-            console.log(`\nBuilding: ${CONTAINER_IMAGE}...`);
-            execSync(`${scriptDir}/build.sh`, {
-                stdio: 'inherit',
-                timeout: 600000,
-                env: { ...process.env, CONTAINER_RUNTIME: runtimeBin },
-            });
-        }
-    }
+    scaffoldArtDir(projectDir);
 }
 //# sourceMappingURL=init.js.map

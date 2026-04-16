@@ -18,6 +18,11 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { generateRunId, writeRunManifest, } from './run-manifest.js';
+import { formatStageMcpAccessSummary, loadMcpRegistry, resolveStageMcpServers, } from './mcp-registry.js';
+import { resolveStagePrompt } from './prompt-store.js';
+function resolveProvider() {
+    return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
 // --- Exclusive stage lock ---
 // Stages with the same `exclusive` key share a mutex.
 // Only one container runs at a time per key (e.g. "vivado" for bitstream + board_upload).
@@ -53,12 +58,35 @@ function getExclusiveLock(key) {
     return lock;
 }
 const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
-export function savePipelineState(groupDir, state) {
-    const filepath = path.join(groupDir, PIPELINE_STATE_FILE);
+/**
+ * Derive the state file name for a given pipeline tag.
+ * - undefined / 'PIPELINE' → 'PIPELINE_STATE.json' (backward compatible)
+ * - 'my-pipeline'          → 'PIPELINE_STATE.my-pipeline.json'
+ */
+function pipelineStateFileName(tag) {
+    if (!tag || tag === 'PIPELINE')
+        return PIPELINE_STATE_FILE;
+    return `PIPELINE_STATE.${tag}.json`;
+}
+/**
+ * Derive a short tag from a custom pipeline file path.
+ * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
+ *      undefined (default PIPELINE.json) → undefined
+ */
+export function pipelineTagFromPath(pipelinePath) {
+    if (!pipelinePath)
+        return undefined;
+    const base = path.basename(pipelinePath, '.json');
+    if (base === 'PIPELINE')
+        return undefined;
+    return base;
+}
+export function savePipelineState(groupDir, state, tag) {
+    const filepath = path.join(groupDir, pipelineStateFileName(tag));
     atomicWrite(filepath, JSON.stringify(state, null, 2));
 }
-export function loadPipelineState(groupDir) {
-    const filepath = path.join(groupDir, PIPELINE_STATE_FILE);
+export function loadPipelineState(groupDir, tag) {
+    const filepath = path.join(groupDir, pipelineStateFileName(tag));
     try {
         const raw = fs.readFileSync(filepath, 'utf-8');
         return JSON.parse(raw);
@@ -159,11 +187,12 @@ export class PipelineRunner {
     onProcess;
     groupDir;
     runId;
+    pipelineTag;
     manifest;
     aborted = false;
     activeHandles = new Map();
     stageSessionIds = new Map();
-    constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId) {
+    constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId, pipelineTag) {
         this.group = group;
         this.chatJid = chatJid;
         this.config = pipelineConfig;
@@ -171,6 +200,7 @@ export class PipelineRunner {
         this.onProcess = onProcess;
         this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
         this.runId = runId ?? generateRunId();
+        this.pipelineTag = pipelineTag;
         this.manifest = {
             runId: this.runId,
             pid: process.pid,
@@ -310,6 +340,11 @@ export class PipelineRunner {
         if (!stageConfig.command) {
             resolvedImage = getImageForStage(stageConfig.image, false);
         }
+        const resolvedExternalMcpServers = stageConfig.command
+            ? []
+            : resolveStageMcpServers(stageConfig.mcpAccess, {
+                hostGateway: getRuntime().hostGateway,
+            });
         // Parent's additional mounts stay in additionalMounts (security-validated).
         // Filter out any that conflict with stage-level hostMounts (stage wins).
         const parentMounts = this.group.containerConfig?.additionalMounts || [];
@@ -326,6 +361,7 @@ export class PipelineRunner {
             trigger: '',
             added_at: new Date().toISOString(),
             containerConfig: {
+                provider: this.group.containerConfig?.provider || resolveProvider(),
                 image: resolvedImage,
                 additionalMounts: filteredParentMounts,
                 additionalDevices: stageConfig.devices || [],
@@ -333,6 +369,7 @@ export class PipelineRunner {
                 runAsRoot: stageConfig.runAsRoot === true,
                 privileged: stageConfig.privileged === true,
                 env: stageConfig.env,
+                externalMcpServers: resolvedExternalMcpServers,
                 internalMounts,
             },
         };
@@ -420,12 +457,14 @@ export class PipelineRunner {
                 sessionId: stageConfig.resumeSession !== false
                     ? this.stageSessionIds.get(stageConfig.name)
                     : undefined,
+                provider: virtualGroup.containerConfig?.provider,
                 groupFolder: subFolder,
                 chatJid: this.chatJid,
                 isMain: false,
                 assistantName: `pipeline-${stageConfig.name}`,
                 runId: this.runId,
                 ephemeralSystemPrompt,
+                externalMcpServers: resolvedExternalMcpServers,
             }, (proc, containerName) => this.onProcess(proc, containerName), onOutput, logStream);
         }
         // Handle container exit
@@ -651,12 +690,25 @@ export class PipelineRunner {
         const modeRule = stageConfig.chat
             ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
             : '- Do NOT ask questions. Always assume "yes" and proceed autonomously.\n- Do not stop until this stage is complete or you hit a blocking error.';
+        const externalMcpLines = (() => {
+            if (!stageConfig.mcpAccess || stageConfig.mcpAccess.length === 0) {
+                return '- External MCP access for this stage: none.';
+            }
+            const servers = resolveStageMcpServers(stageConfig.mcpAccess, {
+                hostGateway: getRuntime().hostGateway,
+            });
+            return [
+                '- External MCP access is limited to the following servers/tools:',
+                ...formatStageMcpAccessSummary(servers),
+            ].join('\n');
+        })();
         return `
 RULES:
 ${modeRule}
 - Read files before editing. Use tools freely.
 - Project source is available read-only at /workspace/project/.
 - Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
+${externalMcpLines}
 
 STAGE MARKERS — use the correct one:
 ${markerLines.join('\n')}
@@ -725,9 +777,7 @@ PAYLOAD FORMATS:
         for (const s of this.config.stages) {
             stagesByName.set(s.name, s);
         }
-        const planSuffix = planContent
-            ? `\n\n## Plan\n\n${planContent}`
-            : '';
+        const planSuffix = planContent ? `\n\n## Plan\n\n${planContent}` : '';
         return { planContent: planSuffix, stagesByName, pipelineLogStream };
     }
     /**
@@ -886,23 +936,35 @@ PAYLOAD FORMATS:
             return this.config.stages[0].name;
         };
         // Resume from last completed stage if pipeline was interrupted
-        const existingState = loadPipelineState(this.groupDir);
+        const existingState = loadPipelineState(this.groupDir, this.pipelineTag);
         if (existingState &&
             existingState.status !== 'success' &&
             existingState.completedStages.length > 0) {
             const completedStages = [...existingState.completedStages];
-            // Find where to resume: look at the last completed stage's forward transition
-            const lastCompleted = completedStages[completedStages.length - 1];
-            const lastConfig = stagesByName.get(lastCompleted);
-            const completeTransition = lastConfig?.transitions.find((t) => !t.retry && t.next);
+            // Resume from currentStage directly — it captures exactly what was
+            // running at interruption, handling cyclic and fan-out cases correctly.
             let initialStages;
-            if (completeTransition?.next) {
-                const targets = PipelineRunner.nextTargets(completeTransition.next);
-                // Only resume targets not yet completed
-                const remaining = targets.filter((t) => !completedStages.includes(t));
-                initialStages = remaining.length > 0 ? remaining : [resolveEntry()];
+            if (existingState.currentStage) {
+                const current = Array.isArray(existingState.currentStage)
+                    ? existingState.currentStage
+                    : [existingState.currentStage];
+                initialStages = current
+                    .flatMap((name) => {
+                    if (!stagesByName.has(name))
+                        return [];
+                    if (!completedStages.includes(name))
+                        return [name];
+                    const stage = stagesByName.get(name);
+                    const primary = stage.transitions.find((t) => !t.retry);
+                    return primary ? PipelineRunner.nextTargets(primary.next) : [];
+                })
+                    .filter((s, index, items) => items.indexOf(s) === index)
+                    .filter((s) => stagesByName.has(s));
             }
             else {
+                initialStages = [];
+            }
+            if (initialStages.length === 0) {
                 initialStages = [resolveEntry()];
             }
             await this.notifyBanner(`🔄 Resuming from ${initialStages.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`);
@@ -1038,7 +1100,7 @@ PAYLOAD FORMATS:
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: 'running',
-        });
+        }, this.pipelineTag);
         // Close the container first, then retrieve session ID
         await this.closeAndWait(handle);
         const containerResult = await handle.containerPromise;
@@ -1088,7 +1150,7 @@ PAYLOAD FORMATS:
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: lastResult,
-        });
+        }, this.pipelineTag);
         this.manifest.endTime = new Date().toISOString();
         this.manifest.status = lastResult;
         writeRunManifest(this.groupDir, this.manifest);
@@ -1142,15 +1204,20 @@ PAYLOAD FORMATS:
                     stageResult = 'error';
                     break;
                 }
+                const resolvedStagePrompt = resolveStagePrompt(stageConfig);
                 const initialPrompt = nextInitialPrompt ||
-                    `${stageConfig.prompt}\n${commonRules}${planContent}`;
+                    `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
                 nextInitialPrompt = null;
                 const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
                 nextEphemeralSystemPrompt = null;
                 const stageStartTime = Date.now();
                 const handle = this.spawnStageContainer(stageConfig, initialPrompt, pipelineLogStream, ephemeralForSpawn);
                 this.activeHandles.set(stageName, handle);
-                logger.info({ stage: stageName }, 'Stage container spawned (on-demand)');
+                logger.info({
+                    stage: stageName,
+                    promptIds: resolvedStagePrompt.promptIds,
+                    promptHash: resolvedStagePrompt.promptHash,
+                }, 'Stage container spawned (on-demand)');
                 logger.info({ stage: stageName }, 'Entering stage');
                 await this.notifyBanner(`📌 Stage: ${stageName} starting`);
                 let isFirstTurn = true;
@@ -1161,7 +1228,7 @@ PAYLOAD FORMATS:
                         handle.pendingResult = createDeferred();
                     }
                     if (!isFirstTurn) {
-                        const prompt = `${stageConfig.prompt}\n${commonRules}${planContent}`;
+                        const prompt = `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
                         sendToStage(handle, prompt);
                     }
                     isFirstTurn = false;
@@ -1189,14 +1256,16 @@ PAYLOAD FORMATS:
                             // Container respawn — loop again with same stage
                             containerRespawnCount++;
                             nextInitialPrompt = outcome.nextInitialPrompt;
-                            nextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+                            nextEphemeralSystemPrompt =
+                                outcome.nextEphemeralSystemPrompt ?? null;
                             currentStage = stageName; // stay in outer while
                         }
                         else {
                             // Advance to next stage(s) or end
                             nextStages = outcome.nextStageName;
                             outNextInitialPrompt = outcome.nextInitialPrompt;
-                            outNextEphemeralSystemPrompt = outcome.nextEphemeralSystemPrompt ?? null;
+                            outNextEphemeralSystemPrompt =
+                                outcome.nextEphemeralSystemPrompt ?? null;
                             currentStage = null; // exit outer while
                             if (outcome.lastResult) {
                                 stageResult = outcome.lastResult;
@@ -1243,7 +1312,7 @@ PAYLOAD FORMATS:
             status: 'running',
             activations: Object.fromEntries(activations),
             completions: Object.fromEntries(completions),
-        });
+        }, this.pipelineTag);
         const predecessors = this.buildPredecessorMap();
         const reachability = this.buildReachabilityMap();
         // Each entry: { name, initialPrompt, ephemeralSystemPrompt }
@@ -1357,7 +1426,7 @@ PAYLOAD FORMATS:
                 status: 'running',
                 activations: Object.fromEntries(activations),
                 completions: Object.fromEntries(completions),
-            });
+            }, this.pipelineTag);
             // Wait for at least one stage to complete
             await waitForResult();
             // Drain all available results and launch ready successors immediately
@@ -1402,38 +1471,6 @@ PAYLOAD FORMATS:
     }
 }
 /**
- * Load and validate AGENT_TEAM.json from a group folder.
- * Returns null if the file doesn't exist.
- */
-export function loadAgentTeamConfig(groupFolder) {
-    const groupDir = resolveGroupFolderPath(groupFolder);
-    const teamPath = path.join(groupDir, 'AGENT_TEAM.json');
-    if (!fs.existsSync(teamPath)) {
-        return null;
-    }
-    try {
-        const raw = fs.readFileSync(teamPath, 'utf-8');
-        const config = JSON.parse(raw);
-        if (!Array.isArray(config.agents) || config.agents.length === 0) {
-            logger.warn({ groupFolder }, 'AGENT_TEAM.json has no agents');
-            return null;
-        }
-        // Validate folder names: no path traversal, alphanumeric + underscore/hyphen only
-        const folderPattern = /^[a-zA-Z0-9_-]+$/;
-        for (const agent of config.agents) {
-            if (!agent.name || !agent.folder || !folderPattern.test(agent.folder)) {
-                logger.warn({ groupFolder, agent }, 'AGENT_TEAM.json has invalid agent entry');
-                return null;
-            }
-        }
-        return config;
-    }
-    catch (err) {
-        logger.error({ groupFolder, err }, 'Failed to parse AGENT_TEAM.json');
-        return null;
-    }
-}
-/**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
  *   groupFolder/groupDir are ignored and the file is loaded directly.
@@ -1450,6 +1487,7 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
     try {
         const raw = fs.readFileSync(pipelinePath, 'utf-8');
         const config = JSON.parse(raw);
+        let mcpRegistry;
         // Basic validation
         if (!Array.isArray(config.stages) || config.stages.length === 0) {
             logger.warn({ groupFolder }, 'PIPELINE.json has no stages');
@@ -1458,6 +1496,52 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
         // Validate stage names and transitions
         const stageNames = new Set(config.stages.map((s) => s.name));
         for (const stage of config.stages) {
+            if (stage.prompts !== undefined &&
+                (!Array.isArray(stage.prompts) ||
+                    stage.prompts.some((promptId) => typeof promptId !== 'string'))) {
+                logger.error({ groupFolder, stage: stage.name, prompts: stage.prompts }, 'Invalid prompts field (must be an array of prompt DB ids)');
+                return null;
+            }
+            if (stage.prompt_append !== undefined &&
+                typeof stage.prompt_append !== 'string') {
+                logger.error({
+                    groupFolder,
+                    stage: stage.name,
+                    prompt_append: stage.prompt_append,
+                }, 'Invalid prompt_append field (must be a string)');
+                return null;
+            }
+            if (stage.prompt !== undefined && typeof stage.prompt !== 'string') {
+                logger.error({ groupFolder, stage: stage.name, prompt: stage.prompt }, 'Invalid prompt field (must be a string)');
+                return null;
+            }
+            if (stage.mcpAccess !== undefined &&
+                (!Array.isArray(stage.mcpAccess) ||
+                    stage.mcpAccess.some((ref) => typeof ref !== 'string'))) {
+                logger.error({ groupFolder, stage: stage.name, mcpAccess: stage.mcpAccess }, 'Invalid mcpAccess field (must be an array of registry ref strings)');
+                return null;
+            }
+            if (!stage.command &&
+                !stage.prompt &&
+                !stage.prompt_append &&
+                (!stage.prompts || stage.prompts.length === 0)) {
+                logger.error({ groupFolder, stage: stage.name }, 'Agent stage must define prompt, prompts, or prompt_append');
+                return null;
+            }
+            if (stage.command && stage.mcpAccess && stage.mcpAccess.length > 0) {
+                logger.error({ groupFolder, stage: stage.name }, 'Command stages cannot declare mcpAccess');
+                return null;
+            }
+            if (stage.mcpAccess && stage.mcpAccess.length > 0) {
+                try {
+                    mcpRegistry ??= loadMcpRegistry();
+                    resolveStageMcpServers(stage.mcpAccess, { registry: mcpRegistry });
+                }
+                catch (err) {
+                    logger.error({ groupFolder, stage: stage.name, err }, 'Invalid mcpAccess configuration');
+                    return null;
+                }
+            }
             // Validate fan_in value
             if (stage.fan_in !== undefined &&
                 stage.fan_in !== 'all' &&

@@ -7,7 +7,8 @@ import fs from 'fs';
 import path from 'path';
 import { ChildProcess } from 'child_process';
 
-import { getCredentialProxyPort, setCredentialProxyPort } from './config.js';
+import { setCodexAuthProxyPort, setCredentialProxyPort } from './config.js';
+import { startCodexAuthProxy } from './codex-auth-proxy.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import {
   ensureContainerRuntimeRunning,
@@ -15,13 +16,23 @@ import {
   initRuntime,
 } from './container-runtime.js';
 import {
-  loadAgentTeamConfig,
   loadPipelineConfig,
+  pipelineTagFromPath,
   PipelineRunner,
 } from './pipeline-runner.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
+
+function resolveProvider(): 'claude' | 'codex' {
+  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+}
+
+function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
+  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
+    ? 'host-managed'
+    : 'passthrough';
+}
 
 export async function runPipeline(opts: {
   group: RegisteredGroup;
@@ -40,12 +51,21 @@ export async function runPipeline(opts: {
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
-  // Start credential proxy
-  const { server: proxyServer, port: proxyPort } = await startCredentialProxy(
-    0,
-    getProxyBindHost(),
-  );
-  setCredentialProxyPort(proxyPort);
+  const provider = resolveProvider();
+  let proxyServer: import('http').Server | null = null;
+  let codexAuthProxyServer: import('http').Server | null = null;
+  if (provider === 'claude') {
+    const { server, port: proxyPort } = await startCredentialProxy(
+      0,
+      getProxyBindHost(),
+    );
+    proxyServer = server;
+    setCredentialProxyPort(proxyPort);
+  } else if (resolveCodexAuthMode() === 'host-managed') {
+    const { server, port } = await startCodexAuthProxy(0, getProxyBindHost());
+    codexAuthProxyServer = server;
+    setCodexAuthProxyPort(port);
+  }
 
   // Graceful shutdown
   let shuttingDown = false;
@@ -61,7 +81,8 @@ export async function runPipeline(opts: {
     } catch {
       /* best effort */
     }
-    proxyServer.close();
+    proxyServer?.close();
+    codexAuthProxyServer?.close();
     process.exit(1);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -79,54 +100,10 @@ export async function runPipeline(opts: {
     console.log(text);
   };
 
-  // Team pipeline mode
-  const teamConfig = loadAgentTeamConfig(group.folder);
-  if (teamConfig) {
-    const parentGroupDir = resolveGroupFolderPath(group.folder);
-    logger.info(
-      { agentCount: teamConfig.agents.length },
-      'Agent team pipeline mode',
-    );
-
-    const results = await Promise.all(
-      teamConfig.agents.map(async (agent) => {
-        const agentGroupDir = path.join(parentGroupDir, agent.folder);
-        const pipelineConfig = loadPipelineConfig(group.folder, agentGroupDir);
-        if (!pipelineConfig) {
-          console.log(`⚠️ ${agent.name}: PIPELINE.json not found`);
-          return 'error' as const;
-        }
-
-        const virtualGroup: RegisteredGroup = {
-          ...group,
-          name: `team-${agent.name}`,
-          folder: `${group.folder}__team_${agent.folder}`,
-        };
-
-        const runner = new PipelineRunner(
-          virtualGroup,
-          chatJid,
-          pipelineConfig,
-          async (text) => console.log(`[${agent.name}] ${text}`),
-          onProcess,
-          agentGroupDir,
-          runId,
-        );
-        activeRunners.push(runner);
-        return runner.run();
-      }),
-    );
-
-    const allSuccess = results.every((r) => r === 'success');
-    proxyServer.close();
-    process.exit(allSuccess ? 0 : 1);
-  }
-
-  // Single pipeline mode
   let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
   if (!pipelineConfig) {
     console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
-    proxyServer.close();
+    proxyServer?.close();
     process.exit(1);
   }
 
@@ -137,7 +114,8 @@ export async function runPipeline(opts: {
       console.error(
         `Stage "${stage}" not found. Available: ${pipelineConfig.stages.map((s) => s.name).join(', ')}`,
       );
-      proxyServer.close();
+      proxyServer?.close();
+      codexAuthProxyServer?.close();
       process.exit(1);
     }
     // Replace transitions so the stage terminates on completion
@@ -167,10 +145,12 @@ export async function runPipeline(opts: {
     onProcess,
     undefined,
     runId,
+    pipelineTagFromPath(pipeline),
   );
   activeRunners.push(runner);
   const result = await runner.run();
 
-  proxyServer.close();
+  proxyServer?.close();
+  codexAuthProxyServer?.close();
   process.exit(result === 'success' ? 0 : 1);
 }

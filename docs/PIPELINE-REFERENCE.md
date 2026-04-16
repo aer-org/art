@@ -11,10 +11,10 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `stages` | `PipelineStage[]` | Yes | List of pipeline stages |
-| `entryStage` | `string` | No | Name of the first stage to execute. If omitted, the first item in `stages` is used |
+| Field        | Type              | Required | Description                                                                        |
+| ------------ | ----------------- | -------- | ---------------------------------------------------------------------------------- |
+| `stages`     | `PipelineStage[]` | Yes      | List of pipeline stages                                                            |
+| `entryStage` | `string`          | No       | Name of the first stage to execute. If omitted, the first item in `stages` is used |
 
 ## Stage
 
@@ -25,6 +25,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
   "image": "default",
   "command": null,
   "mounts": { "plan": "ro", "src": "rw", "project": "ro" },
+  "mcpAccess": ["sqlite.read"],
   "devices": [],
   "runAsRoot": false,
   "exclusive": "vivado",
@@ -32,18 +33,19 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `name` | `string` | Yes | — | Unique stage identifier |
-| `prompt` | `string` | Yes | — | System prompt sent to the agent. Describes what this stage should do |
-| `image` | `string` | No | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry) |
-| `command` | `string` | No | `null` | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
-| `mounts` | `Record<string, "ro" \| "rw" \| null>` | Yes | — | Mount permissions for `__art__/` subdirectories and the project root. See [Mounts](#mounts) |
-| `devices` | `string[]` | No | `[]` | Host devices to pass through (e.g., `"/dev/bus/usb"`) |
-| `runAsRoot` | `boolean` | No | `false` | Run this stage's container as root (`--user 0:0`) |
-| `exclusive` | `string` | No | — | Mutex key. Stages sharing the same key never run concurrently (e.g., `"vivado"` for stages that need exclusive access to a hardware resource) |
-| `hostMounts` | `AdditionalMount[]` | No | `[]` | Host path mounts for this stage. Validated against the mount allowlist. See [Host Mounts](#host-mounts) |
-| `transitions` | `PipelineTransition[]` | Yes | — | How to move to the next stage based on agent output. See [Transitions](#transitions) |
+| Field         | Type                                   | Required | Default     | Description                                                                                                                                        |
+| ------------- | -------------------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`        | `string`                               | Yes      | —           | Unique stage identifier                                                                                                                            |
+| `prompt`      | `string`                               | Yes      | —           | System prompt sent to the agent. Describes what this stage should do                                                                               |
+| `image`       | `string`                               | No       | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry)                                           |
+| `command`     | `string`                               | No       | `null`      | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
+| `mounts`      | `Record<string, "ro" \| "rw" \| null>` | Yes      | —           | Mount permissions for `__art__/` subdirectories and the project root. See [Mounts](#mounts)                                                        |
+| `devices`     | `string[]`                             | No       | `[]`        | Host devices to pass through (e.g., `"/dev/bus/usb"`)                                                                                              |
+| `runAsRoot`   | `boolean`                              | No       | `false`     | Run this stage's container as root (`--user 0:0`)                                                                                                  |
+| `exclusive`   | `string`                               | No       | —           | Mutex key. Stages sharing the same key never run concurrently (e.g., `"vivado"` for stages that need exclusive access to a hardware resource)      |
+| `hostMounts`  | `AdditionalMount[]`                    | No       | `[]`        | Host path mounts for this stage. Validated against the mount allowlist. See [Host Mounts](#host-mounts)                                            |
+| `mcpAccess`   | `string[]`                             | No       | `[]`        | External MCP registry refs available to this stage. See [External MCP Access](#external-mcp-access)                                                |
+| `transitions` | `PipelineTransition[]`                 | Yes      | —           | How to move to the next stage based on agent output. See [Transitions](#transitions)                                                               |
 
 ## Mounts
 
@@ -60,10 +62,10 @@ Mounts control what each stage can access. Keys are directory names inside `__ar
 }
 ```
 
-| Value | Meaning |
-|-------|---------|
-| `"ro"` | Read-only — stage can read but not modify |
-| `"rw"` | Read-write — stage can read and write |
+| Value  | Meaning                                                      |
+| ------ | ------------------------------------------------------------ |
+| `"ro"` | Read-only — stage can read but not modify                    |
+| `"rw"` | Read-write — stage can read and write                        |
 | `null` | Hidden — not mounted at all, stage cannot see this directory |
 
 Omitting a key is equivalent to `null` (hidden).
@@ -84,18 +86,19 @@ The `project` key sets the default permission for the entire host project root. 
 This mounts the project root as read-only, but grants write access to `src/generated/` and `build/`, and completely hides `secrets/`.
 
 **Rules:**
+
 - Sub-mount paths are relative to the project root
 - If `project` is `null` (hidden), sub-mounts cannot be enabled
 - If a parent directory is `null`, child sub-mounts cannot be enabled
 
 ### How mounts map to containers
 
-| Mount key | Container path |
-|-----------|---------------|
-| `plan` | `/workspace/plan` |
-| `src` | `/workspace/src` |
-| `outputs` | `/workspace/outputs` |
-| `project` | `/workspace/project` |
+| Mount key         | Container path                                          |
+| ----------------- | ------------------------------------------------------- |
+| `plan`            | `/workspace/plan`                                       |
+| `src`             | `/workspace/src`                                        |
+| `outputs`         | `/workspace/outputs`                                    |
+| `project`         | `/workspace/project`                                    |
 | `project:src/foo` | `/workspace/project/src/foo` (overlay on project mount) |
 
 The agent's working directory is `/workspace`.
@@ -112,11 +115,11 @@ Host mounts allow a stage to access directories from the host filesystem outside
 ]
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `hostPath` | `string` | Yes | — | Absolute path or `~` prefix on the host |
-| `containerPath` | `string` | No | basename of `hostPath` | Mounted at `/workspace/extra/{value}` |
-| `readonly` | `boolean` | No | `true` | Whether the mount is read-only |
+| Field           | Type      | Required | Default                | Description                             |
+| --------------- | --------- | -------- | ---------------------- | --------------------------------------- |
+| `hostPath`      | `string`  | Yes      | —                      | Absolute path or `~` prefix on the host |
+| `containerPath` | `string`  | No       | basename of `hostPath` | Mounted at `/workspace/extra/{value}`   |
+| `readonly`      | `boolean` | No       | `true`                 | Whether the mount is read-only          |
 
 ### Security
 
@@ -133,7 +136,11 @@ Host mounts allow a stage to access directories from the host filesystem outside
   "prompt": "Train the model using the dataset in /workspace/extra/data.",
   "mounts": { "src": "ro", "outputs": "rw" },
   "hostMounts": [
-    { "hostPath": "~/ml-datasets/imagenet", "containerPath": "data", "readonly": true },
+    {
+      "hostPath": "~/ml-datasets/imagenet",
+      "containerPath": "data",
+      "readonly": true
+    },
     { "hostPath": "~/model-cache", "containerPath": "cache", "readonly": false }
   ],
   "gpu": true,
@@ -143,6 +150,63 @@ Host mounts allow a stage to access directories from the host filesystem outside
   ]
 }
 ```
+
+## External MCP Access
+
+Stages can opt into external MCP servers by referencing entries from the host-side registry at `~/.config/aer-art/mcp-registry.json`.
+
+```json
+{
+  "sqlite.read": {
+    "name": "sqlite_read",
+    "transport": "http",
+    "url": "http://${ART_HOST_GATEWAY}:4318/mcp",
+    "tools": ["query", "get_schema"]
+  },
+  "sqlite.write": {
+    "name": "sqlite_write",
+    "transport": "stdio",
+    "command": "node",
+    "args": ["tools/sqlite-write-mcp.js"],
+    "env": {
+      "SQLITE_DB": "/workspace/project/db.sqlite"
+    },
+    "tools": ["upsert_state"]
+  }
+}
+```
+
+In `PIPELINE.json`, reference the registry keys:
+
+```json
+{
+  "name": "build",
+  "prompt": "Read PLAN.md and update the DB state after each completed step.",
+  "mounts": { "plan": "ro", "src": "rw", "project": "ro" },
+  "mcpAccess": ["sqlite.read", "sqlite.write"],
+  "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }]
+}
+```
+
+### Registry Fields
+
+| Field               | Type                     | Required        | Description                                                                                                                 |
+| ------------------- | ------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `name`              | `string`                 | No              | Exposed MCP server name inside the agent. Defaults to a sanitized form of the registry key                                  |
+| `transport`         | `"stdio" \| "http"`      | No              | MCP transport. Defaults to `"stdio"`                                                                                        |
+| `command`           | `string`                 | Yes for `stdio` | Command used to launch a stdio MCP server inside the container                                                              |
+| `args`              | `string[]`               | No              | Arguments for a stdio MCP server                                                                                            |
+| `env`               | `Record<string, string>` | No              | Environment variables passed to a stdio MCP server                                                                          |
+| `url`               | `string`                 | Yes for `http`  | Streamable HTTP MCP endpoint URL                                                                                            |
+| `bearerTokenEnvVar` | `string`                 | No              | Container env var name used for HTTP bearer auth                                                                            |
+| `tools`             | `string[]`               | No              | Tool names expected to be used from this server. Claude uses this as an allowlist; Codex still connects at the server level |
+| `startupTimeoutSec` | `number`                 | No              | Codex MCP startup timeout override in seconds                                                                               |
+
+### Notes
+
+- `mcpAccess` is only valid for agent stages. Command stages (`"command": "..."`) cannot declare it.
+- `${ART_HOST_GATEWAY}` in registry values is replaced with the active container runtime's host gateway (`host.docker.internal`, `host.containers.internal`, etc.).
+- For strong stage-level isolation in both Claude and Codex, prefer one registry ref per isolated server endpoint. If you need different tool subsets for different stages, expose separate MCP servers or filtered proxies with distinct `name` values.
 
 ## Transitions
 
@@ -156,18 +220,19 @@ Transitions define how stages connect. The agent signals stage completion by emi
 ]
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `marker` | `string` | Yes | — | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). The agent wraps it in brackets: `[STAGE_COMPLETE]` |
-| `next` | `string \| null` | No | `null` | Target stage name. `null` = pipeline ends |
-| `retry` | `boolean` | No | `false` | If `true`, stay in the current stage and re-send the prompt with the error description |
-| `prompt` | `string` | No | — | Description shown to the agent explaining when to use this marker |
+| Field    | Type             | Required | Default | Description                                                                                                |
+| -------- | ---------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------- |
+| `marker` | `string`         | Yes      | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). The agent wraps it in brackets: `[STAGE_COMPLETE]` |
+| `next`   | `string \| null` | No       | `null`  | Target stage name. `null` = pipeline ends                                                                  |
+| `retry`  | `boolean`        | No       | `false` | If `true`, stay in the current stage and re-send the prompt with the error description                     |
+| `prompt` | `string`         | No       | —       | Description shown to the agent explaining when to use this marker                                          |
 
 **How matching works:** The pipeline FSM scans agent output for `[MARKER_NAME]` or `[MARKER_NAME: payload]`. The first match triggers the corresponding transition.
 
 ### Built-in fallback transitions
 
 If the container exits without emitting any marker:
+
 - Exit code ≠ 0 → treated as a retry transition with `_CONTAINER_EXIT` marker
 - Command timeout → treated as a retry transition with `_CONTAINER_TIMEOUT` marker
 
@@ -199,7 +264,11 @@ Stages reference images by key. The registry lives at `~/.config/aer-art/images.
 ```json
 {
   "default": { "image": "art-agent:latest", "hasAgent": true },
-  "vivado": { "image": "vivado-agent:latest", "hasAgent": true, "baseImage": "xilinx/vivado:2024.1" }
+  "vivado": {
+    "image": "vivado-agent:latest",
+    "hasAgent": true,
+    "baseImage": "xilinx/vivado:2024.1"
+  }
 }
 ```
 
@@ -250,9 +319,7 @@ If `image` is omitted, the `"default"` registry entry is used.
         "outputs": "ro",
         "memory": "rw"
       },
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": null }
-      ]
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }]
     }
   ]
 }

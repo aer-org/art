@@ -13,10 +13,12 @@ export declare function prefixLogLines(chunk: string, stageName: string, remaind
     prefixed: string;
     remainder: string;
 };
+import type { ResolvedExternalMcpServer } from './mcp-registry.js';
 import { RegisteredGroup } from './types.js';
 export interface ContainerInput {
     prompt: string;
     sessionId?: string;
+    provider?: 'claude' | 'codex';
     groupFolder: string;
     chatJid: string;
     isMain: boolean;
@@ -30,6 +32,7 @@ export interface ContainerInput {
      * resumed session transcript (which only stores user/assistant turns).
      */
     ephemeralSystemPrompt?: string;
+    externalMcpServers?: ResolvedExternalMcpServer[];
 }
 export interface ContainerOutput {
     status: 'success' | 'error';
@@ -42,7 +45,8 @@ interface VolumeMount {
     containerPath: string;
     readonly: boolean;
 }
-export declare function buildContainerArgs(mounts: VolumeMount[], containerName: string, devices?: string[], gpu?: boolean, runAsRoot?: boolean, image?: string, entrypoint?: string, runId?: string, privileged?: boolean, env?: Record<string, string>): string[];
+type AgentProvider = 'claude' | 'codex';
+export declare function buildContainerArgs(mounts: VolumeMount[], containerName: string, devices?: string[], gpu?: boolean, runAsRoot?: boolean, image?: string, entrypoint?: string, runId?: string, privileged?: boolean, env?: Record<string, string>, provider?: AgentProvider): string[];
 export declare function runContainerAgent(group: RegisteredGroup, input: ContainerInput, onProcess: (proc: ChildProcess, containerName: string) => void, onOutput?: (output: ContainerOutput) => Promise<void>, logStream?: fs.WriteStream): Promise<ContainerOutput>;
 export {};
 //# sourceMappingURL=container-runner.d.ts.map

@@ -1,3 +1,4 @@
+import type { ResolvedExternalMcpServer } from './mcp-registry.js';
 export interface AdditionalMount {
     hostPath: string;
     containerPath?: string;
@@ -19,6 +20,7 @@ export interface AllowedRoot {
     description?: string;
 }
 export interface ContainerConfig {
+    provider?: 'claude' | 'codex';
     image?: string;
     additionalMounts?: AdditionalMount[];
     additionalDevices?: string[];
@@ -27,6 +29,7 @@ export interface ContainerConfig {
     privileged?: boolean;
     env?: Record<string, string>;
     timeout?: number;
+    externalMcpServers?: ResolvedExternalMcpServer[];
     internalMounts?: Array<{
         hostPath: string;
         containerPath: string;

@@ -51,6 +51,9 @@ vi.mock('./mount-security.js', () => ({
 vi.mock('./credential-proxy.js', () => ({
     detectAuthMode: () => 'api-key',
 }));
+vi.mock('./codex-auth.js', () => ({
+    ensureCodexSessionAuth: vi.fn(),
+}));
 // Mock group-folder
 vi.mock('./group-folder.js', () => ({
     resolveGroupFolderPath: (folder) => `/tmp/aer-art-test-groups/${folder}`,
@@ -190,6 +193,63 @@ describe('container-runner timeout behavior', () => {
         const result = await resultPromise;
         expect(result.status).toBe('success');
         expect(result.newSessionId).toBe('session-456');
+    });
+});
+describe('container-runner MCP config generation', () => {
+    beforeEach(() => {
+        fakeProc = createFakeProcess();
+        vi.clearAllMocks();
+    });
+    it('writes stage-local Codex config.toml with external MCP servers', async () => {
+        const fsModule = await import('fs');
+        const mockedFs = vi.mocked(fsModule.default);
+        const codexGroup = {
+            ...testGroup,
+            containerConfig: {
+                provider: 'codex',
+                externalMcpServers: [
+                    {
+                        ref: 'sqlite.read',
+                        name: 'sqlite_read',
+                        transport: 'http',
+                        url: 'http://host.docker.internal:4318/mcp',
+                        tools: ['query'],
+                        startupTimeoutSec: 12,
+                    },
+                    {
+                        ref: 'sqlite.write',
+                        name: 'sqlite_write',
+                        transport: 'stdio',
+                        command: 'node',
+                        args: ['tools/sqlite-mcp.js'],
+                        env: { SQLITE_DB: '/workspace/project/db.sqlite' },
+                        tools: ['upsert_state'],
+                        startupTimeoutSec: 8,
+                    },
+                ],
+            },
+        };
+        const resultPromise = runContainerAgent(codexGroup, {
+            ...testInput,
+            provider: 'codex',
+            externalMcpServers: codexGroup.containerConfig.externalMcpServers,
+        }, () => { });
+        const configCall = mockedFs.writeFileSync.mock.calls.find(([filePath]) => filePath ===
+            '/tmp/aer-art-test-data/sessions/test-group/.codex/config.toml');
+        expect(configCall).toBeDefined();
+        const configText = String(configCall[1]);
+        expect(configText).toContain('[mcp_servers.aer_art]');
+        expect(configText).toContain('[mcp_servers.sqlite_read]');
+        expect(configText).toContain('url = "http://host.docker.internal:4318/mcp"');
+        expect(configText).toContain('startup_timeout_sec = 12');
+        expect(configText).toContain('[mcp_servers.sqlite_write]');
+        expect(configText).toContain('command = "node"');
+        expect(configText).toContain('args = ["tools/sqlite-mcp.js"]');
+        expect(configText).toContain('[mcp_servers.sqlite_write.env]');
+        expect(configText).toContain('SQLITE_DB = "/workspace/project/db.sqlite"');
+        expect(configText).toContain('startup_timeout_sec = 8');
+        fakeProc.emit('close', 0);
+        await resultPromise;
     });
 });
 //# sourceMappingURL=container-runner.test.js.map

@@ -20,6 +20,12 @@ export const IMAGE_REGISTRY_PATH = path.join(
   'aer-art',
   'images.json',
 );
+export const MCP_REGISTRY_PATH = path.join(
+  HOME_DIR,
+  '.config',
+  'aer-art',
+  'mcp-registry.json',
+);
 export let STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export let GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export let DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
@@ -54,6 +60,7 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   10,
 ); // 10MB default
 let _credentialProxyPort: number | null = null;
+let _codexAuthProxyPort: number | null = null;
 export function getCredentialProxyPort(): number {
   if (_credentialProxyPort !== null) return _credentialProxyPort;
   return parseInt(process.env.CREDENTIAL_PROXY_PORT || '3001', 10);
@@ -61,9 +68,20 @@ export function getCredentialProxyPort(): number {
 export function setCredentialProxyPort(port: number): void {
   _credentialProxyPort = port;
 }
+export function getCodexAuthProxyPort(): number {
+  if (_codexAuthProxyPort !== null) return _codexAuthProxyPort;
+  return parseInt(process.env.CODEX_AUTH_PROXY_PORT || '3002', 10);
+}
+export function setCodexAuthProxyPort(port: number): void {
+  _codexAuthProxyPort = port;
+}
 // Legacy compat — reads at import time, prefer getCredentialProxyPort()
 export const CREDENTIAL_PROXY_PORT = parseInt(
   process.env.CREDENTIAL_PROXY_PORT || '3001',
+  10,
+);
+export const CODEX_AUTH_PROXY_PORT = parseInt(
+  process.env.CODEX_AUTH_PROXY_PORT || '3002',
   10,
 );
 export const IDLE_TIMEOUT = parseInt(

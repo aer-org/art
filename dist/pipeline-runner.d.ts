@@ -8,7 +8,9 @@ export interface PipelineTransition {
 }
 export interface PipelineStage {
     name: string;
-    prompt: string;
+    prompt?: string;
+    prompts?: string[];
+    prompt_append?: string;
     image?: string;
     command?: string;
     successMarker?: string;
@@ -22,6 +24,7 @@ export interface PipelineStage {
     env?: Record<string, string>;
     exclusive?: string;
     hostMounts?: AdditionalMount[];
+    mcpAccess?: string[];
     resumeSession?: boolean;
     fan_in?: 'all' | 'dynamic';
     transitions: PipelineTransition[];
@@ -38,8 +41,14 @@ export interface PipelineState {
     activations?: Record<string, number>;
     completions?: Record<string, number>;
 }
-export declare function savePipelineState(groupDir: string, state: PipelineState): void;
-export declare function loadPipelineState(groupDir: string): PipelineState | null;
+/**
+ * Derive a short tag from a custom pipeline file path.
+ * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
+ *      undefined (default PIPELINE.json) → undefined
+ */
+export declare function pipelineTagFromPath(pipelinePath: string | undefined): string | undefined;
+export declare function savePipelineState(groupDir: string, state: PipelineState, tag?: string): void;
+export declare function loadPipelineState(groupDir: string, tag?: string): PipelineState | null;
 interface StageMarkerResult {
     matched: PipelineTransition | null;
     payload: string | null;
@@ -68,11 +77,12 @@ export declare class PipelineRunner {
     private onProcess;
     private groupDir;
     private runId;
+    private pipelineTag;
     private manifest;
     private aborted;
     private activeHandles;
     private stageSessionIds;
-    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string);
+    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string);
     getRunId(): string;
     abort(): Promise<void>;
     /** Send a visually prominent banner to TUI for stage transitions */
@@ -162,17 +172,6 @@ export declare class PipelineRunner {
      */
     run(): Promise<'success' | 'error'>;
 }
-export interface AgentTeamConfig {
-    agents: Array<{
-        name: string;
-        folder: string;
-    }>;
-}
-/**
- * Load and validate AGENT_TEAM.json from a group folder.
- * Returns null if the file doesn't exist.
- */
-export declare function loadAgentTeamConfig(groupFolder: string): AgentTeamConfig | null;
 /**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,

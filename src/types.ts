@@ -1,3 +1,5 @@
+import type { ResolvedExternalMcpServer } from './mcp-registry.js';
+
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
   containerPath?: string; // Optional — defaults to basename of hostPath. Mounted at /workspace/extra/{value}
@@ -28,6 +30,7 @@ export interface AllowedRoot {
 }
 
 export interface ContainerConfig {
+  provider?: 'claude' | 'codex';
   image?: string; // Override container image for this group/stage
   additionalMounts?: AdditionalMount[];
   additionalDevices?: string[];
@@ -36,6 +39,7 @@ export interface ContainerConfig {
   privileged?: boolean; // Run container with --privileged flag
   env?: Record<string, string>; // Environment variables passed to container
   timeout?: number; // Default: 300000 (5 minutes)
+  externalMcpServers?: ResolvedExternalMcpServer[];
   internalMounts?: Array<{
     hostPath: string;
     containerPath: string;

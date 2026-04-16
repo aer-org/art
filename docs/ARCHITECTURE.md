@@ -8,9 +8,8 @@ See `REQUIREMENTS.md` for design philosophy and `PIPELINE-REFERENCE.md` for pipe
 ## Overview
 
 ```
-art init    → creates __art__/ scaffold + PIPELINE.json + builds agent image
-art compose → browser-based pipeline editor (configuration only, no execution)
-art run     → executes pipeline: per-stage containers → markers → transitions → done
+art init → creates __art__/ scaffold + PIPELINE.json
+art run  → executes pipeline: per-stage containers → markers → transitions → done
 ```
 
 A single Node.js process handles container spawning, output streaming, marker parsing, and stage transitions.
@@ -22,15 +21,8 @@ A single Node.js process handles container spawning, output streaming, marker pa
 ### `art init [dir]`
 - Creates `__art__/` directory structure (plan, src, logs, metrics, insights, memory, outputs, tests)
 - Generates default `PIPELINE.json`: build → test → review → history (4 stages)
-- Creates `CLAUDE.md` and `.gitignore`
-- Prompts to build the default agent container image if missing
-- Launches visual editor in init mode for onboarding
-
-### `art compose [dir]`
-- Browser-based visual pipeline editor (HTTP server + React SPA)
-- Drag-and-drop stages, edit transitions/error policies, configure mounts
-- Real-time agent chat for plan discussion
-- Saves to `PIPELINE.json` immediately. **Does not execute the pipeline**
+- Creates `.gitignore`
+- Does not start agents or open a browser
 
 ### `art run [dir]`
 - Validates `__art__/` and `PIPELINE.json` exist
@@ -38,9 +30,6 @@ A single Node.js process handles container spawning, output streaming, marker pa
 - Generates unique run ID, executes stages sequentially in containers
 - Logs all output to `__art__/logs/`
 - Cleans up manifests and containers on SIGINT/SIGTERM
-
-### `art update`
-- Rebuilds all images in the image registry via `container/build.sh`
 
 ### Authentication (`src/cli/auth.ts`)
 - Token resolution order: env vars → `.env` file → saved token → Claude CLI credentials
@@ -212,35 +201,7 @@ Stores image key → spec mappings in `~/.config/aer-art/images.json`.
 
 - Stage specifies `image: "vivado"` → resolved from registry
 - No image specified → falls back to `default` → `CONTAINER_IMAGE`
-- CRUD available via dashboard; presets provided (Ubuntu, NVIDIA CUDA, Python, Node, ROS, etc.)
-
----
-
-## 7. Team Editor / Dashboard (`team-editor/`)
-
-ReactFlow-based React SPA. Served by `art compose`.
-
-### Features
-
-- **Visual pipeline editing** — drag-and-drop stage nodes, connect transitions (success/error/retry)
-- **Stage properties** — prompt, mounts (rw/ro/null), commands, image
-- **Image management** — registry CRUD + preset selection
-- **Run history** — view past runs, read logs, start/stop current run
-- **Agent chat** (init mode) — real-time conversation with a project analysis agent
-- **File management** — edit files under `__art__/`
-- **Diff review** — hunk-based diff view with AI edit suggestions
-
-### API Endpoints (compose.ts)
-
-| Endpoint | Function |
-|----------|----------|
-| `GET/POST /api/pipeline` | Get/save pipeline JSON |
-| `POST /api/chat/message` | Send message to agent |
-| `GET /api/chat/stream` | SSE agent output stream |
-| `GET/POST /api/runs/*` | Run list/start/stop/stream/log |
-| `GET/POST/DELETE /api/images` | Image registry CRUD |
-| `GET /api/dirs` | `__art__/` directory structure |
-| `GET/POST /api/file` | Read/write files (path traversal protected) |
+- Registry entries can be edited directly in the config file; presets are documented for common base images (Ubuntu, NVIDIA CUDA, Python, Node, ROS, etc.)
 
 ---
 
@@ -264,10 +225,7 @@ ReactFlow-based React SPA. Served by `art compose`.
 | `src/types.ts` | Shared TypeScript types |
 | `src/cli/index.ts` | CLI entry point and command registration |
 | `src/cli/init.ts` | `art init` command |
-| `src/cli/compose.ts` | `art compose` editor server |
 | `src/cli/run.ts` | `art run` pipeline execution |
 | `src/cli/auth.ts` | Auth token management |
-| `src/cli/update.ts` | `art update` command |
-| `team-editor/` | React-based pipeline editor SPA |
 | `container/build.sh` | Agent container image build |
 | `install.sh` | One-line CLI installation script |

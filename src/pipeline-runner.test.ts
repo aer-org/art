@@ -14,6 +14,7 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/aer-art-test-data',
   GROUPS_DIR: '/tmp/aer-art-test-groups',
   IDLE_TIMEOUT: 1800000,
+  MCP_REGISTRY_PATH: '/tmp/aer-art-test-mcp-registry.json',
   TIMEZONE: 'America/Los_Angeles',
   getProjectRoot: () => '/tmp/aer-art-test-root',
   getCredentialProxyPort: () => 3001,
@@ -88,6 +89,12 @@ vi.mock('./mount-security.js', () => ({
 // Mock credential-proxy
 vi.mock('./credential-proxy.js', () => ({
   detectAuthMode: () => 'api-key',
+}));
+
+vi.mock('./mcp-registry.js', () => ({
+  formatStageMcpAccessSummary: vi.fn(() => []),
+  loadMcpRegistry: vi.fn(() => ({})),
+  resolveStageMcpServers: vi.fn(() => []),
 }));
 
 // --- runContainerAgent mock ---
@@ -198,7 +205,6 @@ vi.mock('child_process', async () => {
 import {
   parseStageMarkers,
   loadPipelineConfig,
-  loadAgentTeamConfig,
   savePipelineState,
   loadPipelineState,
   PipelineRunner,
@@ -206,7 +212,20 @@ import {
   type PipelineConfig,
   type PipelineState,
 } from './pipeline-runner.js';
+import * as mcpRegistry from './mcp-registry.js';
 import type { RegisteredGroup } from './types.js';
+
+const mockLoadMcpRegistry = vi.mocked(mcpRegistry.loadMcpRegistry);
+const mockResolveStageMcpServers = vi.mocked(
+  mcpRegistry.resolveStageMcpServers,
+);
+
+beforeEach(() => {
+  mockLoadMcpRegistry.mockReset();
+  mockLoadMcpRegistry.mockReturnValue({});
+  mockResolveStageMcpServers.mockReset();
+  mockResolveStageMcpServers.mockReturnValue([]);
+});
 
 // ============================================================
 // Group A: Pure functions (no mocks needed)
@@ -295,10 +314,7 @@ describe('parseStageMarkers', () => {
   });
 
   it('falls back to inline form when fence is absent', () => {
-    const result = parseStageMarkers(
-      ['[ERROR: plain inline]'],
-      transitions,
-    );
+    const result = parseStageMarkers(['[ERROR: plain inline]'], transitions);
     expect(result.payload).toBe('plain inline');
   });
 });
@@ -347,55 +363,6 @@ describe('loadPipelineConfig', () => {
       JSON.stringify({ stages: [] }),
     );
     const result = loadPipelineConfig('test', tmpDir);
-    expect(result).toBeNull();
-  });
-});
-
-describe('loadAgentTeamConfig', () => {
-  let tmpDir: string;
-  let originalFolder: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-team-cfg-'));
-    // loadAgentTeamConfig uses resolveGroupFolderPath(folder) which is mocked
-    // We need to create the file in the mocked path
-    originalFolder = `team-test-${Date.now()}`;
-    const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-    fs.mkdirSync(groupDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-    fs.rmSync(groupDir, { recursive: true, force: true });
-  });
-
-  it('returns agents array for valid config', () => {
-    const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-    const config = {
-      agents: [
-        { name: 'agent-a', folder: 'agent-a' },
-        { name: 'agent-b', folder: 'agent-b' },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(groupDir, 'AGENT_TEAM.json'),
-      JSON.stringify(config),
-    );
-    const result = loadAgentTeamConfig(originalFolder);
-    expect(result).not.toBeNull();
-    expect(result!.agents).toHaveLength(2);
-  });
-
-  it('returns null for path traversal in folder', () => {
-    const groupDir = path.join(TEST_GROUPS_BASE, originalFolder);
-    const config = {
-      agents: [{ name: 'evil', folder: '../../../etc' }],
-    };
-    fs.writeFileSync(
-      path.join(groupDir, 'AGENT_TEAM.json'),
-      JSON.stringify(config),
-    );
-    const result = loadAgentTeamConfig(originalFolder);
     expect(result).toBeNull();
   });
 });
@@ -799,6 +766,61 @@ describe('PipelineRunner FSM', () => {
     // but the code path is exercised. The key test is the resumeSession:false case above.)
   }, 15000);
 
+  it('passes resolved external MCP servers into stage containers', async () => {
+    const { runContainerAgent } = await import('./container-runner.js');
+    mockResolveStageMcpServers.mockReturnValue([
+      {
+        ref: 'sqlite.read',
+        name: 'sqlite_read',
+        transport: 'http',
+        url: 'http://host.docker.internal:4318/mcp',
+        tools: ['query'],
+      },
+    ]);
+
+    const config = makeTwoStagePipelineConfig();
+    config.stages[0].mcpAccess = ['sqlite.read'];
+
+    enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    const implCall = calls.find(
+      (c) => (c[0] as { name: string }).name === 'pipeline-implement',
+    );
+    expect(implCall).toBeDefined();
+    expect(
+      (implCall![0] as { containerConfig?: { externalMcpServers?: unknown[] } })
+        .containerConfig?.externalMcpServers,
+    ).toEqual([
+      expect.objectContaining({
+        ref: 'sqlite.read',
+        name: 'sqlite_read',
+      }),
+    ]);
+    expect(
+      (implCall![1] as { externalMcpServers?: unknown[] }).externalMcpServers,
+    ).toEqual([
+      expect.objectContaining({
+        ref: 'sqlite.read',
+        name: 'sqlite_read',
+      }),
+    ]);
+  }, 15000);
+
   it('container exit → fails after max respawn attempts', async () => {
     const { runContainerAgent } = await import('./container-runner.js');
     const config = makeTwoStagePipelineConfig();
@@ -1173,6 +1195,131 @@ describe('loadPipelineConfig validation for dynamic features', () => {
     const result = loadPipelineConfig('test', tmpDir);
     expect(result).not.toBeNull();
     expect(result!.stages[0].transitions[0].next_dynamic).toBe(true);
+  });
+
+  it('accepts prompt DB ids for agent stages', () => {
+    const config = {
+      stages: [
+        {
+          name: 'scope_plan',
+          prompts: ['db_id_1', 'db_id_2'],
+          prompt_append: 'Target module is fixed to VPU.',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stages[0].prompts).toEqual(['db_id_1', 'db_id_2']);
+  });
+
+  it('rejects non-string prompt ids', () => {
+    const config = {
+      stages: [
+        {
+          name: 'scope_plan',
+          prompts: ['db_id_1', 2],
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it('accepts valid mcpAccess for agent stages', () => {
+    mockLoadMcpRegistry.mockReturnValue({
+      'sqlite.read': {
+        name: 'sqlite_read',
+        transport: 'http',
+        url: 'http://host.docker.internal:4318/mcp',
+        tools: ['query'],
+      },
+    });
+    mockResolveStageMcpServers.mockReturnValue([
+      {
+        ref: 'sqlite.read',
+        name: 'sqlite_read',
+        transport: 'http',
+        url: 'http://host.docker.internal:4318/mcp',
+        tools: ['query'],
+      },
+    ]);
+
+    const config = {
+      stages: [
+        {
+          name: 'build',
+          prompt: 'Build',
+          mounts: {},
+          mcpAccess: ['sqlite.read'],
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stages[0].mcpAccess).toEqual(['sqlite.read']);
+  });
+
+  it('rejects command stages that declare mcpAccess', () => {
+    const config = {
+      stages: [
+        {
+          name: 'lint',
+          prompt: 'Lint',
+          command: 'npm run lint',
+          mounts: {},
+          mcpAccess: ['sqlite.read'],
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it('rejects invalid mcpAccess refs', () => {
+    mockLoadMcpRegistry.mockReturnValue({});
+    mockResolveStageMcpServers.mockImplementation(() => {
+      throw new Error('missing ref');
+    });
+
+    const config = {
+      stages: [
+        {
+          name: 'build',
+          prompt: 'Build',
+          mounts: {},
+          mcpAccess: ['missing.ref'],
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).toBeNull();
   });
 });
 
