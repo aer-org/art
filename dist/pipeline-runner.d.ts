@@ -6,8 +6,13 @@ export interface PipelineTransition {
     retry?: boolean;
     prompt?: string;
 }
+export type StageKind = 'agent' | 'command' | 'dynamic-fanout';
+export interface FanoutSubstitution {
+    fields: string[];
+}
 export interface PipelineStage {
     name: string;
+    kind?: StageKind;
     prompt?: string;
     prompts?: string[];
     prompt_append?: string;
@@ -28,7 +33,17 @@ export interface PipelineStage {
     resumeSession?: boolean;
     fan_in?: 'all' | 'dynamic';
     transitions: PipelineTransition[];
+    template?: string;
+    inputFrom?: 'payload';
+    substitutions?: FanoutSubstitution;
+    concurrency?: number;
+    failurePolicy?: 'all-success';
 }
+/**
+ * Resolve the effective stage kind — explicit `kind` wins, otherwise infer
+ * from presence of `command`. "dynamic-fanout" must be explicit.
+ */
+export declare function resolveStageKind(stage: PipelineStage): StageKind;
 export interface PipelineConfig {
     stages: PipelineStage[];
     entryStage?: string;
@@ -40,15 +55,17 @@ export interface PipelineState {
     status: 'running' | 'error' | 'success';
     activations?: Record<string, number>;
     completions?: Record<string, number>;
+    pendingFanoutPayloads?: Record<string, string>;
 }
+export declare function assertValidScopeId(scopeId: string): void;
 /**
  * Derive a short tag from a custom pipeline file path.
  * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
  *      undefined (default PIPELINE.json) → undefined
  */
 export declare function pipelineTagFromPath(pipelinePath: string | undefined): string | undefined;
-export declare function savePipelineState(groupDir: string, state: PipelineState, tag?: string): void;
-export declare function loadPipelineState(groupDir: string, tag?: string): PipelineState | null;
+export declare function savePipelineState(groupDir: string, state: PipelineState, tag?: string, scopeId?: string): void;
+export declare function loadPipelineState(groupDir: string, tag?: string, scopeId?: string): PipelineState | null;
 interface StageMarkerResult {
     matched: PipelineTransition | null;
     payload: string | null;
@@ -78,11 +95,19 @@ export declare class PipelineRunner {
     private groupDir;
     private runId;
     private pipelineTag;
+    private scopeId;
     private manifest;
     private aborted;
     private activeHandles;
     private stageSessionIds;
-    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string);
+    private pendingFanoutPayloads;
+    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string, scopeId?: string);
+    /**
+     * Compute the virtual sub-group folder for a stage container.
+     * When scopeId is set, embed it so sibling runners that spawn the same
+     * stage name get distinct IPC / sessions / conversations paths.
+     */
+    private stageSubFolder;
     getRunId(): string;
     abort(): Promise<void>;
     /** Send a visually prominent banner to TUI for stage transitions */
@@ -165,6 +190,22 @@ export declare class PipelineRunner {
      * Self-contained: handles retries and container respawns internally.
      */
     private runSingleStage;
+    /**
+     * Execute a dynamic-fanout stage: spawn N child PipelineRunner instances in
+     * parallel, one per element of the payload forwarded by the preceding stage.
+     *
+     * All children run fully isolated via distinct scopeIds. Policy: wait for all
+     * children to settle before returning, then fail if any child failed
+     * ("all-success" failure policy). Recursion depth is capped via the
+     * ART_FANOUT_DEPTH env variable.
+     */
+    private runFanoutStage;
+    /**
+     * Pick the transition target for a dynamic-fanout stage based on outcome.
+     * Convention: marker containing "ERROR" → error path; otherwise → success path.
+     * Retry transitions are ignored (fanout stages don't retry).
+     */
+    private pickFanoutTransition;
     /**
      * Main FSM loop with fan-out/fan-in support.
      * Spawns stage containers on-demand, runs parallel stages concurrently,

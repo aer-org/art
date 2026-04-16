@@ -28,6 +28,7 @@ interface AdditionalMount {
 
 interface PipelineStage {
   name: string;          // Unique stage identifier
+  kind?: "agent" | "command" | "dynamic-fanout"; // Explicit stage kind. Inferred if omitted (except for dynamic-fanout which must be explicit)
   prompt: string;        // Agent instructions (must be "" for command stages)
   command?: string;      // Shell command — presence makes this a command stage
   successMarker?: string; // Command mode only: stdout substring that means success → STAGE_COMPLETE
@@ -112,6 +113,70 @@ Rules:
 - `mcpAccess` values are **registry refs**, not raw tool names
 - Prefer one ref per isolated capability/server when stage-level access must also hold for Codex
 - If the same backend needs different tool subsets for different stages, prefer separate MCP endpoints such as `/mcp-reader`, `/mcp-examiner`, `/mcp-reviewer`
+
+#### Dynamic fan-out (`kind: "dynamic-fanout"`)
+
+A `dynamic-fanout` stage spawns `N` parallel **child pipelines** at runtime, one per element of a JSON array emitted by the preceding stage. No container runs for the fanout stage itself — it is pure host-side orchestration.
+
+```json
+{
+  "name": "producer",
+  "prompt": "List all modules to build. Emit [STAGE_COMPLETE] with a JSON array payload of {\"name\":...} objects.",
+  "mounts": { "project": "ro" },
+  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "per-module-build", "prompt": "Module list produced" }]
+},
+{
+  "name": "per-module-build",
+  "kind": "dynamic-fanout",
+  "template": "templates/build-one.pipeline.json",
+  "inputFrom": "payload",
+  "substitutions": { "fields": ["prompt", "mounts"] },
+  "concurrency": 4,
+  "failurePolicy": "all-success",
+  "mounts": {},
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "aggregate", "prompt": "All child pipelines succeeded" },
+    { "marker": "STAGE_ERROR", "next": null, "prompt": "Any child pipeline failed" }
+  ]
+}
+```
+
+The preceding stage emits a fenced payload:
+
+```
+[STAGE_COMPLETE]
+---PAYLOAD_START---
+[{"name":"module-a","port":8080},{"name":"module-b","port":8081}]
+---PAYLOAD_END---
+```
+
+The child template can reference placeholders from those payload elements:
+
+```json
+// templates/build-one.pipeline.json
+{
+  "stages": [
+    {
+      "name": "child_build",
+      "prompt": "Build {{name}} on port {{port}}",
+      "mounts": { "project": "ro", "src": "rw" },
+      "transitions": [{ "marker": "BUILD_DONE", "next": null, "prompt": "Built {{name}}" }]
+    }
+  ]
+}
+```
+
+Rules:
+- `kind: "dynamic-fanout"` must be **explicit** (never inferred)
+- Preceding stage payload must be a **JSON array of flat objects** (string/number/boolean values only)
+- `template` path is relative to `__art__/` and must stay within it
+- `substitutions.fields` whitelist defaults to none — if substitutions are needed, list them explicitly
+- Allowed substitution fields: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`
+- `failurePolicy` currently supports only `"all-success"` (any child failure fails the parent, all children still complete)
+- `concurrency` caps parallelism. Omit for unbounded
+- Agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, …) are **forbidden** on fanout stages
+- `next_dynamic` transitions are forbidden on fanout stages
+- Maximum nesting depth is **2** (parent → fanout → grandchild-fanout → grandgrandchild-fanout would fail)
 
 ---
 
@@ -463,6 +528,12 @@ Before writing the JSON, verify ALL of the following:
 - [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values
 - [ ] `next_dynamic` transitions have `next` as a non-null array (allowlist)
 - [ ] `next_dynamic` and `retry` are not used on the same transition
+- [ ] `dynamic-fanout` stages set `kind: "dynamic-fanout"` explicitly and declare `template` + `inputFrom: "payload"`
+- [ ] `dynamic-fanout` stages do not declare any agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, `env`, `hostMounts`, `devices`, `gpu`, `runAsRoot`, `privileged`, `exclusive`, `resumeSession`, `successMarker`, `errorMarker`)
+- [ ] Stage immediately before a `dynamic-fanout` emits a fenced payload with a JSON array of flat objects (string/number/boolean values)
+- [ ] Fanout `substitutions.fields` only includes allowed fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`)
+- [ ] Fanout `template` path is relative to `__art__/` and stays inside it
+- [ ] Nesting depth of fanout stages is ≤ 2 (one pipeline may contain at most two nested `dynamic-fanout` levels)
 - [ ] `fan_in: "dynamic"` stages have multiple predecessors (otherwise meaningless)
 - [ ] Dynamic fan-out → fan-in paths use `fan_in: "dynamic"` at convergence points
 - [ ] The JSON is valid and parseable

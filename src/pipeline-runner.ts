@@ -36,6 +36,14 @@ import {
   type ExternalMcpRegistry,
 } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
+import {
+  applyFanoutSubstitutions,
+  assertFanoutDepthAllowed,
+  deriveChildScopeId,
+  loadFanoutTemplate,
+  parseFanoutPayload,
+  withConcurrency,
+} from './fanout.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
 
 function resolveProvider(): 'claude' | 'codex' {
@@ -52,8 +60,15 @@ export interface PipelineTransition {
   prompt?: string; // Description for the agent on when to use this marker
 }
 
+export type StageKind = 'agent' | 'command' | 'dynamic-fanout';
+
+export interface FanoutSubstitution {
+  fields: string[]; // Stage fields where {{key}} substitution applies (e.g. ["prompt", "mounts"])
+}
+
 export interface PipelineStage {
   name: string;
+  kind?: StageKind; // Explicit stage kind. Default: inferred (command if `command` set, else agent).
   prompt?: string;
   prompts?: string[];
   prompt_append?: string;
@@ -74,6 +89,22 @@ export interface PipelineStage {
   resumeSession?: boolean; // false = always start fresh session. default true = resume
   fan_in?: 'all' | 'dynamic'; // Fan-in mode: "all" (default) waits for all predecessors; "dynamic" waits only for activated ones
   transitions: PipelineTransition[];
+
+  // --- dynamic-fanout stage only ---
+  template?: string; // Path to child pipeline template JSON (relative to groupDir)
+  inputFrom?: 'payload'; // Source of fanout inputs (only "payload" for now)
+  substitutions?: FanoutSubstitution; // Template fields that accept {{key}} substitution
+  concurrency?: number; // Max concurrent child runners; undefined = unbounded
+  failurePolicy?: 'all-success'; // Only "all-success" supported initially
+}
+
+/**
+ * Resolve the effective stage kind — explicit `kind` wins, otherwise infer
+ * from presence of `command`. "dynamic-fanout" must be explicit.
+ */
+export function resolveStageKind(stage: PipelineStage): StageKind {
+  if (stage.kind) return stage.kind;
+  return stage.command ? 'command' : 'agent';
 }
 
 export interface PipelineConfig {
@@ -129,18 +160,37 @@ export interface PipelineState {
   status: 'running' | 'error' | 'success';
   activations?: Record<string, number>; // Per-stage activation count (for dynamic fan-in)
   completions?: Record<string, number>; // Per-stage completion count (for dynamic fan-in)
+  pendingFanoutPayloads?: Record<string, string>; // Per-target payload awaiting a dynamic-fanout launch
 }
 
 const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
 
+// scopeId constrains nested child-runner paths so parent and sibling runners
+// don't collide on PIPELINE_STATE / sessions / IPC / logs. Short alphanumeric
+// keeps the derived virtual sub-folder under the group-folder length cap.
+const SCOPE_ID_PATTERN = /^[A-Za-z0-9_-]{1,16}$/;
+
+export function assertValidScopeId(scopeId: string): void {
+  if (!SCOPE_ID_PATTERN.test(scopeId)) {
+    throw new Error(
+      `Invalid scopeId "${scopeId}" — must match ${SCOPE_ID_PATTERN}`,
+    );
+  }
+}
+
 /**
- * Derive the state file name for a given pipeline tag.
- * - undefined / 'PIPELINE' → 'PIPELINE_STATE.json' (backward compatible)
- * - 'my-pipeline'          → 'PIPELINE_STATE.my-pipeline.json'
+ * Derive the state file name for a given pipeline tag and optional scopeId.
+ * - no tag, no scope            → 'PIPELINE_STATE.json' (backward compatible)
+ * - tag only                    → 'PIPELINE_STATE.<tag>.json'
+ * - scope only                  → 'PIPELINE_STATE.<scope>.json'
+ * - scope + tag                 → 'PIPELINE_STATE.<scope>.<tag>.json'
  */
-function pipelineStateFileName(tag?: string): string {
-  if (!tag || tag === 'PIPELINE') return PIPELINE_STATE_FILE;
-  return `PIPELINE_STATE.${tag}.json`;
+function pipelineStateFileName(tag?: string, scopeId?: string): string {
+  const parts: string[] = [];
+  if (scopeId) parts.push(scopeId);
+  if (tag && tag !== 'PIPELINE') parts.push(tag);
+  if (parts.length === 0) return PIPELINE_STATE_FILE;
+  return `PIPELINE_STATE.${parts.join('.')}.json`;
 }
 
 /**
@@ -161,16 +211,18 @@ export function savePipelineState(
   groupDir: string,
   state: PipelineState,
   tag?: string,
+  scopeId?: string,
 ): void {
-  const filepath = path.join(groupDir, pipelineStateFileName(tag));
+  const filepath = path.join(groupDir, pipelineStateFileName(tag, scopeId));
   atomicWrite(filepath, JSON.stringify(state, null, 2));
 }
 
 export function loadPipelineState(
   groupDir: string,
   tag?: string,
+  scopeId?: string,
 ): PipelineState | null {
-  const filepath = path.join(groupDir, pipelineStateFileName(tag));
+  const filepath = path.join(groupDir, pipelineStateFileName(tag, scopeId));
   try {
     const raw = fs.readFileSync(filepath, 'utf-8');
     return JSON.parse(raw) as PipelineState;
@@ -311,10 +363,12 @@ export class PipelineRunner {
   private groupDir: string;
   private runId: string;
   private pipelineTag: string | undefined;
+  private scopeId: string | undefined;
   private manifest: RunManifest;
   private aborted = false;
   private activeHandles = new Map<string, StageHandle>();
   private stageSessionIds = new Map<string, string>();
+  private pendingFanoutPayloads = new Map<string, string>();
   constructor(
     group: RegisteredGroup,
     chatJid: string,
@@ -327,6 +381,7 @@ export class PipelineRunner {
     groupDir?: string,
     runId?: string,
     pipelineTag?: string,
+    scopeId?: string,
   ) {
     this.group = group;
     this.chatJid = chatJid;
@@ -336,6 +391,8 @@ export class PipelineRunner {
     this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
     this.runId = runId ?? generateRunId();
     this.pipelineTag = pipelineTag;
+    if (scopeId !== undefined) assertValidScopeId(scopeId);
+    this.scopeId = scopeId;
     this.manifest = {
       runId: this.runId,
       pid: process.pid,
@@ -343,6 +400,17 @@ export class PipelineRunner {
       status: 'running',
       stages: [],
     };
+  }
+
+  /**
+   * Compute the virtual sub-group folder for a stage container.
+   * When scopeId is set, embed it so sibling runners that spawn the same
+   * stage name get distinct IPC / sessions / conversations paths.
+   */
+  private stageSubFolder(stageName: string): string {
+    return this.scopeId
+      ? `${this.group.folder}__${this.scopeId}__pipeline_${stageName}`
+      : `${this.group.folder}__pipeline_${stageName}`;
   }
 
   getRunId(): string {
@@ -481,7 +549,7 @@ export class PipelineRunner {
     }
 
     // Conversations archive directory (agent-runner writes transcripts here)
-    const subFolder = `${this.group.folder}__pipeline_${stageConfig.name}`;
+    const subFolder = this.stageSubFolder(stageConfig.name);
     const convDir = path.join(
       resolveGroupFolderPath(subFolder),
       'conversations',
@@ -506,7 +574,7 @@ export class PipelineRunner {
     logStream?: fs.WriteStream,
     ephemeralSystemPrompt?: string,
   ): StageHandle {
-    const subFolder = `${this.group.folder}__pipeline_${stageConfig.name}`;
+    const subFolder = this.stageSubFolder(stageConfig.name);
 
     // Build internal mounts (group + project + sub-path overrides)
     const internalMounts = this.buildStageMounts(stageConfig);
@@ -1069,11 +1137,15 @@ PAYLOAD FORMATS:
     await this.notifyBanner(`🚀 Pipeline starting. Stages: ${stageNames}`);
 
     // Pipeline-wide log file
-    const logsDir = path.join(this.groupDir, 'logs');
+    const logsDir = this.scopeId
+      ? path.join(this.groupDir, 'logs', this.scopeId)
+      : path.join(this.groupDir, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const pipelineLogFile = path.join(logsDir, `pipeline-${ts}.log`);
-    this.manifest.logFile = `logs/pipeline-${ts}.log`;
+    this.manifest.logFile = this.scopeId
+      ? `logs/${this.scopeId}/pipeline-${ts}.log`
+      : `logs/pipeline-${ts}.log`;
     writeRunManifest(this.groupDir, this.manifest);
     const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
     pipelineLogStream.write(
@@ -1265,7 +1337,11 @@ PAYLOAD FORMATS:
     };
 
     // Resume from last completed stage if pipeline was interrupted
-    const existingState = loadPipelineState(this.groupDir, this.pipelineTag);
+    const existingState = loadPipelineState(
+      this.groupDir,
+      this.pipelineTag,
+      this.scopeId,
+    );
     if (
       existingState &&
       existingState.status !== 'success' &&
@@ -1305,6 +1381,12 @@ PAYLOAD FORMATS:
       const completions = new Map(
         Object.entries(existingState.completions ?? {}),
       );
+      // Restore pending fanout payloads so resumed fanout stages have inputs
+      if (existingState.pendingFanoutPayloads) {
+        for (const [k, v] of Object.entries(existingState.pendingFanoutPayloads)) {
+          this.pendingFanoutPayloads.set(k, v);
+        }
+      }
       return { initialStages, completedStages, activations, completions };
     }
 
@@ -1465,6 +1547,18 @@ PAYLOAD FORMATS:
     } else {
       targetName = matched.next ?? null;
     }
+
+    // Stash payload for any dynamic-fanout target. Only single-target,
+    // non-next_dynamic transitions forward payload downstream.
+    if (payload && !matched.next_dynamic) {
+      for (const t of PipelineRunner.nextTargets(targetName)) {
+        const targetCfg = stagesByName.get(t);
+        if (targetCfg && resolveStageKind(targetCfg) === 'dynamic-fanout') {
+          this.pendingFanoutPayloads.set(t, payload);
+        }
+      }
+    }
+
     const targetDisplay = Array.isArray(targetName)
       ? targetName.join(', ')
       : targetName;
@@ -1500,6 +1594,7 @@ PAYLOAD FORMATS:
         status: 'running',
       },
       this.pipelineTag,
+      this.scopeId,
     );
 
     // Close the container first, then retrieve session ID
@@ -1562,6 +1657,7 @@ PAYLOAD FORMATS:
         status: lastResult,
       },
       this.pipelineTag,
+      this.scopeId,
     );
 
     this.manifest.endTime = new Date().toISOString();
@@ -1609,6 +1705,10 @@ PAYLOAD FORMATS:
         nextEphemeralSystemPrompt: null,
         result: 'error',
       };
+    }
+
+    if (resolveStageKind(stageConfig) === 'dynamic-fanout') {
+      return this.runFanoutStage(stageConfig, pipelineLogStream);
     }
 
     // Exclusive lock: wait for shared resource
@@ -1770,6 +1870,201 @@ PAYLOAD FORMATS:
   }
 
   /**
+   * Execute a dynamic-fanout stage: spawn N child PipelineRunner instances in
+   * parallel, one per element of the payload forwarded by the preceding stage.
+   *
+   * All children run fully isolated via distinct scopeIds. Policy: wait for all
+   * children to settle before returning, then fail if any child failed
+   * ("all-success" failure policy). Recursion depth is capped via the
+   * ART_FANOUT_DEPTH env variable.
+   */
+  private async runFanoutStage(
+    stageConfig: PipelineStage,
+    pipelineLogStream: fs.WriteStream,
+  ): Promise<{
+    stageName: string;
+    nextStages: string | string[] | null;
+    nextInitialPrompt: string | null;
+    nextEphemeralSystemPrompt: string | null;
+    result: 'success' | 'error' | null;
+  }> {
+    const stageName = stageConfig.name;
+    await this.notifyBanner(`🌱 Stage: ${stageName} (dynamic-fanout)`);
+
+    const stageResultOnError = (err: unknown) => {
+      logger.error({ stage: stageName, err }, 'dynamic-fanout stage failed');
+      pipelineLogStream.write(
+        `[${stageName}] dynamic-fanout failed: ${(err as Error).message || String(err)}\n`,
+      );
+      return {
+        stageName,
+        nextStages: this.pickFanoutTransition(stageConfig, false),
+        nextInitialPrompt: null,
+        nextEphemeralSystemPrompt: null,
+        result: 'error' as const,
+      };
+    };
+
+    let childDepth: number;
+    try {
+      childDepth = assertFanoutDepthAllowed(stageName);
+    } catch (err) {
+      return stageResultOnError(err);
+    }
+
+    const payload = this.pendingFanoutPayloads.get(stageName);
+    this.pendingFanoutPayloads.delete(stageName);
+    if (!payload) {
+      return stageResultOnError(
+        new Error(
+          `dynamic-fanout "${stageName}": no payload forwarded from predecessor (preceding stage must emit a STAGE_COMPLETE with a JSON array payload)`,
+        ),
+      );
+    }
+
+    let inputs;
+    try {
+      inputs = parseFanoutPayload(payload, stageName);
+    } catch (err) {
+      return stageResultOnError(err);
+    }
+
+    if (inputs.length === 0) {
+      // Zero-element fanout: nothing to spawn, emit success immediately.
+      await this.notifyBanner(
+        `🌱 ${stageName}: 0 child pipelines (empty payload)`,
+      );
+      return {
+        stageName,
+        nextStages: this.pickFanoutTransition(stageConfig, true),
+        nextInitialPrompt: null,
+        nextEphemeralSystemPrompt: null,
+        result: 'success',
+      };
+    }
+
+    let template;
+    try {
+      template = loadFanoutTemplate(
+        this.groupDir,
+        stageConfig.template!,
+        stageName,
+      );
+    } catch (err) {
+      return stageResultOnError(err);
+    }
+
+    const allowedFields = stageConfig.substitutions?.fields ?? [];
+    await this.notifyBanner(
+      `🌱 ${stageName}: spawning ${inputs.length} child pipeline(s)` +
+        (stageConfig.concurrency
+          ? ` (concurrency ${stageConfig.concurrency})`
+          : ''),
+    );
+
+    const prevDepthEnv = process.env.ART_FANOUT_DEPTH;
+    process.env.ART_FANOUT_DEPTH = String(childDepth);
+
+    const childResults: Array<'success' | 'error'> = new Array(inputs.length);
+    let anyFailure = false;
+
+    try {
+      const tasks = inputs.map((input, idx) => async () => {
+        const childScope = deriveChildScopeId(this.scopeId, stageName, idx);
+        const substituted = applyFanoutSubstitutions(
+          template!,
+          input,
+          allowedFields,
+          stageName,
+        );
+
+        // Child-scoped state from a previous (interrupted) run is discarded.
+        // TODO: support scope-aware child resume instead of always restarting.
+        const staleStatePath = path.join(
+          this.groupDir,
+          `PIPELINE_STATE.${childScope}.json`,
+        );
+        try {
+          fs.rmSync(staleStatePath, { force: true });
+        } catch {
+          /* ignore */
+        }
+
+        try {
+          const child = new PipelineRunner(
+            this.group,
+            this.chatJid,
+            substituted,
+            this.notify,
+            this.onProcess,
+            this.groupDir,
+            undefined,
+            undefined,
+            childScope,
+          );
+          const result = await child.run();
+          childResults[idx] = result;
+          if (result === 'error') anyFailure = true;
+        } catch (err) {
+          logger.error(
+            { stage: stageName, idx, childScope, err },
+            'dynamic-fanout child threw',
+          );
+          childResults[idx] = 'error';
+          anyFailure = true;
+        }
+      });
+
+      await withConcurrency(stageConfig.concurrency, tasks);
+    } finally {
+      if (prevDepthEnv === undefined) delete process.env.ART_FANOUT_DEPTH;
+      else process.env.ART_FANOUT_DEPTH = prevDepthEnv;
+    }
+
+    const succeeded = childResults.filter((r) => r === 'success').length;
+    const failed = childResults.length - succeeded;
+    await this.notifyBanner(
+      `🌱 ${stageName}: fanout complete — ${succeeded} succeeded, ${failed} failed`,
+    );
+
+    if (anyFailure) {
+      return {
+        stageName,
+        nextStages: this.pickFanoutTransition(stageConfig, false),
+        nextInitialPrompt: null,
+        nextEphemeralSystemPrompt: null,
+        result: 'error',
+      };
+    }
+
+    return {
+      stageName,
+      nextStages: this.pickFanoutTransition(stageConfig, true),
+      nextInitialPrompt: null,
+      nextEphemeralSystemPrompt: null,
+      result: 'success',
+    };
+  }
+
+  /**
+   * Pick the transition target for a dynamic-fanout stage based on outcome.
+   * Convention: marker containing "ERROR" → error path; otherwise → success path.
+   * Retry transitions are ignored (fanout stages don't retry).
+   */
+  private pickFanoutTransition(
+    stageConfig: PipelineStage,
+    success: boolean,
+  ): string | string[] | null {
+    for (const t of stageConfig.transitions) {
+      if (t.retry) continue;
+      const isError = t.marker.toUpperCase().includes('ERROR');
+      if (success && !isError) return t.next ?? null;
+      if (!success && isError) return t.next ?? null;
+    }
+    return null;
+  }
+
+  /**
    * Main FSM loop with fan-out/fan-in support.
    * Spawns stage containers on-demand, runs parallel stages concurrently,
    * and gates fan-in stages until all predecessors complete.
@@ -1797,8 +2092,10 @@ PAYLOAD FORMATS:
         status: 'running',
         activations: Object.fromEntries(activations),
         completions: Object.fromEntries(completions),
+        pendingFanoutPayloads: Object.fromEntries(this.pendingFanoutPayloads),
       },
       this.pipelineTag,
+      this.scopeId,
     );
 
     const predecessors = this.buildPredecessorMap();
@@ -1965,8 +2262,10 @@ PAYLOAD FORMATS:
           status: 'running',
           activations: Object.fromEntries(activations),
           completions: Object.fromEntries(completions),
+          pendingFanoutPayloads: Object.fromEntries(this.pendingFanoutPayloads),
         },
         this.pipelineTag,
+        this.scopeId,
       );
 
       // Wait for at least one stage to complete
@@ -2030,6 +2329,119 @@ PAYLOAD FORMATS:
   }
 }
 
+const FANOUT_FORBIDDEN_FIELDS = [
+  'prompt',
+  'prompts',
+  'prompt_append',
+  'command',
+  'image',
+  'chat',
+  'successMarker',
+  'errorMarker',
+  'mcpAccess',
+  'exclusive',
+  'runAsRoot',
+  'privileged',
+  'hostMounts',
+  'devices',
+  'gpu',
+  'env',
+  'resumeSession',
+] as const;
+
+const FANOUT_SUBSTITUTION_ALLOWED_FIELDS = new Set([
+  'prompt',
+  'prompts',
+  'prompt_append',
+  'mounts',
+  'hostMounts',
+  'env',
+  'image',
+  'command',
+]);
+
+function validateFanoutStage(
+  stage: PipelineStage,
+  groupFolder: string,
+): boolean {
+  if (typeof stage.template !== 'string' || stage.template.length === 0) {
+    logger.error(
+      { groupFolder, stage: stage.name },
+      'dynamic-fanout stage requires non-empty template path',
+    );
+    return false;
+  }
+
+  if (stage.inputFrom !== 'payload') {
+    logger.error(
+      { groupFolder, stage: stage.name, inputFrom: stage.inputFrom },
+      'dynamic-fanout stage requires inputFrom: "payload"',
+    );
+    return false;
+  }
+
+  if (stage.substitutions !== undefined) {
+    const subs = stage.substitutions;
+    if (
+      typeof subs !== 'object' ||
+      subs === null ||
+      !Array.isArray(subs.fields) ||
+      subs.fields.some((f) => typeof f !== 'string')
+    ) {
+      logger.error(
+        { groupFolder, stage: stage.name, substitutions: subs },
+        'Invalid substitutions (must be { fields: string[] })',
+      );
+      return false;
+    }
+    for (const f of subs.fields) {
+      if (!FANOUT_SUBSTITUTION_ALLOWED_FIELDS.has(f)) {
+        logger.error(
+          { groupFolder, stage: stage.name, field: f },
+          `substitutions.fields may only include [${[...FANOUT_SUBSTITUTION_ALLOWED_FIELDS].join(', ')}]`,
+        );
+        return false;
+      }
+    }
+  }
+
+  if (
+    stage.concurrency !== undefined &&
+    (typeof stage.concurrency !== 'number' ||
+      !Number.isInteger(stage.concurrency) ||
+      stage.concurrency < 1)
+  ) {
+    logger.error(
+      { groupFolder, stage: stage.name, concurrency: stage.concurrency },
+      'concurrency must be a positive integer',
+    );
+    return false;
+  }
+
+  if (
+    stage.failurePolicy !== undefined &&
+    stage.failurePolicy !== 'all-success'
+  ) {
+    logger.error(
+      { groupFolder, stage: stage.name, failurePolicy: stage.failurePolicy },
+      'failurePolicy must be "all-success"',
+    );
+    return false;
+  }
+
+  for (const field of FANOUT_FORBIDDEN_FIELDS) {
+    if ((stage as unknown as Record<string, unknown>)[field] !== undefined) {
+      logger.error(
+        { groupFolder, stage: stage.name, field },
+        `dynamic-fanout stages cannot declare "${field}"`,
+      );
+      return false;
+    }
+  }
+
+  return true;
+}
+
 /**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
@@ -2064,6 +2476,37 @@ export function loadPipelineConfig(
     // Validate stage names and transitions
     const stageNames = new Set(config.stages.map((s) => s.name));
     for (const stage of config.stages) {
+      if (
+        stage.kind !== undefined &&
+        stage.kind !== 'agent' &&
+        stage.kind !== 'command' &&
+        stage.kind !== 'dynamic-fanout'
+      ) {
+        logger.error(
+          { groupFolder, stage: stage.name, kind: stage.kind },
+          'Invalid stage kind (must be "agent", "command", or "dynamic-fanout")',
+        );
+        return null;
+      }
+
+      const effectiveKind = resolveStageKind(stage);
+
+      if (effectiveKind === 'dynamic-fanout') {
+        if (!validateFanoutStage(stage, groupFolder)) return null;
+        // Skip agent/command-only validations below
+        // but still run transition validation at the bottom of the loop.
+        for (const t of stage.transitions) {
+          if (t.next_dynamic) {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'dynamic-fanout stages cannot use next_dynamic transitions',
+            );
+            return null;
+          }
+        }
+        continue;
+      }
+
       if (
         stage.prompts !== undefined &&
         (!Array.isArray(stage.prompts) ||

@@ -36,6 +36,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | Field         | Type                                   | Required | Default     | Description                                                                                                                                        |
 | ------------- | -------------------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`        | `string`                               | Yes      | —           | Unique stage identifier                                                                                                                            |
+| `kind`        | `"agent" \| "command" \| "dynamic-fanout"` | No   | inferred    | Explicit stage kind. If omitted, inferred: `command` when `command` is set, else `agent`. `dynamic-fanout` must be explicit. See [Dynamic Fan-out](#dynamic-fan-out) |
 | `prompt`      | `string`                               | Yes      | —           | System prompt sent to the agent. Describes what this stage should do                                                                               |
 | `image`       | `string`                               | No       | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry)                                           |
 | `command`     | `string`                               | No       | `null`      | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
@@ -207,6 +208,84 @@ In `PIPELINE.json`, reference the registry keys:
 - `mcpAccess` is only valid for agent stages. Command stages (`"command": "..."`) cannot declare it.
 - `${ART_HOST_GATEWAY}` in registry values is replaced with the active container runtime's host gateway (`host.docker.internal`, `host.containers.internal`, etc.).
 - For strong stage-level isolation in both Claude and Codex, prefer one registry ref per isolated server endpoint. If you need different tool subsets for different stages, expose separate MCP servers or filtered proxies with distinct `name` values.
+
+## Dynamic Fan-out
+
+A `dynamic-fanout` stage spawns `N` parallel **child pipelines** at runtime, one per element in a JSON payload emitted by the preceding stage. Each child runs in-process as its own isolated `PipelineRunner` — no container-in-container, no subprocess `art run`. The parent stage blocks until every child has settled.
+
+```json
+{
+  "name": "per-module-build",
+  "kind": "dynamic-fanout",
+  "template": "templates/build-one.pipeline.json",
+  "inputFrom": "payload",
+  "substitutions": { "fields": ["prompt", "mounts"] },
+  "concurrency": 4,
+  "failurePolicy": "all-success",
+  "mounts": {},
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "aggregate", "prompt": "All child pipelines succeeded" },
+    { "marker": "STAGE_ERROR", "next": null, "prompt": "One or more child pipelines failed" }
+  ]
+}
+```
+
+### Fields
+
+| Field             | Type                    | Required | Description                                                                                                        |
+| ----------------- | ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `kind`            | `"dynamic-fanout"`      | Yes      | Must be exactly this value (cannot be inferred)                                                                    |
+| `template`        | `string`                | Yes      | Path to a child pipeline JSON, relative to `__art__/`. Must stay within `__art__/`                                 |
+| `inputFrom`       | `"payload"`             | Yes      | Only `"payload"` is supported. Inputs come from the preceding stage's marker payload                               |
+| `substitutions`   | `{ fields: string[] }`  | No       | Allowlist of child-stage fields where `{{key}}` placeholders are substituted per child. See [Substitutions](#fan-out-substitutions) |
+| `concurrency`     | `number` (int ≥ 1)      | No       | Max concurrent child pipelines. Default: unbounded                                                                 |
+| `failurePolicy`   | `"all-success"`         | No       | Only `"all-success"` is supported. Any child failure makes the parent stage fail; all children still run to completion |
+
+Agent/command fields (`prompt`, `command`, `image`, `chat`, `mcpAccess`, `hostMounts`, `devices`, `gpu`, `runAsRoot`, `privileged`, `env`, `exclusive`, `resumeSession`, `successMarker`, `errorMarker`) are **forbidden** on fanout stages. `next_dynamic` transitions are also forbidden.
+
+### Payload from the preceding stage
+
+The stage immediately before a fanout stage must emit a fenced-payload `STAGE_COMPLETE` whose body is a **JSON array of flat objects** (string / number / boolean values only — no nesting):
+
+```
+[STAGE_COMPLETE]
+---PAYLOAD_START---
+[
+  { "name": "module-a", "port": 8080 },
+  { "name": "module-b", "port": 8081 }
+]
+---PAYLOAD_END---
+```
+
+Each array element becomes the substitution context for one child pipeline.
+
+### Fan-out substitutions
+
+Placeholders like `{{name}}`, `{{port}}` are replaced with the matching input value. Substitution applies only to the allowed child-stage fields listed in `substitutions.fields`. Keys inside `mounts` are also substituted when `mounts` is allowed.
+
+Allowed `substitutions.fields`: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`.
+
+Missing placeholders are left intact and a warning is logged — the child agent will see the literal `{{key}}`.
+
+### Isolation
+
+Each child is launched with a deterministic short `scopeId` (e.g., `fa3b7c1`). The parent and every child write to **non-overlapping** paths:
+
+- `__art__/PIPELINE_STATE.<scopeId>.json` — child's own state file
+- `__art__/logs/<scopeId>/` — child's logs
+- `<DATA_DIR>/sessions/<folder>__<scopeId>__pipeline_<stageName>/` — child's session / IPC / conversations
+
+On resume, stale child state files are deleted — children always restart from scratch. (TODO: scope-aware child resume.)
+
+### Recursion
+
+Nested fanout is allowed up to depth `2` (tracked via the `ART_FANOUT_DEPTH` env var set on each child process). A fanout stage at depth 3 is rejected with an error. This is a guard against runaway spawns.
+
+### Limitations
+
+- `failurePolicy` is currently always `"all-success"`. No partial-success collection yet.
+- Parent fanout stages cannot themselves declare agent-mode fields; they are purely host-side orchestration.
+- Child logs interleave into the parent's console. (Scoped log files still separate under `logs/<scopeId>/`.)
 
 ## Transitions
 
