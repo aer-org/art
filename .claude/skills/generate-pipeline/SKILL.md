@@ -171,7 +171,7 @@ Rules:
 - Preceding stage payload must be a **JSON array of flat objects** (string/number/boolean values only)
 - `template` path is relative to `__art__/` and must stay within it
 - `substitutions.fields` whitelist defaults to none — if substitutions are needed, list them explicitly
-- Allowed substitution fields: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`
+- Allowed substitution fields: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`
 - `failurePolicy` currently supports only `"all-success"` (any child failure fails the parent, all children still complete)
 - `concurrency` caps parallelism. Omit for unbounded
 - Agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, …) are **forbidden** on fanout stages

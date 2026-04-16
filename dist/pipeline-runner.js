@@ -1752,6 +1752,7 @@ const FANOUT_SUBSTITUTION_ALLOWED_FIELDS = new Set([
     'env',
     'image',
     'command',
+    'transitions',
 ]);
 function validateFanoutStage(stage, groupFolder) {
     if (typeof stage.template !== 'string' || stage.template.length === 0) {

@@ -283,7 +283,7 @@ Each array element becomes the substitution context for one child pipeline.
 
 Placeholders like `{{name}}`, `{{port}}` are replaced with the matching input value. Substitution applies only to the allowed child-stage fields listed in `substitutions.fields`. Keys inside `mounts` are also substituted when `mounts` is allowed.
 
-Allowed `substitutions.fields`: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`.
+Allowed `substitutions.fields`: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`.
 
 Missing placeholders are left intact and a warning is logged — the child agent will see the literal `{{key}}`.
 

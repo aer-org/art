@@ -1468,6 +1468,21 @@ describe('loadPipelineConfig validation for dynamic features', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
+  it('accepts transitions in substitutions.fields', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            ...validFanoutStage,
+            substitutions: { fields: ['prompt', 'transitions'] },
+          },
+        ],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
+  });
+
   it('rejects dynamic-fanout with non-positive concurrency', () => {
     fs.writeFileSync(
       path.join(tmpDir, 'PIPELINE.json'),
@@ -2344,7 +2359,9 @@ describe('generalized sub-path mounts', () => {
 
   async function runOneStageCapturingMounts(
     mounts: Record<string, 'ro' | 'rw' | null>,
-  ): Promise<Array<{ hostPath: string; containerPath: string; readonly: boolean }>> {
+  ): Promise<
+    Array<{ hostPath: string; containerPath: string; readonly: boolean }>
+  > {
     const cfg: PipelineConfig = {
       stages: [
         {
@@ -2368,15 +2385,17 @@ describe('generalized sub-path mounts', () => {
     const { runContainerAgent } = await import('./container-runner.js');
     const fn = vi.mocked(runContainerAgent);
     const call = fn.mock.calls[0];
-    const containerConfig = (call[0] as unknown as {
-      containerConfig: {
-        internalMounts: Array<{
-          hostPath: string;
-          containerPath: string;
-          readonly: boolean;
-        }>;
-      };
-    }).containerConfig;
+    const containerConfig = (
+      call[0] as unknown as {
+        containerConfig: {
+          internalMounts: Array<{
+            hostPath: string;
+            containerPath: string;
+            readonly: boolean;
+          }>;
+        };
+      }
+    ).containerConfig;
     return containerConfig.internalMounts;
   }
 
@@ -2385,7 +2404,9 @@ describe('generalized sub-path mounts', () => {
       results: 'ro',
       'results:generated': 'rw',
     });
-    const results = internal.find((m) => m.containerPath === '/workspace/results');
+    const results = internal.find(
+      (m) => m.containerPath === '/workspace/results',
+    );
     const sub = internal.find(
       (m) => m.containerPath === '/workspace/results/generated',
     );
@@ -2405,9 +2426,7 @@ describe('generalized sub-path mounts', () => {
     );
     expect(sub).toBeDefined();
     expect(sub!.readonly).toBe(false);
-    expect(sub!.hostPath).toBe(
-      path.join(groupDir, 'cov_per_section', 'S-01'),
-    );
+    expect(sub!.hostPath).toBe(path.join(groupDir, 'cov_per_section', 'S-01'));
     // Parent path not mounted
     expect(
       internal.find((m) => m.containerPath === '/workspace/cov_per_section'),
@@ -2455,7 +2474,9 @@ describe('generalized sub-path mounts', () => {
       'extra:bad': 'rw',
       'conversations:sneak': 'rw',
     });
-    expect(internal.find((m) => m.containerPath.includes('/ipc/'))).toBeUndefined();
+    expect(
+      internal.find((m) => m.containerPath.includes('/ipc/')),
+    ).toBeUndefined();
     expect(
       internal.find((m) => m.containerPath.includes('/global/')),
     ).toBeUndefined();
@@ -2472,7 +2493,9 @@ describe('generalized sub-path mounts', () => {
       project: 'ro',
       'project:src/generated': 'rw',
     });
-    const project = internal.find((m) => m.containerPath === '/workspace/project');
+    const project = internal.find(
+      (m) => m.containerPath === '/workspace/project',
+    );
     expect(project).toBeDefined();
     expect(project!.readonly).toBe(true);
     const sub = internal.find(

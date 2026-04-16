@@ -2411,6 +2411,7 @@ const FANOUT_SUBSTITUTION_ALLOWED_FIELDS = new Set([
   'env',
   'image',
   'command',
+  'transitions',
 ]);
 
 function validateFanoutStage(

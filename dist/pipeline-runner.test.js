@@ -1034,6 +1034,17 @@ describe('loadPipelineConfig validation for dynamic features', () => {
         }));
         expect(loadPipelineConfig('test', tmpDir)).toBeNull();
     });
+    it('accepts transitions in substitutions.fields', () => {
+        fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify({
+            stages: [
+                {
+                    ...validFanoutStage,
+                    substitutions: { fields: ['prompt', 'transitions'] },
+                },
+            ],
+        }));
+        expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
+    });
     it('rejects dynamic-fanout with non-positive concurrency', () => {
         fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify({
             stages: [{ ...validFanoutStage, concurrency: 0 }],
