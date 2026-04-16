@@ -921,12 +921,24 @@ export class PipelineRunner {
         if (markerResolved || !handle.pendingResult) return;
         markerResolved = true;
         const transition = isSuccess ? completeTransition : errorTransition;
+        // On success, scan stdout for a fenced marker payload to forward to
+        // the next stage. Command stages don't emit payload structurally, but
+        // fenced `[MARKER] ... ---PAYLOAD_START--- ... ---PAYLOAD_END---`
+        // blocks in stdout are picked up so a command stage can feed a
+        // downstream dynamic-fanout.
+        let effectivePayload = payload;
+        if (isSuccess && transition && effectivePayload === null) {
+          const parsed = parseStageMarkers([stdout], [transition]);
+          if (parsed.matched && parsed.payload !== null) {
+            effectivePayload = parsed.payload;
+          }
+        }
         handle.pendingResult.resolve({
           matched: transition ?? {
             marker: isSuccess ? 'STAGE_COMPLETE' : 'STAGE_ERROR',
             next: null,
           },
-          payload,
+          payload: effectivePayload,
         });
         handle.pendingResult = null;
         // Kill process on error marker — no need to wait for cleanup
@@ -1689,7 +1701,11 @@ PAYLOAD FORMATS:
       nextStageName: targetName,
       nextInitialPrompt,
       nextEphemeralSystemPrompt,
-      lastResult: targets.length === 0 ? 'success' : null,
+      // Terminal transition: an ERROR marker ends the pipeline with 'error',
+      // any other marker ends it with 'success'. Non-terminal transitions
+      // leave the result undetermined until a later stage decides.
+      lastResult:
+        targets.length === 0 ? (isErrorTransition ? 'error' : 'success') : null,
     };
   }
 
@@ -2412,6 +2428,8 @@ const FANOUT_SUBSTITUTION_ALLOWED_FIELDS = new Set([
   'image',
   'command',
   'transitions',
+  'successMarker',
+  'errorMarker',
 ]);
 
 function validateFanoutStage(
