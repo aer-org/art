@@ -20,6 +20,12 @@ export const IMAGE_REGISTRY_PATH = path.join(
   'aer-art',
   'images.json',
 );
+export const MCP_REGISTRY_PATH = path.join(
+  HOME_DIR,
+  '.config',
+  'aer-art',
+  'mcp-registry.json',
+);
 export let STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export let GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export let DATA_DIR = path.resolve(PROJECT_ROOT, 'data');

@@ -1,6 +1,7 @@
 export declare const ART_DIR_NAME = "__art__";
 export declare const MOUNT_ALLOWLIST_PATH: string;
 export declare const IMAGE_REGISTRY_PATH: string;
+export declare const MCP_REGISTRY_PATH: string;
 export declare let STORE_DIR: string;
 export declare let GROUPS_DIR: string;
 export declare let DATA_DIR: string;

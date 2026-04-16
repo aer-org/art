@@ -24,6 +24,7 @@ export interface PipelineStage {
     env?: Record<string, string>;
     exclusive?: string;
     hostMounts?: AdditionalMount[];
+    mcpAccess?: string[];
     resumeSession?: boolean;
     fan_in?: 'all' | 'dynamic';
     transitions: PipelineTransition[];

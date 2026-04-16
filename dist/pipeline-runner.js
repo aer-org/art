@@ -18,6 +18,7 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { generateRunId, writeRunManifest, } from './run-manifest.js';
+import { formatStageMcpAccessSummary, loadMcpRegistry, resolveStageMcpServers, } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
 function resolveProvider() {
     return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
@@ -339,6 +340,11 @@ export class PipelineRunner {
         if (!stageConfig.command) {
             resolvedImage = getImageForStage(stageConfig.image, false);
         }
+        const resolvedExternalMcpServers = stageConfig.command
+            ? []
+            : resolveStageMcpServers(stageConfig.mcpAccess, {
+                hostGateway: getRuntime().hostGateway,
+            });
         // Parent's additional mounts stay in additionalMounts (security-validated).
         // Filter out any that conflict with stage-level hostMounts (stage wins).
         const parentMounts = this.group.containerConfig?.additionalMounts || [];
@@ -363,6 +369,7 @@ export class PipelineRunner {
                 runAsRoot: stageConfig.runAsRoot === true,
                 privileged: stageConfig.privileged === true,
                 env: stageConfig.env,
+                externalMcpServers: resolvedExternalMcpServers,
                 internalMounts,
             },
         };
@@ -457,6 +464,7 @@ export class PipelineRunner {
                 assistantName: `pipeline-${stageConfig.name}`,
                 runId: this.runId,
                 ephemeralSystemPrompt,
+                externalMcpServers: resolvedExternalMcpServers,
             }, (proc, containerName) => this.onProcess(proc, containerName), onOutput, logStream);
         }
         // Handle container exit
@@ -682,12 +690,25 @@ export class PipelineRunner {
         const modeRule = stageConfig.chat
             ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
             : '- Do NOT ask questions. Always assume "yes" and proceed autonomously.\n- Do not stop until this stage is complete or you hit a blocking error.';
+        const externalMcpLines = (() => {
+            if (!stageConfig.mcpAccess || stageConfig.mcpAccess.length === 0) {
+                return '- External MCP access for this stage: none.';
+            }
+            const servers = resolveStageMcpServers(stageConfig.mcpAccess, {
+                hostGateway: getRuntime().hostGateway,
+            });
+            return [
+                '- External MCP access is limited to the following servers/tools:',
+                ...formatStageMcpAccessSummary(servers),
+            ].join('\n');
+        })();
         return `
 RULES:
 ${modeRule}
 - Read files before editing. Use tools freely.
 - Project source is available read-only at /workspace/project/.
 - Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
+${externalMcpLines}
 
 STAGE MARKERS — use the correct one:
 ${markerLines.join('\n')}
@@ -1466,6 +1487,7 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
     try {
         const raw = fs.readFileSync(pipelinePath, 'utf-8');
         const config = JSON.parse(raw);
+        let mcpRegistry;
         // Basic validation
         if (!Array.isArray(config.stages) || config.stages.length === 0) {
             logger.warn({ groupFolder }, 'PIPELINE.json has no stages');
@@ -1493,12 +1515,32 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
                 logger.error({ groupFolder, stage: stage.name, prompt: stage.prompt }, 'Invalid prompt field (must be a string)');
                 return null;
             }
+            if (stage.mcpAccess !== undefined &&
+                (!Array.isArray(stage.mcpAccess) ||
+                    stage.mcpAccess.some((ref) => typeof ref !== 'string'))) {
+                logger.error({ groupFolder, stage: stage.name, mcpAccess: stage.mcpAccess }, 'Invalid mcpAccess field (must be an array of registry ref strings)');
+                return null;
+            }
             if (!stage.command &&
                 !stage.prompt &&
                 !stage.prompt_append &&
                 (!stage.prompts || stage.prompts.length === 0)) {
                 logger.error({ groupFolder, stage: stage.name }, 'Agent stage must define prompt, prompts, or prompt_append');
                 return null;
+            }
+            if (stage.command && stage.mcpAccess && stage.mcpAccess.length > 0) {
+                logger.error({ groupFolder, stage: stage.name }, 'Command stages cannot declare mcpAccess');
+                return null;
+            }
+            if (stage.mcpAccess && stage.mcpAccess.length > 0) {
+                try {
+                    mcpRegistry ??= loadMcpRegistry();
+                    resolveStageMcpServers(stage.mcpAccess, { registry: mcpRegistry });
+                }
+                catch (err) {
+                    logger.error({ groupFolder, stage: stage.name, err }, 'Invalid mcpAccess configuration');
+                    return null;
+                }
             }
             // Validate fan_in value
             if (stage.fan_in !== undefined &&

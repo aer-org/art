@@ -18,7 +18,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ClaudeEngine } from './engines/claude-engine.js';
-import { CodexEngine } from './engines/codex-engine.js';
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
@@ -238,7 +237,7 @@ function waitForIpcMessage() {
 async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, endOnResult, ephemeralAppend) {
     const provider = containerInput.provider || 'claude';
     const engine = provider === 'codex'
-        ? new CodexEngine()
+        ? new (await import('./engines/codex-engine.js')).CodexEngine()
         : new ClaudeEngine();
     let newSessionId;
     let lastAssistantUuid;

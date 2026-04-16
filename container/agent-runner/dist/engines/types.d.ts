@@ -1,5 +1,17 @@
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 export type AgentProvider = 'claude' | 'codex';
+export interface ExternalMcpServerInput {
+    ref: string;
+    name: string;
+    transport: 'stdio' | 'http';
+    tools: string[];
+    startupTimeoutSec?: number;
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    url?: string;
+    bearerTokenEnvVar?: string;
+}
 export interface EngineContainerInput {
     prompt: string;
     sessionId?: string;
@@ -11,6 +23,7 @@ export interface EngineContainerInput {
     assistantName?: string;
     endOnFirstResult?: boolean;
     ephemeralSystemPrompt?: string;
+    externalMcpServers?: ExternalMcpServerInput[];
 }
 export interface RunTurnInput {
     prompt: string;

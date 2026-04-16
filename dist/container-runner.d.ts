@@ -13,6 +13,7 @@ export declare function prefixLogLines(chunk: string, stageName: string, remaind
     prefixed: string;
     remainder: string;
 };
+import type { ResolvedExternalMcpServer } from './mcp-registry.js';
 import { RegisteredGroup } from './types.js';
 export interface ContainerInput {
     prompt: string;
@@ -31,6 +32,7 @@ export interface ContainerInput {
      * resumed session transcript (which only stores user/assistant turns).
      */
     ephemeralSystemPrompt?: string;
+    externalMcpServers?: ResolvedExternalMcpServer[];
 }
 export interface ContainerOutput {
     status: 'success' | 'error';

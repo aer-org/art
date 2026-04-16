@@ -6,7 +6,9 @@ function summarizeToolInput(name, input) {
         return name;
     switch (name) {
         case 'Bash':
-            return typeof input.command === 'string' ? input.command.slice(0, 80) : name;
+            return typeof input.command === 'string'
+                ? input.command.slice(0, 80)
+                : name;
         case 'Read':
         case 'Write':
         case 'Edit':
@@ -17,6 +19,69 @@ function summarizeToolInput(name, input) {
         default:
             return name;
     }
+}
+function buildAllowedTools(input) {
+    const allowed = [
+        'Bash',
+        'Read',
+        'Write',
+        'Edit',
+        'Glob',
+        'Grep',
+        'WebSearch',
+        'WebFetch',
+        'Task',
+        'TaskOutput',
+        'TaskStop',
+        'TeamCreate',
+        'TeamDelete',
+        'SendMessage',
+        'TodoWrite',
+        'ToolSearch',
+        'Skill',
+        'NotebookEdit',
+        'mcp__aer-art__*',
+    ];
+    for (const server of input.containerInput.externalMcpServers || []) {
+        if (server.tools.length === 0) {
+            allowed.push(`mcp__${server.name}__*`);
+            continue;
+        }
+        for (const tool of server.tools) {
+            allowed.push(`mcp__${server.name}__${tool}`);
+        }
+    }
+    return allowed;
+}
+function buildMcpServers(input) {
+    const servers = {
+        'aer-art': {
+            command: 'node',
+            args: [input.mcpServerPath],
+        },
+    };
+    for (const server of input.containerInput.externalMcpServers || []) {
+        if (server.transport === 'http') {
+            const headers = {};
+            if (server.bearerTokenEnvVar) {
+                const token = process.env[server.bearerTokenEnvVar];
+                if (token)
+                    headers.Authorization = `Bearer ${token}`;
+            }
+            servers[server.name] = {
+                type: 'http',
+                url: server.url || '',
+                headers: Object.keys(headers).length > 0 ? headers : undefined,
+            };
+            continue;
+        }
+        servers[server.name] = {
+            command: server.command || '',
+            args: server.args,
+            env: server.env,
+        };
+    }
+    return servers;
 }
 class MessageStream {
     queue = [];
@@ -103,30 +168,20 @@ export class ClaudeEngine {
                         append: appendParts.join('\n\n'),
                     };
                 })(),
-                allowedTools: [
-                    'Bash',
-                    'Read', 'Write', 'Edit', 'Glob', 'Grep',
-                    'WebSearch', 'WebFetch',
-                    'Task', 'TaskOutput', 'TaskStop',
-                    'TeamCreate', 'TeamDelete', 'SendMessage',
-                    'TodoWrite', 'ToolSearch', 'Skill',
-                    'NotebookEdit',
-                    'mcp__aer-art__*',
-                ],
+                allowedTools: buildAllowedTools(input),
                 env: input.sdkEnv,
                 permissionMode: 'bypassPermissions',
                 allowDangerouslySkipPermissions: true,
                 settingSources: ['project', 'user'],
-                mcpServers: {
-                    'aer-art': {
-                        command: 'node',
-                        args: [input.mcpServerPath],
-                    },
-                },
+                mcpServers: buildMcpServers(input),
                 hooks: input.preCompactHookFactory
                     ? {
                         PreCompact: [
-                            { hooks: [input.preCompactHookFactory(input.containerInput.assistantName)] },
+                            {
+                                hooks: [
+                                    input.preCompactHookFactory(input.containerInput.assistantName),
+                                ],
+                            },
                         ],
                     }
                     : {},
@@ -167,7 +222,9 @@ export class ClaudeEngine {
                                     errorText = block.content;
                                 }
                                 else if (Array.isArray(block.content)) {
-                                    errorText = block.content.map((c) => c.text || '').join('');
+                                    errorText = block.content
+                                        .map((c) => c.text || '')
+                                        .join('');
                                 }
                             }
                             yield {

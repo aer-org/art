@@ -21,7 +21,6 @@ import { HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sd
 import { fileURLToPath } from 'url';
 
 import { ClaudeEngine } from './engines/claude-engine.js';
-import { CodexEngine } from './engines/codex-engine.js';
 import { AgentProvider, EngineContainerInput, NormalizedEvent } from './engines/types.js';
 
 interface ContainerInput extends EngineContainerInput {}
@@ -295,7 +294,7 @@ async function runQuery(
   const provider: AgentProvider = containerInput.provider || 'claude';
   const engine =
     provider === 'codex'
-      ? new CodexEngine()
+      ? new (await import('./engines/codex-engine.js')).CodexEngine()
       : new ClaudeEngine();
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;

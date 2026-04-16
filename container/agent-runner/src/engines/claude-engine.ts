@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 
@@ -8,7 +8,9 @@ function summarizeToolInput(name: string, input: any): string {
   if (!input) return name;
   switch (name) {
     case 'Bash':
-      return typeof input.command === 'string' ? input.command.slice(0, 80) : name;
+      return typeof input.command === 'string'
+        ? input.command.slice(0, 80)
+        : name;
     case 'Read':
     case 'Write':
     case 'Edit':
@@ -19,6 +21,75 @@ function summarizeToolInput(name: string, input: any): string {
     default:
       return name;
   }
+}
+
+function buildAllowedTools(input: RunTurnInput): string[] {
+  const allowed = [
+    'Bash',
+    'Read',
+    'Write',
+    'Edit',
+    'Glob',
+    'Grep',
+    'WebSearch',
+    'WebFetch',
+    'Task',
+    'TaskOutput',
+    'TaskStop',
+    'TeamCreate',
+    'TeamDelete',
+    'SendMessage',
+    'TodoWrite',
+    'ToolSearch',
+    'Skill',
+    'NotebookEdit',
+    'mcp__aer-art__*',
+  ];
+
+  for (const server of input.containerInput.externalMcpServers || []) {
+    if (server.tools.length === 0) {
+      allowed.push(`mcp__${server.name}__*`);
+      continue;
+    }
+    for (const tool of server.tools) {
+      allowed.push(`mcp__${server.name}__${tool}`);
+    }
+  }
+
+  return allowed;
+}
+
+function buildMcpServers(input: RunTurnInput): Record<string, McpServerConfig> {
+  const servers: Record<string, McpServerConfig> = {
+    'aer-art': {
+      command: 'node',
+      args: [input.mcpServerPath],
+    },
+  };
+
+  for (const server of input.containerInput.externalMcpServers || []) {
+    if (server.transport === 'http') {
+      const headers: Record<string, string> = {};
+      if (server.bearerTokenEnvVar) {
+        const token = process.env[server.bearerTokenEnvVar];
+        if (token) headers.Authorization = `Bearer ${token}`;
+      }
+      servers[server.name] = {
+        type: 'http',
+        url: server.url || '',
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+      };
+      continue;
+    }
+
+    servers[server.name] = {
+      command: server.command || '',
+      args: server.args,
+      env: server.env,
+    };
+  }
+
+  return servers;
 }
 
 class MessageStream {
@@ -113,7 +184,9 @@ export class ClaudeEngine implements AgentEngine {
         resume: input.sessionId,
         resumeSessionAt: input.resumeAt,
         systemPrompt: (() => {
-          const appendParts = [globalClaudeMd, input.ephemeralAppend].filter(Boolean) as string[];
+          const appendParts = [globalClaudeMd, input.ephemeralAppend].filter(
+            Boolean,
+          ) as string[];
           if (appendParts.length === 0) return undefined;
           return {
             type: 'preset' as const,
@@ -121,30 +194,22 @@ export class ClaudeEngine implements AgentEngine {
             append: appendParts.join('\n\n'),
           };
         })(),
-        allowedTools: [
-          'Bash',
-          'Read', 'Write', 'Edit', 'Glob', 'Grep',
-          'WebSearch', 'WebFetch',
-          'Task', 'TaskOutput', 'TaskStop',
-          'TeamCreate', 'TeamDelete', 'SendMessage',
-          'TodoWrite', 'ToolSearch', 'Skill',
-          'NotebookEdit',
-          'mcp__aer-art__*',
-        ],
+        allowedTools: buildAllowedTools(input),
         env: input.sdkEnv,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user'],
-        mcpServers: {
-          'aer-art': {
-            command: 'node',
-            args: [input.mcpServerPath],
-          },
-        },
+        mcpServers: buildMcpServers(input),
         hooks: input.preCompactHookFactory
           ? {
               PreCompact: [
-                { hooks: [input.preCompactHookFactory(input.containerInput.assistantName)] },
+                {
+                  hooks: [
+                    input.preCompactHookFactory(
+                      input.containerInput.assistantName,
+                    ),
+                  ],
+                },
               ],
             }
           : {},
@@ -185,7 +250,9 @@ export class ClaudeEngine implements AgentEngine {
                 if (typeof block.content === 'string') {
                   errorText = block.content;
                 } else if (Array.isArray(block.content)) {
-                  errorText = block.content.map((c: any) => c.text || '').join('');
+                  errorText = block.content
+                    .map((c: any) => c.text || '')
+                    .join('');
                 }
               }
               yield {
@@ -214,7 +281,11 @@ export class ClaudeEngine implements AgentEngine {
         message.type === 'system' &&
         (message as { subtype?: string }).subtype === 'task_notification'
       ) {
-        const task = message as { task_id: string; status: string; summary: string };
+        const task = message as {
+          task_id: string;
+          status: string;
+          summary: string;
+        };
         yield {
           type: 'task.notification',
           taskId: task.task_id,
@@ -224,7 +295,8 @@ export class ClaudeEngine implements AgentEngine {
       }
 
       if (message.type === 'result') {
-        const textResult = 'result' in message ? (message as { result?: string }).result : null;
+        const textResult =
+          'result' in message ? (message as { result?: string }).result : null;
         yield { type: 'turn.result', result: textResult || null };
       }
     }

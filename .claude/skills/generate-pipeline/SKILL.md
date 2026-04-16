@@ -42,6 +42,7 @@ interface PipelineStage {
   env?: Record<string, string>; // Environment variables passed to container
   devices?: string[];    // Device passthrough
   exclusive?: string;    // Mutex key — only one stage with same key runs at a time
+  mcpAccess?: string[];  // External MCP registry refs available to this agent stage
   resumeSession?: boolean; // false = fresh session every time. default true = resume previous session
   fan_in?: "all" | "dynamic"; // Default "all". "dynamic" = wait only for activated predecessors
   transitions: PipelineTransition[];
@@ -78,6 +79,39 @@ Both fields are optional:
 - `successMarker` only → match = success, no match = exit code fallback
 - `errorMarker` only → match = immediate failure, no match = exit code fallback
 - Both set → first match wins
+
+#### External MCP access (`mcpAccess`)
+
+Agent stages can opt into external MCP servers by referencing keys from the host-side registry at `~/.config/aer-art/mcp-registry.json`.
+
+```json
+{
+  "pipeline.sqlite.reader": {
+    "name": "pipeline_sqlite_reader",
+    "transport": "http",
+    "url": "http://${ART_HOST_GATEWAY}:4318/mcp-reader",
+    "tools": ["get_batch"]
+  }
+}
+```
+
+```json
+{
+  "name": "fetch-batch",
+  "prompt": "Use the pipeline DB reader MCP to load the next batch.",
+  "mounts": { "project": "ro", "results": "rw" },
+  "mcpAccess": ["pipeline.sqlite.reader"],
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": null, "prompt": "Batch fetched successfully" }
+  ]
+}
+```
+
+Rules:
+- `mcpAccess` is valid only for **agent stages**
+- `mcpAccess` values are **registry refs**, not raw tool names
+- Prefer one ref per isolated capability/server when stage-level access must also hold for Codex
+- If the same backend needs different tool subsets for different stages, prefer separate MCP endpoints such as `/mcp-reader`, `/mcp-examiner`, `/mcp-reviewer`
 
 ---
 
@@ -361,6 +395,8 @@ Agent stage prompts must be **self-contained** — the agent has no memory of pr
 5. **Mention inputs**: what files/data the agent should read first
 6. **Keep it focused**: one clear responsibility per stage
 7. **Validation stages must be adversarial**: test/validation stages must try to break the implementation, not confirm it works. They should be independent of how the code was built — test against the specification, not the implementation. The tester should not see the plan or know the builder's approach.
+8. **When using external MCP tools, describe intent not protocol**: mention which capability the stage should use and when (e.g. "Use get_batch to load the next batch from the pipeline DB"). Do not restate raw HTTP/MCP protocol details in the prompt.
+9. **If a stage gets exactly one MCP tool, naming the tool is enough**. If multiple MCP tools or similar capabilities are present, mention both the server role and the tool intent to avoid ambiguity.
 
 ---
 
@@ -377,25 +413,31 @@ When this skill is invoked:
 
 3. **Design mounts.** Apply least privilege. Use `project:` sub-path overrides where needed (e.g., `project:.git: rw` for git operations).
 
-4. **Wire transitions.** Map the flow between stages. Ensure:
+4. **Decide external MCP access.** If the workflow needs host-side tools or databases:
+   - Add `mcpAccess` only to the stages that need it
+   - Use registry refs from `~/.config/aer-art/mcp-registry.json`
+   - Prefer separate refs/endpoints per stage capability when strong isolation matters
+   - Do not put raw MCP server URLs or transport details in `PIPELINE.json`
+
+5. **Wire transitions.** Map the flow between stages. Ensure:
    - At least one path reaches `next: null` (pipeline termination)
    - Loops have clear exit conditions
    - Error handling where appropriate
    - **Every transition has a `prompt`** describing the condition under which the agent should emit that marker (e.g., "All tests pass and code is ready for review", "Recoverable error — retry with different approach"). Write these as conditions: "when X", "if Y", or declarative descriptions of the trigger scenario.
 
-5. **Choose images** for command stages. Common choices:
+6. **Choose images** for command stages. Common choices:
    - `alpine/git` — git operations
    - `node:22-slim` — Node.js tasks
    - `python:3.12-slim` — Python tasks
    - `nvidia/cuda:12.4.1-devel-ubuntu22.04` — GPU workloads
 
-6. **Write prompts** for agent stages following the guidelines above.
+7. **Write prompts** for agent stages following the guidelines above.
 
-7. **Run the checklist** (below).
+8. **Run the checklist** (below).
 
-8. **Write** `__art__/PIPELINE.json` with 2-space indentation. If the file already exists, ask before overwriting.
+9. **Write** `__art__/PIPELINE.json` with 2-space indentation. If the file already exists, ask before overwriting.
 
-9. **Create mount directories** under `__art__/` for any art-managed keys referenced in mounts (e.g., `mkdir -p __art__/results`).
+10. **Create mount directories** under `__art__/` for any art-managed keys referenced in mounts (e.g., `mkdir -p __art__/results`).
 
 ---
 
@@ -409,6 +451,10 @@ Before writing the JSON, verify ALL of the following:
 - [ ] Command stages have `prompt: ""`, an `image` field, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions (no retry)
 - [ ] Command stages use `successMarker` if success depends on stdout content (otherwise exit code is used)
 - [ ] Agent stages have a non-empty `prompt` and no `command` field
+- [ ] `mcpAccess` appears only on agent stages
+- [ ] Every `mcpAccess` entry is a registry ref, not a raw tool name or URL
+- [ ] Stage-level MCP capabilities follow least privilege (only the stages that need them get them)
+- [ ] If Codex compatibility matters, stage-level MCP isolation is enforced by separate refs/endpoints rather than relying on tool subsets within one shared server
 - [ ] At least one path through the graph reaches `next: null`
 - [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`)
 - [ ] `project:*` overrides are absent when `project` is `null`

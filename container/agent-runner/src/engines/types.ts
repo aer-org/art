@@ -2,6 +2,19 @@ import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 
 export type AgentProvider = 'claude' | 'codex';
 
+export interface ExternalMcpServerInput {
+  ref: string;
+  name: string;
+  transport: 'stdio' | 'http';
+  tools: string[];
+  startupTimeoutSec?: number;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  bearerTokenEnvVar?: string;
+}
+
 export interface EngineContainerInput {
   prompt: string;
   sessionId?: string;
@@ -13,6 +26,7 @@ export interface EngineContainerInput {
   assistantName?: string;
   endOnFirstResult?: boolean;
   ephemeralSystemPrompt?: string;
+  externalMcpServers?: ExternalMcpServerInput[];
 }
 
 export interface RunTurnInput {
@@ -41,7 +55,12 @@ export type NormalizedEvent =
     }
   | { type: 'tool.result'; id: string; isError: boolean; errorText?: string }
   | { type: 'assistant.checkpoint'; messageId?: string }
-  | { type: 'task.notification'; taskId: string; status: string; summary: string }
+  | {
+      type: 'task.notification';
+      taskId: string;
+      status: string;
+      summary: string;
+    }
   | { type: 'turn.result'; result: string | null }
   | { type: 'turn.error'; error: string };
 

@@ -50,6 +50,7 @@ import {
 import { ensureCodexSessionAuth } from './codex-auth.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import type { ResolvedExternalMcpServer } from './mcp-registry.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -73,6 +74,7 @@ export interface ContainerInput {
    * resumed session transcript (which only stores user/assistant turns).
    */
   ephemeralSystemPrompt?: string;
+  externalMcpServers?: ResolvedExternalMcpServer[];
 }
 
 export interface ContainerOutput {
@@ -115,6 +117,53 @@ function getProviderHomeMountPath(
 ): string {
   const homeDir = runAsRoot ? '/root' : '/home/node';
   return `${homeDir}/${getProviderHomeDirName(provider)}`;
+}
+
+function escapeTomlString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function toTomlStringArray(values: string[]): string {
+  return `[${values.map((value) => `"${escapeTomlString(value)}"`).join(', ')}]`;
+}
+
+function getCodexMcpTableName(name: string): string {
+  if (/^[A-Za-z0-9_-]+$/.test(name)) return `mcp_servers.${name}`;
+  return `mcp_servers."${escapeTomlString(name)}"`;
+}
+
+function appendCodexMcpServerConfig(
+  lines: string[],
+  server: ResolvedExternalMcpServer,
+): void {
+  lines.push(`[${getCodexMcpTableName(server.name)}]`);
+  if (server.transport === 'http') {
+    lines.push(`url = "${escapeTomlString(server.url || '')}"`);
+    if (server.bearerTokenEnvVar) {
+      lines.push(
+        `bearer_token_env_var = "${escapeTomlString(server.bearerTokenEnvVar)}"`,
+      );
+    }
+    if (server.startupTimeoutSec) {
+      lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+    }
+  } else {
+    lines.push(`command = "${escapeTomlString(server.command || '')}"`);
+    if (server.args && server.args.length > 0) {
+      lines.push(`args = ${toTomlStringArray(server.args)}`);
+    }
+    if (server.startupTimeoutSec) {
+      lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+    }
+    if (server.env && Object.keys(server.env).length > 0) {
+      lines.push('');
+      lines.push(`[${getCodexMcpTableName(server.name)}.env]`);
+      for (const [key, value] of Object.entries(server.env)) {
+        lines.push(`${key} = "${escapeTomlString(value)}"`);
+      }
+    }
+  }
+  lines.push('');
 }
 
 function buildVolumeMounts(
@@ -169,28 +218,27 @@ function buildVolumeMounts(
     group.folder,
     getProviderHomeDirName(provider),
   );
+  const externalMcpServers = group.containerConfig?.externalMcpServers || [];
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   if (provider === 'claude') {
     const settingsFile = path.join(groupSessionsDir, 'settings.json');
-    if (!fs.existsSync(settingsFile)) {
-      fs.writeFileSync(
-        settingsFile,
-        JSON.stringify(
-          {
-            env: {
-              // Load CLAUDE.md from additional mounted directories
-              CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-              // Enable Claude's memory feature (persists user preferences between sessions)
-              CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-              // Increase max output tokens (default 32000 is too small for complex tasks)
-              CLAUDE_CODE_MAX_OUTPUT_TOKENS: '65536',
-            },
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify(
+        {
+          env: {
+            // Load CLAUDE.md from additional mounted directories
+            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+            // Enable Claude's memory feature (persists user preferences between sessions)
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+            // Increase max output tokens (default 32000 is too small for complex tasks)
+            CLAUDE_CODE_MAX_OUTPUT_TOKENS: '65536',
           },
-          null,
-          2,
-        ) + '\n',
-      );
-    }
+        },
+        null,
+        2,
+      ) + '\n',
+    );
 
     // Sync skills from container/skills/ into each group's .claude/skills/
     const skillsSrc = path.join(getProjectRoot(), 'container', 'skills');
@@ -212,20 +260,19 @@ function buildVolumeMounts(
       if (fs.existsSync(authFile)) fs.rmSync(authFile, { force: true });
     }
     const configFile = path.join(groupSessionsDir, 'config.toml');
-    if (!fs.existsSync(configFile)) {
-      fs.writeFileSync(
-        configFile,
-        [
-          'approval_policy = "never"',
-          'sandbox_mode = "danger-full-access"',
-          '',
-          '[mcp_servers.aer_art]',
-          'command = "node"',
-          'args = ["/tmp/dist/ipc-mcp-stdio.js"]',
-          '',
-        ].join('\n'),
-      );
+    const lines = [
+      'approval_policy = "never"',
+      'sandbox_mode = "danger-full-access"',
+      '',
+      '[mcp_servers.aer_art]',
+      'command = "node"',
+      'args = ["/tmp/dist/ipc-mcp-stdio.js"]',
+      '',
+    ];
+    for (const server of externalMcpServers) {
+      appendCodexMcpServerConfig(lines, server);
     }
+    fs.writeFileSync(configFile, lines.join('\n'));
   }
   mounts.push({
     hostPath: groupSessionsDir,
