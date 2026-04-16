@@ -1699,4 +1699,120 @@ describe('dynamic-fanout stage', () => {
         expect(result).toBe('error');
     }, 15000);
 });
+// ============================================================
+// Group G: Generalized sub-path mounts
+// ============================================================
+describe('generalized sub-path mounts', () => {
+    let group;
+    let groupDir;
+    beforeEach(() => {
+        group = makeTestGroup();
+        groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+        fs.mkdirSync(groupDir, { recursive: true });
+        fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
+        fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
+        stageOutputQueues.clear();
+        vi.clearAllMocks();
+    });
+    afterEach(() => {
+        fs.rmSync(groupDir, { recursive: true, force: true });
+        fs.rmSync(TEST_IPC_BASE, { recursive: true, force: true });
+        fs.rmSync(TEST_GROUPS_BASE, { recursive: true, force: true });
+    });
+    async function runOneStageCapturingMounts(mounts) {
+        const cfg = {
+            stages: [
+                {
+                    name: 'only',
+                    prompt: 'x',
+                    mounts,
+                    transitions: [{ marker: 'DONE', next: null }],
+                },
+            ],
+        };
+        enqueueStageOutput('only', [{ result: '[DONE]' }]);
+        const runner = new PipelineRunner(group, 'test@g.us', cfg, async () => { }, () => { }, groupDir);
+        await runner.run();
+        const { runContainerAgent } = await import('./container-runner.js');
+        const fn = vi.mocked(runContainerAgent);
+        const call = fn.mock.calls[0];
+        const containerConfig = call[0].containerConfig;
+        return containerConfig.internalMounts;
+    }
+    it('mounts a top-level key and its sub-path override', async () => {
+        const internal = await runOneStageCapturingMounts({
+            results: 'ro',
+            'results:generated': 'rw',
+        });
+        const results = internal.find((m) => m.containerPath === '/workspace/results');
+        const sub = internal.find((m) => m.containerPath === '/workspace/results/generated');
+        expect(results).toBeDefined();
+        expect(results.readonly).toBe(true);
+        expect(sub).toBeDefined();
+        expect(sub.readonly).toBe(false);
+        expect(sub.hostPath).toBe(path.join(groupDir, 'results', 'generated'));
+    });
+    it('direct mode: mounts sub-path even when parent key is absent', async () => {
+        const internal = await runOneStageCapturingMounts({
+            'cov_per_section:S-01': 'rw',
+        });
+        const sub = internal.find((m) => m.containerPath === '/workspace/cov_per_section/S-01');
+        expect(sub).toBeDefined();
+        expect(sub.readonly).toBe(false);
+        expect(sub.hostPath).toBe(path.join(groupDir, 'cov_per_section', 'S-01'));
+        // Parent path not mounted
+        expect(internal.find((m) => m.containerPath === '/workspace/cov_per_section')).toBeUndefined();
+    });
+    it('null sub-path shadows with empty dir when parent is mounted', async () => {
+        const internal = await runOneStageCapturingMounts({
+            results: 'rw',
+            'results:secrets': null,
+        });
+        const shadow = internal.find((m) => m.containerPath === '/workspace/results/secrets');
+        expect(shadow).toBeDefined();
+        expect(shadow.readonly).toBe(true);
+        expect(shadow.hostPath).toBe(path.join('/tmp/aer-art-test-data', 'empty'));
+    });
+    it('skips sub-path override when policy matches the parent (no-op)', async () => {
+        const internal = await runOneStageCapturingMounts({
+            results: 'rw',
+            'results:generated': 'rw',
+        });
+        // Parent covers it, no override needed
+        expect(internal.find((m) => m.containerPath === '/workspace/results/generated')).toBeUndefined();
+    });
+    it('rejects invalid sub-paths (..)', async () => {
+        const internal = await runOneStageCapturingMounts({
+            results: 'rw',
+            'results:../escape': 'rw',
+        });
+        expect(internal.find((m) => m.containerPath.includes('escape'))).toBeUndefined();
+    });
+    it('rejects reserved parent keys (ipc, global, extra, conversations)', async () => {
+        const internal = await runOneStageCapturingMounts({
+            'ipc:leak': 'rw',
+            'global:secret': 'rw',
+            'extra:bad': 'rw',
+            'conversations:sneak': 'rw',
+        });
+        expect(internal.find((m) => m.containerPath.includes('/ipc/'))).toBeUndefined();
+        expect(internal.find((m) => m.containerPath.includes('/global/'))).toBeUndefined();
+        expect(internal.find((m) => m.containerPath.includes('/extra/'))).toBeUndefined();
+        expect(internal.find((m) => m.containerPath.includes('/conversations/'))).toBeUndefined();
+    });
+    it('preserves existing project:subpath semantics', async () => {
+        const internal = await runOneStageCapturingMounts({
+            project: 'ro',
+            'project:src/generated': 'rw',
+        });
+        const project = internal.find((m) => m.containerPath === '/workspace/project');
+        expect(project).toBeDefined();
+        expect(project.readonly).toBe(true);
+        const sub = internal.find((m) => m.containerPath === '/workspace/project/src/generated');
+        expect(sub).toBeDefined();
+        expect(sub.readonly).toBe(false);
+        // Host should be projectRoot/src/generated, not groupDir/project/src/generated
+        expect(sub.hostPath).toBe(path.join(path.dirname(groupDir), 'src', 'generated'));
+    });
+});
 //# sourceMappingURL=pipeline-runner.test.js.map

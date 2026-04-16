@@ -187,8 +187,9 @@ Rules:
 | Key | Container path | Notes |
 |-----|---------------|-------|
 | `project` | `/workspace/project/` | User's project root (parent of `__art__/`) |
-| `project:<subdir>` | `/workspace/project/<subdir>/` | Sub-path override (directories only, no files) |
+| `project:<subdir>` | `/workspace/project/<subdir>/` | Sub-path override relative to the project root (directories only) |
 | Any other key | `/workspace/<key>/` | Art-managed directory under `__art__/<key>/` |
+| `<key>:<subdir>` | `/workspace/<key>/<subdir>/` | Sub-path under an art-managed key — override mode when `<key>` is also mounted, direct mode when only the sub-path is listed |
 
 ### Permission values
 
@@ -217,9 +218,10 @@ Stages can mount host directories outside the project via `hostMounts`. Each mou
 
 - If `project` is `null`, all `project:*` overrides must also be `null` or omitted.
 - If `project` is omitted, it defaults to `"ro"`.
-- Reserved keys (cannot use as mount names): `ipc`, `global`, `extra`, `conversations`.
+- Reserved keys (cannot use as mount names, including as sub-path parents): `ipc`, `global`, `extra`, `conversations`.
 - `__art__/` is always shadowed (agents cannot see pipeline config).
-- **Least privilege**: give each stage only what it needs.
+- **Sub-path rules**: relative paths only, no `..` or `.` segments, no leading `/`, directories only.
+- **Direct-mode sub-paths** (`<key>:<sub>` without the parent `<key>` being mounted) are useful for fan-out: each child mounts its own isolated sub-path while the parent remains visible only to stages that mount the top-level key.
 
 ### Least privilege principle
 
@@ -521,8 +523,9 @@ Before writing the JSON, verify ALL of the following:
 - [ ] Stage-level MCP capabilities follow least privilege (only the stages that need them get them)
 - [ ] If Codex compatibility matters, stage-level MCP isolation is enforced by separate refs/endpoints rather than relying on tool subsets within one shared server
 - [ ] At least one path through the graph reaches `next: null`
-- [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`)
+- [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`) — including as sub-path parents (`ipc:x` is invalid)
 - [ ] `project:*` overrides are absent when `project` is `null`
+- [ ] Sub-path mounts (`<key>:<sub>`) use only relative directory paths (no `..`, no leading `/`)
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
 - [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values

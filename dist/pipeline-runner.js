@@ -250,6 +250,20 @@ export class PipelineRunner {
             ? `${this.group.folder}__${this.scopeId}__pipeline_${stageName}`
             : `${this.group.folder}__pipeline_${stageName}`;
     }
+    /**
+     * Sub-paths must be relative, non-empty, and cannot contain ".." segments
+     * or start with a leading slash. Keeps the mount confined under its parent.
+     */
+    isValidSubPath(subPath) {
+        if (!subPath)
+            return false;
+        if (subPath.startsWith('/'))
+            return false;
+        const segments = subPath.split('/');
+        if (segments.some((s) => s === '' || s === '..' || s === '.'))
+            return false;
+        return true;
+    }
     getRunId() {
         return this.runId;
     }
@@ -283,10 +297,12 @@ export class PipelineRunner {
             'extra',
             'conversations',
         ]);
+        const emptyDir = path.join(DATA_DIR, 'empty');
+        fs.mkdirSync(emptyDir, { recursive: true });
         // Stage mounts (e.g. "src": "rw" → /workspace/src)
         for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-            if (key.startsWith('project:'))
-                continue;
+            if (key.includes(':'))
+                continue; // sub-path keys handled below
             if (!policy)
                 continue;
             if (RESERVED_KEYS.has(key)) {
@@ -304,6 +320,7 @@ export class PipelineRunner {
         // Project mount (parent of __art__/)
         const projectPolicy = stageConfig.mounts['project'];
         const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
+        const artDirName = path.basename(this.groupDir);
         if (effectivePolicy) {
             mounts.push({
                 hostPath: path.dirname(this.groupDir),
@@ -311,46 +328,77 @@ export class PipelineRunner {
                 readonly: effectivePolicy === 'ro',
             });
             // Shadow __art__/ with empty dir
-            const emptyDir = path.join(DATA_DIR, 'empty');
-            fs.mkdirSync(emptyDir, { recursive: true });
-            const artDirName = path.basename(this.groupDir);
             mounts.push({
                 hostPath: emptyDir,
                 containerPath: `/workspace/project/${artDirName}`,
                 readonly: true,
             });
-            // Process project:* sub-mount overrides (directory-level only)
-            // File-level bind mounts are not supported because Docker tracks inodes,
-            // and git operations (reset, checkout) replace files with new inodes,
-            // making the bind mount stale.
-            const projectRoot = path.dirname(this.groupDir);
-            for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
-                if (!key.startsWith('project:'))
+        }
+        // Sub-path overrides. Syntax: "<key>:<subpath>" with value ro | rw | null.
+        // File-level bind mounts are not supported (Docker tracks inodes, git
+        // operations replace files with new inodes, making the bind mount stale).
+        for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
+            if (!key.includes(':'))
+                continue;
+            const sepIdx = key.indexOf(':');
+            const parentKey = key.slice(0, sepIdx);
+            const subPath = key.slice(sepIdx + 1);
+            if (!this.isValidSubPath(subPath)) {
+                logger.warn({ key, subPath }, 'Invalid sub-path — skipped');
+                continue;
+            }
+            if (RESERVED_KEYS.has(parentKey) && parentKey !== 'project') {
+                logger.warn({ parentKey, subPath }, `sub-mount parent "${parentKey}" conflicts with reserved /workspace/${parentKey} — skipped`);
+                continue;
+            }
+            let hostBase;
+            let containerBase;
+            let parentEffective;
+            if (parentKey === 'project') {
+                if (!effectivePolicy)
                     continue;
-                const subPath = key.slice('project:'.length);
                 if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
                     continue;
-                const subHostPath = path.join(projectRoot, subPath);
-                const isFile = fs.existsSync(subHostPath) && fs.statSync(subHostPath).isFile();
-                if (isFile) {
-                    logger.warn({ key, subPath }, 'File-level project mount ignored (only directories supported)');
-                    continue;
-                }
-                if (subPolicy === null) {
+                hostBase = path.dirname(this.groupDir);
+                containerBase = '/workspace/project';
+                parentEffective = effectivePolicy;
+            }
+            else {
+                hostBase = path.join(this.groupDir, parentKey);
+                containerBase = `/workspace/${parentKey}`;
+                const pp = stageConfig.mounts[parentKey];
+                parentEffective = pp === 'ro' || pp === 'rw' ? pp : undefined;
+            }
+            const subHostPath = path.join(hostBase, subPath);
+            const isFile = fs.existsSync(subHostPath) && fs.statSync(subHostPath).isFile();
+            if (isFile) {
+                logger.warn({ key, subPath }, 'File-level sub-mount ignored (only directories supported)');
+                continue;
+            }
+            const containerSubPath = `${containerBase}/${subPath}`;
+            if (subPolicy === null) {
+                // Only meaningful when parent is mounted — shadow that subtree.
+                if (parentEffective) {
                     mounts.push({
                         hostPath: emptyDir,
-                        containerPath: `/workspace/project/${subPath}`,
+                        containerPath: containerSubPath,
                         readonly: true,
                     });
                 }
-                else if (subPolicy && subPolicy !== effectivePolicy) {
-                    mounts.push({
-                        hostPath: subHostPath,
-                        containerPath: `/workspace/project/${subPath}`,
-                        readonly: subPolicy === 'ro',
-                    });
-                }
+                continue;
             }
+            if (!subPolicy)
+                continue;
+            if (parentEffective && subPolicy === parentEffective)
+                continue;
+            // Direct or override mount. Create the host dir so the child can
+            // populate it even when the parent is absent.
+            fs.mkdirSync(subHostPath, { recursive: true });
+            mounts.push({
+                hostPath: subHostPath,
+                containerPath: containerSubPath,
+                readonly: subPolicy === 'ro',
+            });
         }
         // Host path mounts (validated against external allowlist)
         if (stageConfig.hostMounts && stageConfig.hostMounts.length > 0) {

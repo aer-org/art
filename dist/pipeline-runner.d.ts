@@ -108,6 +108,11 @@ export declare class PipelineRunner {
      * stage name get distinct IPC / sessions / conversations paths.
      */
     private stageSubFolder;
+    /**
+     * Sub-paths must be relative, non-empty, and cannot contain ".." segments
+     * or start with a leading slash. Keeps the mount confined under its parent.
+     */
+    private isValidSubPath;
     getRunId(): string;
     abort(): Promise<void>;
     /** Send a visually prominent banner to TUI for stage transitions */

@@ -112,9 +112,7 @@ export function loadFanoutTemplate(
   }
 
   if (!Array.isArray(parsed.stages) || parsed.stages.length === 0) {
-    throw new Error(
-      `dynamic-fanout "${stageName}": template has no stages`,
-    );
+    throw new Error(`dynamic-fanout "${stageName}": template has no stages`);
   }
 
   return parsed;

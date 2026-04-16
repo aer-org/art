@@ -71,36 +71,56 @@ Mounts control what each stage can access. Keys are directory names inside `__ar
 
 Omitting a key is equivalent to `null` (hidden).
 
-### Project sub-mounts
+### Sub-path mounts
 
-The `project` key sets the default permission for the entire host project root. You can override specific subdirectories with `project:<path>`:
+Any mount key supports `<key>:<subpath>` overrides that bind a nested directory with a different permission than the parent. Two modes:
+
+**Override mode** — the parent key is also mounted; the sub-mount rebinds a subtree with a different policy:
 
 ```json
 "mounts": {
   "project": "ro",
   "project:src/generated": "rw",
-  "project:build": "rw",
-  "project:secrets": null
+  "project:secrets": null,
+  "results": "ro",
+  "results:draft": "rw"
 }
 ```
 
-This mounts the project root as read-only, but grants write access to `src/generated/` and `build/`, and completely hides `secrets/`.
+`project` mounts the project root as read-only but grants write to `src/generated/` and hides `secrets/`. `results` mounts `<groupDir>/results/` as read-only but makes `draft/` writable.
+
+**Direct mode** — the parent key is NOT in `mounts`; the sub-mount acts as a standalone nested destination. Useful when sibling runners need isolated subdirectories of a shared parent:
+
+```json
+"mounts": {
+  "cov_per_section:S-01": "rw"
+}
+```
+
+This mounts only `<groupDir>/cov_per_section/S-01/` at `/workspace/cov_per_section/S-01/` — the parent `cov_per_section/` is not itself bound.
 
 **Rules:**
 
-- Sub-mount paths are relative to the project root
-- If `project` is `null` (hidden), sub-mounts cannot be enabled
-- If a parent directory is `null`, child sub-mounts cannot be enabled
+- Sub-path values may be `"ro"`, `"rw"`, or `null`
+- `null` shadows with an empty dir (only meaningful when parent is mounted)
+- Sub-paths are directories only (file bind mounts are rejected — Docker inode semantics break on git operations)
+- Sub-paths must be relative, non-empty, and contain no `..` or `.` segments
+- Reserved parent keys (`ipc`, `global`, `extra`, `conversations`) are rejected
+- If the sub-path policy equals the parent policy, no override is added (already covered)
+- For `project:<path>`, the sub-path is relative to the **project root**. For any other `<key>:<path>`, it is relative to `<groupDir>/<key>/`
+- `project:<artDirName>` and deeper are always rejected (the `__art__/` dir is always shadowed)
 
 ### How mounts map to containers
 
-| Mount key         | Container path                                          |
-| ----------------- | ------------------------------------------------------- |
-| `plan`            | `/workspace/plan`                                       |
-| `src`             | `/workspace/src`                                        |
-| `outputs`         | `/workspace/outputs`                                    |
-| `project`         | `/workspace/project`                                    |
-| `project:src/foo` | `/workspace/project/src/foo` (overlay on project mount) |
+| Mount key           | Container path                                              |
+| ------------------- | ----------------------------------------------------------- |
+| `plan`              | `/workspace/plan`                                           |
+| `src`               | `/workspace/src`                                            |
+| `outputs`           | `/workspace/outputs`                                        |
+| `project`           | `/workspace/project`                                        |
+| `project:src/foo`   | `/workspace/project/src/foo` (overlay on project mount)     |
+| `results:draft`     | `/workspace/results/draft` (override nested under `results`) |
+| `cov_per_section:S-01` | `/workspace/cov_per_section/S-01` (direct, parent not mounted) |
 
 The agent's working directory is `/workspace`.
 

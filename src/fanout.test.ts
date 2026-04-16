@@ -59,9 +59,9 @@ describe('parseFanoutPayload', () => {
   });
 
   it('rejects nested object/array values (flat-only)', () => {
-    expect(() =>
-      parseFanoutPayload('[{"x":{"nested":1}}]', 'fan'),
-    ).toThrow(/must be string \| number \| boolean/);
+    expect(() => parseFanoutPayload('[{"x":{"nested":1}}]', 'fan')).toThrow(
+      /must be string \| number \| boolean/,
+    );
     expect(() => parseFanoutPayload('[{"x":[1,2]}]', 'fan')).toThrow(
       /must be string \| number \| boolean/,
     );
@@ -270,9 +270,9 @@ describe('loadFanoutTemplate', () => {
   it('rejects template path that escapes groupDir', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-fanout-'));
     try {
-      expect(() =>
-        loadFanoutTemplate(tmpDir, '../escape.json', 'fan'),
-      ).toThrow(/escapes groupDir/);
+      expect(() => loadFanoutTemplate(tmpDir, '../escape.json', 'fan')).toThrow(
+        /escapes groupDir/,
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -281,9 +281,9 @@ describe('loadFanoutTemplate', () => {
   it('rejects missing template file', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-fanout-'));
     try {
-      expect(() =>
-        loadFanoutTemplate(tmpDir, 'missing.json', 'fan'),
-      ).toThrow(/template file not found/);
+      expect(() => loadFanoutTemplate(tmpDir, 'missing.json', 'fan')).toThrow(
+        /template file not found/,
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
