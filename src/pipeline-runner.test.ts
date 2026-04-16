@@ -143,15 +143,19 @@ vi.mock('./container-runner.js', () => ({
 
       // Return a long-lived promise simulating a running container.
       // Emit outputs with delays so the FSM has time to set pendingResult
-      // between each round.
+      // between each round. Sentinel `__REJECT__` lets tests force a failure.
       return new Promise<{ status: string; result: string | null }>(
-        (resolve) => {
+        (resolve, reject) => {
           (async () => {
             // Wait for FSM to set initial pendingResult
             await delay(30);
 
             if (sequence) {
               for (const entry of sequence) {
+                if (entry.result === '__REJECT__') {
+                  reject(new Error(`forced reject in ${stageName}`));
+                  return;
+                }
                 await onOutput({ status: 'success', result: entry.result });
                 // Give FSM time to process result and set new pendingResult
                 await delay(30);
@@ -393,6 +397,81 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
   it('returns null when no state file exists', () => {
     const loaded = loadPipelineState(tmpDir);
     expect(loaded).toBeNull();
+  });
+
+  it('isolates state files by scopeId', () => {
+    const stateA: PipelineState = {
+      currentStage: 'a1',
+      completedStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    };
+    const stateB: PipelineState = {
+      currentStage: 'b1',
+      completedStages: ['prior'],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    };
+    savePipelineState(tmpDir, stateA, undefined, 'scopeA');
+    savePipelineState(tmpDir, stateB, undefined, 'scopeB');
+
+    expect(loadPipelineState(tmpDir, undefined, 'scopeA')).toEqual(stateA);
+    expect(loadPipelineState(tmpDir, undefined, 'scopeB')).toEqual(stateB);
+    // Top-level state is untouched
+    expect(loadPipelineState(tmpDir)).toBeNull();
+
+    const files = fs.readdirSync(tmpDir).sort();
+    expect(files).toEqual([
+      'PIPELINE_STATE.scopeA.json',
+      'PIPELINE_STATE.scopeB.json',
+    ]);
+  });
+
+  it('combines scopeId and tag in state filename', () => {
+    const state: PipelineState = {
+      currentStage: 's',
+      completedStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    };
+    savePipelineState(tmpDir, state, 'my-tag', 'scope1');
+    expect(
+      fs.existsSync(path.join(tmpDir, 'PIPELINE_STATE.scope1.my-tag.json')),
+    ).toBe(true);
+    expect(loadPipelineState(tmpDir, 'my-tag', 'scope1')).toEqual(state);
+  });
+
+  it('rejects invalid scopeId via PipelineRunner constructor', () => {
+    const group = makeTestGroup();
+    const cfg = makeTwoStagePipelineConfig();
+    expect(
+      () =>
+        new PipelineRunner(
+          group,
+          'jid',
+          cfg,
+          async () => {},
+          () => {},
+          tmpDir,
+          undefined,
+          undefined,
+          'has/slash',
+        ),
+    ).toThrow(/Invalid scopeId/);
+    expect(
+      () =>
+        new PipelineRunner(
+          group,
+          'jid',
+          cfg,
+          async () => {},
+          () => {},
+          tmpDir,
+          undefined,
+          undefined,
+          'x'.repeat(17),
+        ),
+    ).toThrow(/Invalid scopeId/);
   });
 });
 
@@ -1321,6 +1400,130 @@ describe('loadPipelineConfig validation for dynamic features', () => {
     const result = loadPipelineConfig('test', tmpDir);
     expect(result).toBeNull();
   });
+
+  // --- dynamic-fanout kind validation ---
+
+  const validFanoutStage = {
+    name: 'fanout',
+    kind: 'dynamic-fanout' as const,
+    template: 'templates/child.json',
+    inputFrom: 'payload' as const,
+    substitutions: { fields: ['prompt'] },
+    mounts: {},
+    transitions: [{ marker: 'STAGE_COMPLETE', next: null }],
+  };
+
+  it('accepts a minimal dynamic-fanout stage', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({ stages: [validFanoutStage] }),
+    );
+    const result = loadPipelineConfig('test', tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stages[0].kind).toBe('dynamic-fanout');
+  });
+
+  it('rejects dynamic-fanout without template', () => {
+    const { template, ...rest } = validFanoutStage;
+    void template;
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({ stages: [rest] }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects dynamic-fanout with wrong inputFrom', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [{ ...validFanoutStage, inputFrom: 'file' }],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects dynamic-fanout with forbidden agent fields', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [{ ...validFanoutStage, prompt: 'nope' }],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects dynamic-fanout with disallowed substitution field', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            ...validFanoutStage,
+            substitutions: { fields: ['devices'] },
+          },
+        ],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('accepts transitions in substitutions.fields', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            ...validFanoutStage,
+            substitutions: { fields: ['prompt', 'transitions'] },
+          },
+        ],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
+  });
+
+  it('rejects dynamic-fanout with non-positive concurrency', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [{ ...validFanoutStage, concurrency: 0 }],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects dynamic-fanout with unsupported failurePolicy', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [{ ...validFanoutStage, failurePolicy: 'best-effort' }],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects dynamic-fanout with next_dynamic transitions', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            ...validFanoutStage,
+            transitions: [
+              {
+                marker: 'STAGE_COMPLETE',
+                next_dynamic: true,
+                next: ['x'],
+              },
+            ],
+          },
+          { name: 'x', prompt: 'x', mounts: {}, transitions: [] },
+        ],
+      }),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
 });
 
 describe('Dynamic Transition FSM', () => {
@@ -1874,5 +2077,435 @@ describe('savePipelineState with activations/completions', () => {
     expect(loaded).not.toBeNull();
     expect(loaded!.activations).toBeUndefined();
     expect(loaded!.completions).toBeUndefined();
+  });
+});
+
+// ============================================================
+// Group F: dynamic-fanout stage integration
+// ============================================================
+
+describe('dynamic-fanout stage', () => {
+  let group: RegisteredGroup;
+  let groupDir: string;
+
+  function setupIpc(stageNames: string[]) {
+    for (const name of stageNames) {
+      fs.mkdirSync(
+        path.join(TEST_IPC_BASE, `${group.folder}__pipeline_${name}`, 'input'),
+        { recursive: true },
+      );
+    }
+  }
+
+  function setupChildIpc(parentScopeIdPrefix: string[], stageNames: string[]) {
+    // Child runners derive virtual sub-folder using scopeId. We don't know the
+    // exact derived scopeId here, so we just create the root IPC base and let
+    // the runner mkdir inside it.
+    fs.mkdirSync(TEST_IPC_BASE, { recursive: true });
+    fs.mkdirSync(TEST_GROUPS_BASE, { recursive: true });
+    void parentScopeIdPrefix;
+    void stageNames;
+  }
+
+  function writeTemplate(stagesJson: unknown): string {
+    const relPath = 'templates/child.json';
+    const abs = path.join(groupDir, relPath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, JSON.stringify({ stages: stagesJson }));
+    return relPath;
+  }
+
+  beforeEach(() => {
+    group = makeTestGroup();
+    groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
+    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
+    stageOutputQueues.clear();
+    vi.clearAllMocks();
+    delete process.env.ART_FANOUT_DEPTH;
+
+    setupIpc(['producer']);
+    setupChildIpc([group.folder], ['child_build']);
+  });
+
+  afterEach(() => {
+    fs.rmSync(groupDir, { recursive: true, force: true });
+    fs.rmSync(TEST_IPC_BASE, { recursive: true, force: true });
+    fs.rmSync(TEST_GROUPS_BASE, { recursive: true, force: true });
+    delete process.env.ART_FANOUT_DEPTH;
+  });
+
+  function parentConfig(
+    extra: Partial<PipelineConfig['stages'][number]> = {},
+  ): PipelineConfig {
+    return {
+      stages: [
+        {
+          name: 'producer',
+          prompt: 'Produce fanout inputs',
+          mounts: {},
+          transitions: [{ marker: 'PRODUCE_DONE', next: 'fanout' }],
+        },
+        {
+          name: 'fanout',
+          kind: 'dynamic-fanout',
+          template: 'templates/child.json',
+          inputFrom: 'payload',
+          substitutions: { fields: ['prompt'] },
+          mounts: {},
+          transitions: [
+            { marker: 'STAGE_COMPLETE', next: null },
+            { marker: 'STAGE_ERROR', next: null },
+          ],
+          ...extra,
+        },
+      ],
+    };
+  }
+
+  it('spawns one child pipeline per payload element and succeeds when all children succeed', async () => {
+    writeTemplate([
+      {
+        name: 'child_build',
+        prompt: 'Build {{name}}',
+        mounts: {},
+        transitions: [
+          { marker: 'BUILD_DONE', next: null },
+          { marker: 'BUILD_FAIL', next: null },
+        ],
+      },
+    ]);
+
+    const payload = JSON.stringify([{ name: 'alpha' }, { name: 'beta' }]);
+    enqueueStageOutput('producer', [
+      {
+        result: `[PRODUCE_DONE]\n---PAYLOAD_START---\n${payload}\n---PAYLOAD_END---`,
+      },
+    ]);
+    enqueueStageOutput('child_build', [{ result: '[BUILD_DONE]' }]);
+    enqueueStageOutput('child_build', [{ result: '[BUILD_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      parentConfig(),
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    // Each child should have written its own PIPELINE_STATE.<scope>.json
+    const stateFiles = fs
+      .readdirSync(groupDir)
+      .filter((f) => f.startsWith('PIPELINE_STATE.f'));
+    expect(stateFiles).toHaveLength(2);
+  }, 20000);
+
+  it('fails the parent when one child fails (all-success policy) and still waits for siblings', async () => {
+    writeTemplate([
+      {
+        name: 'child_build',
+        prompt: 'Build {{name}}',
+        mounts: {},
+        transitions: [
+          { marker: 'BUILD_DONE', next: null },
+          { marker: 'BUILD_ERROR', next: null },
+        ],
+      },
+    ]);
+
+    const payload = JSON.stringify([
+      { name: 'alpha' },
+      { name: 'beta' },
+      { name: 'gamma' },
+    ]);
+    enqueueStageOutput('producer', [
+      {
+        result: `[PRODUCE_DONE]\n---PAYLOAD_START---\n${payload}\n---PAYLOAD_END---`,
+      },
+    ]);
+    // Child 1 throws (forces child pipeline to 'error'), 2 + 3 succeed
+    enqueueStageOutput('child_build', [{ result: '__REJECT__' }]);
+    enqueueStageOutput('child_build', [{ result: '[BUILD_DONE]' }]);
+    enqueueStageOutput('child_build', [{ result: '[BUILD_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      parentConfig(),
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const result = await runner.run();
+    expect(result).toBe('error');
+    // All three children produced a state file — we waited for all to settle
+    const stateFiles = fs
+      .readdirSync(groupDir)
+      .filter((f) => f.startsWith('PIPELINE_STATE.f'));
+    expect(stateFiles).toHaveLength(3);
+  }, 25000);
+
+  it('rejects a fanout launch when the ART_FANOUT_DEPTH is already at the cap', async () => {
+    writeTemplate([
+      {
+        name: 'child_build',
+        prompt: 'Build',
+        mounts: {},
+        transitions: [{ marker: 'BUILD_DONE', next: null }],
+      },
+    ]);
+
+    process.env.ART_FANOUT_DEPTH = '2'; // MAX_FANOUT_RECURSION_DEPTH = 2
+    const payload = JSON.stringify([{ name: 'a' }]);
+    enqueueStageOutput('producer', [
+      {
+        result: `[PRODUCE_DONE]\n---PAYLOAD_START---\n${payload}\n---PAYLOAD_END---`,
+      },
+    ]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      parentConfig(),
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const result = await runner.run();
+    expect(result).toBe('error');
+  }, 15000);
+
+  it('fails cleanly when preceding stage omits a payload', async () => {
+    writeTemplate([
+      {
+        name: 'child_build',
+        prompt: 'Build',
+        mounts: {},
+        transitions: [{ marker: 'BUILD_DONE', next: null }],
+      },
+    ]);
+
+    enqueueStageOutput('producer', [{ result: '[PRODUCE_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      parentConfig(),
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const result = await runner.run();
+    expect(result).toBe('error');
+  }, 15000);
+
+  it('rejects payload whose elements are not flat objects', async () => {
+    writeTemplate([
+      {
+        name: 'child_build',
+        prompt: 'Build',
+        mounts: {},
+        transitions: [{ marker: 'BUILD_DONE', next: null }],
+      },
+    ]);
+
+    const badPayload = JSON.stringify([{ nested: { x: 1 } }]);
+    enqueueStageOutput('producer', [
+      {
+        result: `[PRODUCE_DONE]\n---PAYLOAD_START---\n${badPayload}\n---PAYLOAD_END---`,
+      },
+    ]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      parentConfig(),
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const result = await runner.run();
+    expect(result).toBe('error');
+  }, 15000);
+});
+
+// ============================================================
+// Group G: Generalized sub-path mounts
+// ============================================================
+
+describe('generalized sub-path mounts', () => {
+  let group: RegisteredGroup;
+  let groupDir: string;
+
+  beforeEach(() => {
+    group = makeTestGroup();
+    groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
+    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
+    stageOutputQueues.clear();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    fs.rmSync(groupDir, { recursive: true, force: true });
+    fs.rmSync(TEST_IPC_BASE, { recursive: true, force: true });
+    fs.rmSync(TEST_GROUPS_BASE, { recursive: true, force: true });
+  });
+
+  async function runOneStageCapturingMounts(
+    mounts: Record<string, 'ro' | 'rw' | null>,
+  ): Promise<
+    Array<{ hostPath: string; containerPath: string; readonly: boolean }>
+  > {
+    const cfg: PipelineConfig = {
+      stages: [
+        {
+          name: 'only',
+          prompt: 'x',
+          mounts,
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    enqueueStageOutput('only', [{ result: '[DONE]' }]);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      cfg,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    await runner.run();
+    const { runContainerAgent } = await import('./container-runner.js');
+    const fn = vi.mocked(runContainerAgent);
+    const call = fn.mock.calls[0];
+    const containerConfig = (
+      call[0] as unknown as {
+        containerConfig: {
+          internalMounts: Array<{
+            hostPath: string;
+            containerPath: string;
+            readonly: boolean;
+          }>;
+        };
+      }
+    ).containerConfig;
+    return containerConfig.internalMounts;
+  }
+
+  it('mounts a top-level key and its sub-path override', async () => {
+    const internal = await runOneStageCapturingMounts({
+      results: 'ro',
+      'results:generated': 'rw',
+    });
+    const results = internal.find(
+      (m) => m.containerPath === '/workspace/results',
+    );
+    const sub = internal.find(
+      (m) => m.containerPath === '/workspace/results/generated',
+    );
+    expect(results).toBeDefined();
+    expect(results!.readonly).toBe(true);
+    expect(sub).toBeDefined();
+    expect(sub!.readonly).toBe(false);
+    expect(sub!.hostPath).toBe(path.join(groupDir, 'results', 'generated'));
+  });
+
+  it('direct mode: mounts sub-path even when parent key is absent', async () => {
+    const internal = await runOneStageCapturingMounts({
+      'cov_per_section:S-01': 'rw',
+    });
+    const sub = internal.find(
+      (m) => m.containerPath === '/workspace/cov_per_section/S-01',
+    );
+    expect(sub).toBeDefined();
+    expect(sub!.readonly).toBe(false);
+    expect(sub!.hostPath).toBe(path.join(groupDir, 'cov_per_section', 'S-01'));
+    // Parent path not mounted
+    expect(
+      internal.find((m) => m.containerPath === '/workspace/cov_per_section'),
+    ).toBeUndefined();
+  });
+
+  it('null sub-path shadows with empty dir when parent is mounted', async () => {
+    const internal = await runOneStageCapturingMounts({
+      results: 'rw',
+      'results:secrets': null,
+    });
+    const shadow = internal.find(
+      (m) => m.containerPath === '/workspace/results/secrets',
+    );
+    expect(shadow).toBeDefined();
+    expect(shadow!.readonly).toBe(true);
+    expect(shadow!.hostPath).toBe(path.join('/tmp/aer-art-test-data', 'empty'));
+  });
+
+  it('skips sub-path override when policy matches the parent (no-op)', async () => {
+    const internal = await runOneStageCapturingMounts({
+      results: 'rw',
+      'results:generated': 'rw',
+    });
+    // Parent covers it, no override needed
+    expect(
+      internal.find((m) => m.containerPath === '/workspace/results/generated'),
+    ).toBeUndefined();
+  });
+
+  it('rejects invalid sub-paths (..)', async () => {
+    const internal = await runOneStageCapturingMounts({
+      results: 'rw',
+      'results:../escape': 'rw',
+    });
+    expect(
+      internal.find((m) => m.containerPath.includes('escape')),
+    ).toBeUndefined();
+  });
+
+  it('rejects reserved parent keys (ipc, global, extra, conversations)', async () => {
+    const internal = await runOneStageCapturingMounts({
+      'ipc:leak': 'rw',
+      'global:secret': 'rw',
+      'extra:bad': 'rw',
+      'conversations:sneak': 'rw',
+    });
+    expect(
+      internal.find((m) => m.containerPath.includes('/ipc/')),
+    ).toBeUndefined();
+    expect(
+      internal.find((m) => m.containerPath.includes('/global/')),
+    ).toBeUndefined();
+    expect(
+      internal.find((m) => m.containerPath.includes('/extra/')),
+    ).toBeUndefined();
+    expect(
+      internal.find((m) => m.containerPath.includes('/conversations/')),
+    ).toBeUndefined();
+  });
+
+  it('preserves existing project:subpath semantics', async () => {
+    const internal = await runOneStageCapturingMounts({
+      project: 'ro',
+      'project:src/generated': 'rw',
+    });
+    const project = internal.find(
+      (m) => m.containerPath === '/workspace/project',
+    );
+    expect(project).toBeDefined();
+    expect(project!.readonly).toBe(true);
+    const sub = internal.find(
+      (m) => m.containerPath === '/workspace/project/src/generated',
+    );
+    expect(sub).toBeDefined();
+    expect(sub!.readonly).toBe(false);
+    // Host should be projectRoot/src/generated, not groupDir/project/src/generated
+    expect(sub!.hostPath).toBe(
+      path.join(path.dirname(groupDir), 'src', 'generated'),
+    );
   });
 });

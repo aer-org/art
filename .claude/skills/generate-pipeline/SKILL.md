@@ -28,6 +28,7 @@ interface AdditionalMount {
 
 interface PipelineStage {
   name: string;          // Unique stage identifier
+  kind?: "agent" | "command" | "dynamic-fanout"; // Explicit stage kind. Inferred if omitted (except for dynamic-fanout which must be explicit)
   prompt: string;        // Agent instructions (must be "" for command stages)
   command?: string;      // Shell command — presence makes this a command stage
   successMarker?: string; // Command mode only: stdout substring that means success → STAGE_COMPLETE
@@ -113,6 +114,70 @@ Rules:
 - Prefer one ref per isolated capability/server when stage-level access must also hold for Codex
 - If the same backend needs different tool subsets for different stages, prefer separate MCP endpoints such as `/mcp-reader`, `/mcp-examiner`, `/mcp-reviewer`
 
+#### Dynamic fan-out (`kind: "dynamic-fanout"`)
+
+A `dynamic-fanout` stage spawns `N` parallel **child pipelines** at runtime, one per element of a JSON array emitted by the preceding stage. No container runs for the fanout stage itself — it is pure host-side orchestration.
+
+```json
+{
+  "name": "producer",
+  "prompt": "List all modules to build. Emit [STAGE_COMPLETE] with a JSON array payload of {\"name\":...} objects.",
+  "mounts": { "project": "ro" },
+  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "per-module-build", "prompt": "Module list produced" }]
+},
+{
+  "name": "per-module-build",
+  "kind": "dynamic-fanout",
+  "template": "templates/build-one.pipeline.json",
+  "inputFrom": "payload",
+  "substitutions": { "fields": ["prompt", "mounts"] },
+  "concurrency": 4,
+  "failurePolicy": "all-success",
+  "mounts": {},
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "aggregate", "prompt": "All child pipelines succeeded" },
+    { "marker": "STAGE_ERROR", "next": null, "prompt": "Any child pipeline failed" }
+  ]
+}
+```
+
+The preceding stage emits a fenced payload:
+
+```
+[STAGE_COMPLETE]
+---PAYLOAD_START---
+[{"name":"module-a","port":8080},{"name":"module-b","port":8081}]
+---PAYLOAD_END---
+```
+
+The child template can reference placeholders from those payload elements:
+
+```json
+// templates/build-one.pipeline.json
+{
+  "stages": [
+    {
+      "name": "child_build",
+      "prompt": "Build {{name}} on port {{port}}",
+      "mounts": { "project": "ro", "src": "rw" },
+      "transitions": [{ "marker": "BUILD_DONE", "next": null, "prompt": "Built {{name}}" }]
+    }
+  ]
+}
+```
+
+Rules:
+- `kind: "dynamic-fanout"` must be **explicit** (never inferred)
+- Preceding stage payload must be a **JSON array of flat objects** (string/number/boolean values only)
+- `template` path is relative to `__art__/` and must stay within it
+- `substitutions.fields` whitelist defaults to none — if substitutions are needed, list them explicitly
+- Allowed substitution fields: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`
+- `failurePolicy` currently supports only `"all-success"` (any child failure fails the parent, all children still complete)
+- `concurrency` caps parallelism. Omit for unbounded
+- Agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, …) are **forbidden** on fanout stages
+- `next_dynamic` transitions are forbidden on fanout stages
+- Maximum nesting depth is **2** (parent → fanout → grandchild-fanout → grandgrandchild-fanout would fail)
+
 ---
 
 ## Mount Reference
@@ -122,8 +187,9 @@ Rules:
 | Key | Container path | Notes |
 |-----|---------------|-------|
 | `project` | `/workspace/project/` | User's project root (parent of `__art__/`) |
-| `project:<subdir>` | `/workspace/project/<subdir>/` | Sub-path override (directories only, no files) |
+| `project:<subdir>` | `/workspace/project/<subdir>/` | Sub-path override relative to the project root (directories only) |
 | Any other key | `/workspace/<key>/` | Art-managed directory under `__art__/<key>/` |
+| `<key>:<subdir>` | `/workspace/<key>/<subdir>/` | Sub-path under an art-managed key — override mode when `<key>` is also mounted, direct mode when only the sub-path is listed |
 
 ### Permission values
 
@@ -152,9 +218,10 @@ Stages can mount host directories outside the project via `hostMounts`. Each mou
 
 - If `project` is `null`, all `project:*` overrides must also be `null` or omitted.
 - If `project` is omitted, it defaults to `"ro"`.
-- Reserved keys (cannot use as mount names): `ipc`, `global`, `extra`, `conversations`.
+- Reserved keys (cannot use as mount names, including as sub-path parents): `ipc`, `global`, `extra`, `conversations`.
 - `__art__/` is always shadowed (agents cannot see pipeline config).
-- **Least privilege**: give each stage only what it needs.
+- **Sub-path rules**: relative paths only, no `..` or `.` segments, no leading `/`, directories only.
+- **Direct-mode sub-paths** (`<key>:<sub>` without the parent `<key>` being mounted) are useful for fan-out: each child mounts its own isolated sub-path while the parent remains visible only to stages that mount the top-level key.
 
 ### Least privilege principle
 
@@ -456,13 +523,20 @@ Before writing the JSON, verify ALL of the following:
 - [ ] Stage-level MCP capabilities follow least privilege (only the stages that need them get them)
 - [ ] If Codex compatibility matters, stage-level MCP isolation is enforced by separate refs/endpoints rather than relying on tool subsets within one shared server
 - [ ] At least one path through the graph reaches `next: null`
-- [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`)
+- [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`) — including as sub-path parents (`ipc:x` is invalid)
 - [ ] `project:*` overrides are absent when `project` is `null`
+- [ ] Sub-path mounts (`<key>:<sub>`) use only relative directory paths (no `..`, no leading `/`)
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
 - [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values
 - [ ] `next_dynamic` transitions have `next` as a non-null array (allowlist)
 - [ ] `next_dynamic` and `retry` are not used on the same transition
+- [ ] `dynamic-fanout` stages set `kind: "dynamic-fanout"` explicitly and declare `template` + `inputFrom: "payload"`
+- [ ] `dynamic-fanout` stages do not declare any agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, `env`, `hostMounts`, `devices`, `gpu`, `runAsRoot`, `privileged`, `exclusive`, `resumeSession`, `successMarker`, `errorMarker`)
+- [ ] Stage immediately before a `dynamic-fanout` emits a fenced payload with a JSON array of flat objects (string/number/boolean values)
+- [ ] Fanout `substitutions.fields` only includes allowed fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`)
+- [ ] Fanout `template` path is relative to `__art__/` and stays inside it
+- [ ] Nesting depth of fanout stages is ≤ 2 (one pipeline may contain at most two nested `dynamic-fanout` levels)
 - [ ] `fan_in: "dynamic"` stages have multiple predecessors (otherwise meaningless)
 - [ ] Dynamic fan-out → fan-in paths use `fan_in: "dynamic"` at convergence points
 - [ ] The JSON is valid and parseable
