@@ -84,6 +84,12 @@ interface StageMarkerResult {
  * The fenced form is preferred for anything non-trivial. Payload must not
  * contain the literal sentinel `---PAYLOAD_END---` (non-greedy match stops
  * at the first occurrence).
+ *
+ * Defensive unwrap: if a fenced payload body is *solely* an inline form of
+ * the same marker (`[MARKER]` or `[MARKER: value]`), the inner value (or
+ * null) is returned. This protects against agents double-wrapping the
+ * marker — emitting inline syntax inside the fence — which would otherwise
+ * leak literal brackets into downstream dispatchers.
  */
 export declare function parseStageMarkers(resultTexts: string[], transitions: PipelineTransition[]): StageMarkerResult;
 export declare class PipelineRunner {

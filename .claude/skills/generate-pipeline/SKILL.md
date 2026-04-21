@@ -141,7 +141,7 @@ A `dynamic-fanout` stage spawns `N` parallel **child pipelines** at runtime, one
 }
 ```
 
-The preceding stage emits a fenced payload:
+The preceding stage emits a fenced payload. Both **agent** and **command** stages can produce the payload — a command stage prints the fenced block to stdout alongside its success marker:
 
 ```
 [STAGE_COMPLETE]
@@ -171,12 +171,13 @@ Rules:
 - Preceding stage payload must be a **JSON array of flat objects** (string/number/boolean values only)
 - `template` path is relative to `__art__/` and must stay within it
 - `substitutions.fields` whitelist defaults to none — if substitutions are needed, list them explicitly
-- Allowed substitution fields: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`
+- Allowed substitution fields: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`, `successMarker`, `errorMarker`
 - `failurePolicy` currently supports only `"all-success"` (any child failure fails the parent, all children still complete)
 - `concurrency` caps parallelism. Omit for unbounded
 - Agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, …) are **forbidden** on fanout stages
 - `next_dynamic` transitions are forbidden on fanout stages
 - Maximum nesting depth is **2** (parent → fanout → grandchild-fanout → grandgrandchild-fanout would fail)
+- A child pipeline whose terminal `next: null` transition fires on an ERROR marker ends with `lastResult: 'error'`, which counts as a failure for the parent fanout's `all-success` policy. Route error markers to `null` only when you actually want that child flagged as failed.
 
 ---
 
@@ -533,8 +534,9 @@ Before writing the JSON, verify ALL of the following:
 - [ ] `next_dynamic` and `retry` are not used on the same transition
 - [ ] `dynamic-fanout` stages set `kind: "dynamic-fanout"` explicitly and declare `template` + `inputFrom: "payload"`
 - [ ] `dynamic-fanout` stages do not declare any agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, `env`, `hostMounts`, `devices`, `gpu`, `runAsRoot`, `privileged`, `exclusive`, `resumeSession`, `successMarker`, `errorMarker`)
-- [ ] Stage immediately before a `dynamic-fanout` emits a fenced payload with a JSON array of flat objects (string/number/boolean values)
-- [ ] Fanout `substitutions.fields` only includes allowed fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`)
+- [ ] Stage immediately before a `dynamic-fanout` emits a fenced payload with a JSON array of flat objects (string/number/boolean values) — agent or command stage
+- [ ] Fanout `substitutions.fields` only includes allowed fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`, `successMarker`, `errorMarker`)
+- [ ] Child pipeline terminal `next: null` on an ERROR marker is intended — such a child reports as failed to the parent fanout
 - [ ] Fanout `template` path is relative to `__art__/` and stays inside it
 - [ ] Nesting depth of fanout stages is ≤ 2 (one pipeline may contain at most two nested `dynamic-fanout` levels)
 - [ ] `fan_in: "dynamic"` stages have multiple predecessors (otherwise meaningless)
