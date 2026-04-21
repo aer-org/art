@@ -135,6 +135,12 @@ export function loadPipelineState(groupDir, tag, scopeId) {
  * The fenced form is preferred for anything non-trivial. Payload must not
  * contain the literal sentinel `---PAYLOAD_END---` (non-greedy match stops
  * at the first occurrence).
+ *
+ * Defensive unwrap: if a fenced payload body is *solely* an inline form of
+ * the same marker (`[MARKER]` or `[MARKER: value]`), the inner value (or
+ * null) is returned. This protects against agents double-wrapping the
+ * marker — emitting inline syntax inside the fence — which would otherwise
+ * leak literal brackets into downstream dispatchers.
  */
 export function parseStageMarkers(resultTexts, transitions) {
     const combined = resultTexts.join('\n');
@@ -144,7 +150,13 @@ export function parseStageMarkers(resultTexts, transitions) {
         const fencedRegex = new RegExp(`\\[${markerName}\\][ \\t]*\\r?\\n[ \\t]*---PAYLOAD_START---[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*---PAYLOAD_END---`);
         const fencedMatch = fencedRegex.exec(combined);
         if (fencedMatch) {
-            return { matched: transition, payload: fencedMatch[1] };
+            const payload = fencedMatch[1];
+            const unwrapRegex = new RegExp(`^\\[${markerName}(?::\\s*(.+?))?\\]$`);
+            const unwrap = unwrapRegex.exec(payload.trim());
+            if (unwrap) {
+                return { matched: transition, payload: unwrap[1] ?? null };
+            }
+            return { matched: transition, payload };
         }
         // Inline / no payload: [MARKER] or [MARKER: payload]
         const regex = new RegExp(`\\[${markerName}(?::\\s*(.+?))?\\]`);

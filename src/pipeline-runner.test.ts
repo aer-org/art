@@ -321,6 +321,59 @@ describe('parseStageMarkers', () => {
     const result = parseStageMarkers(['[ERROR: plain inline]'], transitions);
     expect(result.payload).toBe('plain inline');
   });
+
+  it('unwraps fenced payload that is solely a same-marker inline form', () => {
+    const text = [
+      '[ERROR]',
+      '---PAYLOAD_START---',
+      '[ERROR: section_testplan]',
+      '---PAYLOAD_END---',
+    ].join('\n');
+    const result = parseStageMarkers([text], transitions);
+    expect(result.matched!.marker).toBe('ERROR');
+    expect(result.payload).toBe('section_testplan');
+  });
+
+  it('unwraps fenced payload that is solely a bare same-marker', () => {
+    const text = [
+      '[ERROR]',
+      '---PAYLOAD_START---',
+      '[ERROR]',
+      '---PAYLOAD_END---',
+    ].join('\n');
+    const result = parseStageMarkers([text], transitions);
+    expect(result.matched!.marker).toBe('ERROR');
+    expect(result.payload).toBeNull();
+  });
+
+  it('does not unwrap when fenced payload only contains marker-like text mid-body', () => {
+    const text = [
+      '[ERROR]',
+      '---PAYLOAD_START---',
+      'prefix [ERROR: x] suffix',
+      '---PAYLOAD_END---',
+    ].join('\n');
+    const result = parseStageMarkers([text], transitions);
+    expect(result.payload).toBe('prefix [ERROR: x] suffix');
+  });
+
+  it('does not unwrap when fenced payload is a different marker', () => {
+    // ERROR listed first so its fenced form wins before STAGE_COMPLETE's
+    // inline regex can match the marker-like text inside the payload.
+    const errorFirst: PipelineTransition[] = [
+      { marker: 'ERROR', retry: true },
+      { marker: 'STAGE_COMPLETE', next: 'verify' },
+    ];
+    const text = [
+      '[ERROR]',
+      '---PAYLOAD_START---',
+      '[STAGE_COMPLETE: nope]',
+      '---PAYLOAD_END---',
+    ].join('\n');
+    const result = parseStageMarkers([text], errorFirst);
+    expect(result.matched!.marker).toBe('ERROR');
+    expect(result.payload).toBe('[STAGE_COMPLETE: nope]');
+  });
 });
 
 // generateRunId tests are in run-manifest.test.ts
