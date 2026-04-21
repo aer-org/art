@@ -285,9 +285,7 @@ export function parseStageMarkers(
     const fencedMatch = fencedRegex.exec(combined);
     if (fencedMatch) {
       const payload = fencedMatch[1];
-      const unwrapRegex = new RegExp(
-        `^\\[${markerName}(?::\\s*(.+?))?\\]$`,
-      );
+      const unwrapRegex = new RegExp(`^\\[${markerName}(?::\\s*(.+?))?\\]$`);
       const unwrap = unwrapRegex.exec(payload.trim());
       if (unwrap) {
         return { matched: transition, payload: unwrap[1] ?? null };
