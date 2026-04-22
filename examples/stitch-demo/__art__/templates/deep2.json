@@ -8,7 +8,7 @@
       "transitions": [
         {
           "marker": "PARALLEL",
-          "next": "lane",
+          "template": "lane",
           "count": 3,
           "prompt": "Parallel-stitch 3 lanes of the lane template; a synthesized barrier waits for all"
         }

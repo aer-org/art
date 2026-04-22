@@ -72,12 +72,12 @@
         },
         {
           "marker": "STAGE_KEEP",
-          "next": "experiment",
+          "template": "experiment",
           "prompt": "Improvement — keep commit and run another experiment (stitches a fresh experiment template downstream)"
         },
         {
           "marker": "STAGE_RESET",
-          "next": "revert-and-continue",
+          "template": "revert-and-continue",
           "prompt": "Regression or crash — revert commit and try again (stitches revert + experiment downstream)"
         }
       ]

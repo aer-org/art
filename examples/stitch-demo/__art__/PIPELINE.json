@@ -7,7 +7,7 @@
       "transitions": [
         {
           "marker": "GO",
-          "next": "demo",
+          "template": "demo",
           "prompt": "Begin — stitches the top-level demo template"
         }
       ]

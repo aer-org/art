@@ -264,7 +264,7 @@ describe('validatePipelineTemplate', () => {
             {
               name: 's1',
               mounts: {},
-              transitions: [{ marker: 'OK', next: 'tpl2', count: 0 }],
+              transitions: [{ marker: 'OK', template: 'tpl2', count: 0 }],
             },
           ],
         },
@@ -273,7 +273,7 @@ describe('validatePipelineTemplate', () => {
     ).toThrow(/positive integer/);
   });
 
-  it('accepts positive integer count', () => {
+  it('rejects count without template', () => {
     expect(() =>
       validatePipelineTemplate(
         {
@@ -281,7 +281,59 @@ describe('validatePipelineTemplate', () => {
             {
               name: 's1',
               mounts: {},
-              transitions: [{ marker: 'OK', next: 'tpl2', count: 3 }],
+              transitions: [{ marker: 'OK', next: null, count: 3 }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/count.*requires.*template/);
+  });
+
+  it('rejects both next (string) and template', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            { name: 's1', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
+            {
+              name: 's2',
+              mounts: {},
+              transitions: [{ marker: 'OK', next: 's1', template: 'tpl2' }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/either "next" or "template"/);
+  });
+
+  it('accepts template + count (parallel stitch)', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [{ marker: 'OK', template: 'tpl2', count: 3 }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts template without count (single stitch)', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [{ marker: 'OK', template: 'tpl2' }],
             },
           ],
         },
@@ -364,9 +416,9 @@ describe('validatePipelineTemplate', () => {
     ).not.toThrow();
   });
 
-  it('ignores external refs (deferred to stitch-time)', () => {
-    // A template may reference an external target (base pipeline or another
-    // template). Validity is checked at stitch-time; template-load must accept.
+  it('rejects external next references (scope-local only)', () => {
+    // Templates may not reach outside their own stages via `next`. Use
+    // `template: "<name>"` for cross-template handoffs.
     expect(() =>
       validatePipelineTemplate(
         {
@@ -380,7 +432,7 @@ describe('validatePipelineTemplate', () => {
         },
         'tpl',
       ),
-    ).not.toThrow();
+    ).toThrow(/must reference a stage inside this template/);
   });
 });
 

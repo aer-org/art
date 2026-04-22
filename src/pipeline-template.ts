@@ -11,8 +11,9 @@
  * Semantics (Option 1 — template owns downstream):
  *   - A template stage with `next: null` terminates the pipeline. There is no
  *     implicit re-wire to a fallback target outside the template.
- *   - A template may reference stages in the base pipeline OR other templates
- *     via `next`; validity of external refs is deferred to stitch-time.
+ *   - `next` is scope-local: it must name a stage inside this template. To
+ *     hand control off to another template, use `template: "<name>"` — that
+ *     gets stitched at runtime. Cross-template node references are rejected.
  */
 import fs from 'fs';
 import path from 'path';
@@ -107,6 +108,17 @@ export function validatePipelineTemplate(
     stageNames.add(stage.name);
   }
 
+  // Second pass: scope-check transitions now that all stage names are known.
+  for (const stage of stages) {
+    for (const t of stage.transitions) {
+      if (typeof t.next === 'string' && !stageNames.has(t.next)) {
+        throw new Error(
+          `Template "${name}": stage "${stage.name}" transition "${t.marker}" — "next" must reference a stage inside this template (got "${t.next}"; use "template" for cross-template handoffs)`,
+        );
+      }
+    }
+  }
+
   let entry: string;
   if (obj.entry !== undefined) {
     if (typeof obj.entry !== 'string' || obj.entry.length === 0) {
@@ -193,11 +205,30 @@ function validateTransitionShape(
       `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next" must be a string or null (authored arrays are not allowed)`,
     );
   }
+  const hasNextString = typeof t.next === 'string';
+  const hasTemplate = t.template !== undefined;
+  if (hasNextString && hasTemplate) {
+    throw new Error(
+      `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — must have either "next" or "template", not both`,
+    );
+  }
+  if (hasTemplate) {
+    if (typeof t.template !== 'string' || t.template.length === 0) {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "template" must be a non-empty string`,
+      );
+    }
+  }
   if (tAny.count !== undefined) {
     const c = tAny.count;
     if (typeof c !== 'number' || !Number.isInteger(c) || c < 1) {
       throw new Error(
         `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "count" must be a positive integer`,
+      );
+    }
+    if (!hasTemplate) {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "count" requires "template"`,
       );
     }
   }

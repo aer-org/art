@@ -34,8 +34,8 @@ function baseConfig(): PipelineConfig {
         name: 'review',
         mounts: {},
         transitions: [
-          { marker: 'STAGE_KEEP', next: 'continue-tpl' },
-          { marker: 'STAGE_RESET', next: 'revert-tpl' },
+          { marker: 'STAGE_KEEP', template: 'continue-tpl' },
+          { marker: 'STAGE_RESET', template: 'revert-tpl' },
         ],
       },
       {
@@ -100,8 +100,10 @@ describe('stitchSingle', () => {
       (s) => s.name === 'review',
     )!;
     expect(review.transitions[1].next).toBe('review__revert-tpl0__checkout');
+    // Host transition's `template` is cleared after stitching (consumed).
+    expect(review.transitions[1].template).toBeUndefined();
     // untouched transitions preserved
-    expect(review.transitions[0].next).toBe('continue-tpl');
+    expect(review.transitions[0].template).toBe('continue-tpl');
 
     // inserted stages appended
     const stageNames = result.updatedConfig.stages.map((s) => s.name);
@@ -129,30 +131,6 @@ describe('stitchSingle', () => {
     )!;
     // null-next stays null in single stitch (Option 1: template terminates)
     expect(rebuild.transitions[0].next).toBeNull();
-  });
-
-  it('passes through external refs unchanged', () => {
-    const tpl: PipelineTemplate = {
-      name: 't',
-      entry: 'a',
-      stages: [
-        {
-          name: 'a',
-          mounts: {},
-          transitions: [{ marker: 'OK', next: 'finalize' }], // external
-        },
-      ],
-    };
-    const result = stitchSingle({
-      config: baseConfig(),
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: tpl,
-    });
-    const a = result.updatedConfig.stages.find(
-      (s) => s.name === 'review__t0__a',
-    )!;
-    expect(a.transitions[0].next).toBe('finalize');
   });
 
   it('applies substitutions to allowed fields', () => {
@@ -231,29 +209,6 @@ describe('stitchSingle', () => {
     ).toThrow(/Duplicate/);
   });
 
-  it('rejects cycles induced by external backrefs', () => {
-    // template points back to `start`, which can reach `review`. This creates
-    // a cycle `review -> template stage -> start -> review`.
-    const tpl: PipelineTemplate = {
-      name: 'loopy',
-      entry: 'a',
-      stages: [
-        {
-          name: 'a',
-          mounts: {},
-          transitions: [{ marker: 'OK', next: 'start' }],
-        },
-      ],
-    };
-    expect(() =>
-      stitchSingle({
-        config: baseConfig(),
-        originStage: 'review',
-        originTransitionIdx: 1,
-        template: tpl,
-      }),
-    ).toThrow(/Cycle/);
-  });
 });
 
 describe('stitchParallel', () => {

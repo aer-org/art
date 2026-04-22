@@ -2,6 +2,7 @@ import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
     marker: string;
     next?: string | string[] | null;
+    template?: string;
     count?: number;
     prompt?: string;
 }

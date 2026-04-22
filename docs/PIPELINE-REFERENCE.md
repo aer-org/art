@@ -2,7 +2,7 @@
 
 This document describes every configurable field in `__art__/PIPELINE.json`.
 
-> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions now use `{ marker, next, count? }` where `next` can reference a stage OR a pipeline template (see [Templates & Stitch](#templates--stitch)). Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
+> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions are now `{ marker, next?, template?, count? }`. `next` is a scope-local stage name (or `null` to end the pipeline); `template` names a pipeline template to stitch at runtime (see [Templates & Stitch](#templates--stitch)). `next` and `template` are mutually exclusive. Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
 
 ## Top-Level
 
@@ -233,7 +233,7 @@ In `PIPELINE.json`, reference the registry keys:
 
 ## Templates & Stitch
 
-A **template** is a reusable sub-graph stored at `__art__/templates/<name>.json`. When a transition's `next` names a template instead of an existing stage, the template is **stitched** into the running pipeline at runtime: its stages are cloned with unique names and inserted downstream of the host stage. The host's transition is rewritten to point at the renamed entry stage of the template.
+A **template** is a reusable sub-graph stored at `__art__/templates/<name>.json`. When a transition carries `template: "<name>"`, the template is **stitched** into the running pipeline at runtime: its stages are cloned with unique names and inserted downstream of the host stage. The host's transition is rewritten to point at the renamed entry stage of the template.
 
 ### Template file
 
@@ -246,23 +246,24 @@ A **template** is a reusable sub-graph stored at `__art__/templates/<name>.json`
     { "name": "test",    "command": "...", "transitions": [{ "marker": "OK", "next": "review" }] },
     { "name": "review",  "prompt": "...", "mounts": {...}, "transitions": [
       { "marker": "STAGE_DONE", "next": null },
-      { "marker": "STAGE_KEEP", "next": "experiment" }    // self-reference — stitched again at runtime
+      { "marker": "STAGE_KEEP", "template": "experiment" }   // re-stitch self at runtime
     ] }
   ]
 }
 ```
 
-Internal transitions must be acyclic. External references (base-pipeline stage names or other template names) are valid — they are resolved at stitch-time.
+Inside a template, `next` is scope-local — it must name a stage defined in the same template file (cycles are rejected). To hand control off to another template or re-stitch the current one, use `template: "<name>"`. Cross-template node references via `next` are rejected at load time — `template` is the only way to cross a template boundary.
 
 ### Transition forms
 
 ```jsonc
-{ "marker": "OK",  "next": "finalize" }                   // → existing stage
-{ "marker": "OK",  "next": "experiment" }                  // → template (stitched once)
-{ "marker": "OK",  "next": "review",  "count": 4 }         // → template stitched 4× in parallel + synthesized barrier
+{ "marker": "OK",  "next": "finalize" }                        // → stage in this scope
+{ "marker": "OK",  "next": null }                              // → pipeline end
+{ "marker": "OK",  "template": "experiment" }                   // → stitch template once
+{ "marker": "OK",  "template": "lane",       "count": 4 }       // → stitch 4× in parallel + barrier
 ```
 
-`count` is valid only when `next` resolves to a template name. With `count > 1`, `N` lane copies are inserted in parallel and a synthesized fan-in **barrier** (stage name `<origin>__<template>__barrier`) converges them. The barrier terminates with `next: null` (parallel block is terminal under **Option 1 semantics** — the template owns the flow beyond the host stage).
+`next` and `template` are mutually exclusive. `count` requires `template`. With `count > 1`, `N` lane copies are inserted in parallel and a synthesized fan-in **barrier** (stage name `<origin>__<template>__barrier`) converges them. The barrier terminates with `next: null` (parallel block is terminal under **Option 1 semantics** — the template owns the flow beyond the host stage). Omitting `count` (or setting `count: 1`) performs a single stitch.
 
 ### Stitched stage naming
 
@@ -303,16 +304,19 @@ Transitions define how stages connect. The agent signals stage completion by emi
 "transitions": [
   { "marker": "STAGE_COMPLETE", "next": "test", "prompt": "Work completed successfully" },
   { "marker": "STAGE_PANIC",    "next": null,   "prompt": "Unrecoverable error — end pipeline" },
-  { "marker": "STAGE_CLEANUP",  "next": "cleanup-template", "prompt": "Stitch cleanup template" }
+  { "marker": "STAGE_CLEANUP",  "template": "cleanup-template", "prompt": "Stitch cleanup template" }
 ]
 ```
 
-| Field    | Type             | Required | Default | Description                                                                                                          |
-| -------- | ---------------- | -------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `marker` | `string`         | Yes      | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). Agent wraps it in brackets: `[STAGE_COMPLETE]`.              |
-| `next`   | `string \| null` | No       | `null`  | Stage name OR template name. `null` = pipeline ends. Unknown names are resolved as template names at stitch-time.    |
-| `count`  | `number` (≥1)    | No       | `1`     | Only valid when `next` is a template name. Inserts `N` lane copies + barrier (parallel stitch).                      |
-| `prompt` | `string`         | No       | —       | Description shown to the agent explaining when to use this marker.                                                   |
+Exactly one of `next` (string), `next: null`, or `template` must be present per transition.
+
+| Field      | Type             | Required      | Default | Description                                                                                                          |
+| ---------- | ---------------- | ------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `marker`   | `string`         | Yes           | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). Agent wraps it in brackets: `[STAGE_COMPLETE]`.              |
+| `next`     | `string \| null` | No (see note) | `null`  | Scope-local stage name, or `null` to end the pipeline. Inside a template, must name a stage in the same template.   |
+| `template` | `string`         | No (see note) | —       | Template name to stitch at runtime. Mutually exclusive with a non-null `next`.                                       |
+| `count`    | `number` (≥1)    | No            | `1`     | Valid only with `template`. Inserts `N` lane copies + barrier (parallel stitch).                                     |
+| `prompt`   | `string`         | No            | —       | Description shown to the agent explaining when to use this marker.                                                   |
 
 **How matching works:** The FSM scans agent output for `[MARKER_NAME]` or `[MARKER_NAME: payload]`. The first transition whose marker matches fires. If no transition matches, the runner sends a retry hint and keeps the container running. Parse-miss retry is unlimited (agents get to try again with feedback).
 

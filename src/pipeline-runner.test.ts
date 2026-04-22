@@ -918,7 +918,7 @@ describe('Stitch integration', () => {
           name: 'start',
           prompt: 'kick off',
           mounts: {},
-          transitions: [{ marker: 'GO', next: templateName }],
+          transitions: [{ marker: 'GO', template: templateName }],
         },
       ],
     };
@@ -964,7 +964,7 @@ describe('Stitch integration', () => {
             name: 'intro',
             prompt: 'go deeper',
             mounts: {},
-            transitions: [{ marker: 'DEEPER', next: 'deep1' }],
+            transitions: [{ marker: 'DEEPER', template: 'deep1' }],
           },
         ],
       }),
@@ -978,7 +978,7 @@ describe('Stitch integration', () => {
             name: 'work',
             prompt: 'go deeper',
             mounts: {},
-            transitions: [{ marker: 'DEEPER', next: 'deep2' }],
+            transitions: [{ marker: 'DEEPER', template: 'deep2' }],
           },
         ],
       }),
@@ -992,7 +992,7 @@ describe('Stitch integration', () => {
             name: 'work',
             prompt: 'fan out',
             mounts: {},
-            transitions: [{ marker: 'PARALLEL', next: 'lane', count: 3 }],
+            transitions: [{ marker: 'PARALLEL', template: 'lane', count: 3 }],
           },
         ],
       }),
@@ -1018,7 +1018,7 @@ describe('Stitch integration', () => {
           name: 'start',
           prompt: 'kick off',
           mounts: {},
-          transitions: [{ marker: 'GO', next: 'demo' }],
+          transitions: [{ marker: 'GO', template: 'demo' }],
         },
       ],
     };
@@ -1379,7 +1379,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('rejects count on a transition with null next', () => {
+  it('rejects count without template', () => {
     const config = {
       stages: [
         {
@@ -1404,7 +1404,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
           name: 'a',
           prompt: 'A',
           mounts: {},
-          transitions: [{ marker: 'OK', next: 'my-tpl', count: 0 }],
+          transitions: [{ marker: 'OK', template: 'my-tpl', count: 0 }],
         },
       ],
     };
@@ -1415,14 +1415,68 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('accepts a transition whose next is an unknown name (resolved as template at runtime)', () => {
+  it('rejects next pointing to a non-existent stage', () => {
     const config = {
       stages: [
         {
           name: 'a',
           prompt: 'A',
           mounts: {},
-          transitions: [{ marker: 'OK', next: 'my-tpl' }],
+          transitions: [{ marker: 'OK', next: 'nowhere' }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects both next (string) and template present', () => {
+    const config = {
+      stages: [
+        {
+          name: 'a',
+          prompt: 'A',
+          mounts: {},
+          transitions: [{ marker: 'OK', next: 'a', template: 'my-tpl' }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects non-string template', () => {
+    const config = {
+      stages: [
+        {
+          name: 'a',
+          prompt: 'A',
+          mounts: {},
+          transitions: [{ marker: 'OK', template: 42 }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('accepts a transition with template (single stitch, no count)', () => {
+    const config = {
+      stages: [
+        {
+          name: 'a',
+          prompt: 'A',
+          mounts: {},
+          transitions: [{ marker: 'OK', template: 'my-tpl' }],
         },
       ],
     };
@@ -1433,14 +1487,14 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
   });
 
-  it('accepts a transition with count on a template-name target', () => {
+  it('accepts a transition with template + count (parallel stitch)', () => {
     const config = {
       stages: [
         {
           name: 'a',
           prompt: 'A',
           mounts: {},
-          transitions: [{ marker: 'OK', next: 'my-tpl', count: 3 }],
+          transitions: [{ marker: 'OK', template: 'my-tpl', count: 3 }],
         },
       ],
     };

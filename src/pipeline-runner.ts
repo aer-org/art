@@ -48,8 +48,9 @@ function resolveProvider(): 'claude' | 'codex' {
 
 export interface PipelineTransition {
   marker: string; // Marker name (e.g. "STAGE_COMPLETE")
-  next?: string | string[] | null; // Target stage or template name (null = pipeline end). Arrays are runtime-only (parallel-stitch barrier); users author strings.
-  count?: number; // When `next` is a template name: insert N copies in parallel with a synthesized fan-in barrier.
+  next?: string | string[] | null; // Stage name (scope-local) or null (pipeline end). Arrays are runtime-only (parallel-stitch barrier fan-out).
+  template?: string; // Template name to stitch at runtime. Mutually exclusive with non-null `next`.
+  count?: number; // With `template`: insert N copies in parallel + synthesized fan-in barrier. Requires `template`.
   prompt?: string; // Description for the agent on when to use this marker
 }
 
@@ -1547,17 +1548,19 @@ PAYLOAD FORMATS:
       };
     }
 
-    // Regular transition — move to next stage or end pipeline. If `next` is
-    // not an existing stage name, treat it as a template name and stitch it
-    // into the graph in place.
+    // Regular transition — move to next stage or end pipeline. When
+    // `template` is set, stitch the template into the graph in place and
+    // route to its entry/barrier. Otherwise `next` is either a scope-local
+    // stage name, null (pipeline end), or a runtime-injected string[] from
+    // a parallel-stitch barrier fan-out.
     let targetName: string | string[] | null = matched.next ?? null;
-    if (typeof matched.next === 'string' && !stagesByName.has(matched.next)) {
+    if (matched.template) {
       try {
         const transitionIdx = stageConfig.transitions.indexOf(matched);
         const stitched = this.performStitch(
           stageConfig,
           transitionIdx,
-          matched.next,
+          matched.template,
           matched.count,
         );
         for (const s of stitched.insertedStages) {
@@ -1565,15 +1568,15 @@ PAYLOAD FORMATS:
         }
         targetName = stitched.newNext;
         await this.notifyBanner(
-          `🧵 Stitched template "${matched.next}" after ${currentStageName} — inserted ${stitched.insertedStages.length} stage(s)`,
+          `🧵 Stitched template "${matched.template}" after ${currentStageName} — inserted ${stitched.insertedStages.length} stage(s)`,
         );
       } catch (err) {
         logger.error(
-          { stage: currentStageName, template: matched.next, err },
+          { stage: currentStageName, template: matched.template, err },
           'Stitch failed',
         );
         await this.notifyBanner(
-          `❌ ${currentStageName}: stitch of "${matched.next}" failed — ${(err as Error).message}`,
+          `❌ ${currentStageName}: stitch of "${matched.template}" failed — ${(err as Error).message}`,
         );
         return {
           stageResolved: true,
@@ -2299,6 +2302,24 @@ export function loadPipelineConfig(
           );
           return null;
         }
+        const hasNextString = typeof t.next === 'string';
+        const hasTemplate = t.template !== undefined;
+        if (hasNextString && hasTemplate) {
+          logger.error(
+            { groupFolder, stage: stage.name, marker: t.marker },
+            'Transition must have either "next" or "template", not both',
+          );
+          return null;
+        }
+        if (hasTemplate) {
+          if (typeof t.template !== 'string' || t.template.length === 0) {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition "template" must be a non-empty string',
+            );
+            return null;
+          }
+        }
         if (t.count !== undefined) {
           if (!Number.isInteger(t.count) || (t.count as number) < 1) {
             logger.error(
@@ -2307,22 +2328,20 @@ export function loadPipelineConfig(
             );
             return null;
           }
-          if (typeof t.next !== 'string' || t.next.length === 0) {
+          if (!hasTemplate) {
             logger.error(
               { groupFolder, stage: stage.name, marker: t.marker },
-              'Transition "count" requires "next" to be a template name',
+              'Transition "count" requires "template"',
             );
             return null;
           }
         }
-        if (typeof t.next === 'string' && !stageNames.has(t.next)) {
-          // Unknown name here means either a template reference (resolved at
-          // stitch-time) or a typo. We can't distinguish without loading
-          // templates, so we only warn.
-          logger.warn(
+        if (hasNextString && !stageNames.has(t.next as string)) {
+          logger.error(
             { groupFolder, stage: stage.name, target: t.next },
-            'Transition target is not an existing stage — will be resolved as a template at runtime',
+            'Transition "next" must reference an existing stage in this pipeline (use "template" for templates)',
           );
+          return null;
         }
       }
     }

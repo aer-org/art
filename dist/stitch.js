@@ -143,29 +143,31 @@ function transitionTargets(t) {
     return Array.isArray(t.next) ? t.next : [t.next];
 }
 function cloneTemplateCopy(template, origin, copyIndex, subs, convergenceTarget) {
-    const internalNames = new Set(template.stages.map((s) => s.name));
     const rename = (n) => renamedStage(origin, template.name, copyIndex, n);
     return template.stages.map((stage) => {
         const renamed = {
             ...stage,
             name: rename(stage.name),
-            transitions: stage.transitions.map((t) => rewireTransition(t, internalNames, rename, convergenceTarget)),
+            transitions: stage.transitions.map((t) => rewireTransition(t, rename, convergenceTarget)),
         };
         return applySubstitutionsToStage(renamed, subs);
     });
 }
-function rewireTransition(t, internalNames, rename, convergenceTarget) {
+function rewireTransition(t, rename, convergenceTarget) {
+    // Only called while cloning template stages. Templates reject authored
+    // array `next` at load, and barrier fan-out arrays are injected by
+    // applyStitchToConfig — neither ever reaches this function. The template
+    // validator also guarantees any string `next` is template-internal.
     const out = { ...t };
     if (typeof t.next === 'string') {
-        out.next = internalNames.has(t.next) ? rename(t.next) : t.next;
-    }
-    else if (Array.isArray(t.next)) {
-        out.next = t.next.map((n) => (internalNames.has(n) ? rename(n) : n));
+        out.next = rename(t.next);
     }
     else {
         // t.next is null/undefined — convergence target (parallel) or terminal
         out.next = convergenceTarget ?? null;
     }
+    // `template` passes through unchanged — resolved at runtime when the
+    // stitched stage fires its transition.
     return out;
 }
 function applyStitchToConfig(config, originStage, originTransitionIdx, newStages, newHostNext) {
@@ -177,6 +179,7 @@ function applyStitchToConfig(config, originStage, originTransitionIdx, newStages
                 return t;
             const copy = { ...t, next: newHostNext };
             delete copy.count; // count is consumed by the stitch
+            delete copy.template; // template has been stitched — next now points at entry/barrier stages
             return copy;
         });
         return { ...s, transitions };

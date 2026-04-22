@@ -11,13 +11,14 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a va
 
 ## Schema Reference
 
-> **Breaking schema (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are **gone**. Pipelines must be **DAGs** (no cycles). Dynamic expansion happens via **stitch**: a transition's `next` may reference a **pipeline template** (file at `__art__/templates/<name>.json`), which is inserted into the live graph at runtime. See [Templates & Stitch](#templates--stitch).
+> **Breaking schema (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are **gone**. Pipelines must be **DAGs** (no cycles). Dynamic expansion happens via **stitch**: a transition with `template: "<name>"` clones a **pipeline template** (file at `__art__/templates/<name>.json`) into the live graph at runtime. `next` and `template` are mutually exclusive — `next` is a scope-local stage reference only. See [Templates & Stitch](#templates--stitch).
 
 ```typescript
 interface PipelineTransition {
   marker: string;        // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
-  next?: string | null;  // Target stage name OR template name. null = end pipeline.
-  count?: number;        // Only valid when next is a template name. Parallel stitch N lanes + synthesized barrier.
+  next?: string | null;  // Scope-local stage name, or null to end the pipeline. Mutually exclusive with `template`.
+  template?: string;     // Template name (file at __art__/templates/<name>.json) to stitch at runtime.
+  count?: number;        // Valid only with `template`. Parallel stitch N lanes + synthesized barrier.
   prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
 }
 
@@ -122,8 +123,8 @@ Rules:
 
 #### Templates & Stitch
 
-Templates live at `__art__/templates/<name>.json` and hold reusable sub-graphs. When a transition's `next` names a template, the template is cloned into the live graph at runtime (**stitch**). Use this for:
-- Recovery paths (emit marker, insert cleanup/revert template, terminate).
+Templates live at `__art__/templates/<name>.json` and hold reusable sub-graphs. A transition with `template: "<name>"` clones the template into the live graph at runtime (**stitch**). Use this for:
+- Recovery paths (emit marker, stitch a cleanup/revert template, terminate).
 - "Looping" iteration without cycles — e.g., review emits `STAGE_KEEP`, which stitches a fresh experiment template downstream of itself. Each stitched copy has uniquely-prefixed stage names so the graph stays acyclic.
 - Parallel work — `count: N` inserts N lane copies + a synthesized barrier (`<origin>__<template>__barrier`).
 
@@ -136,10 +137,10 @@ Templates live at `__art__/templates/<name>.json` and hold reusable sub-graphs. 
       "prompt": "...",
       "mounts": {"results": "rw"},
       "transitions": [
-        { "marker": "STAGE_DONE", "next": null,          "prompt": "Stop iterating" },
-        { "marker": "STAGE_KEEP", "next": "experiment",  "prompt": "Run another experiment (stitch template)" },
-        { "marker": "STAGE_RESET","next": "revert-tpl",  "prompt": "Revert and try again (stitch revert template)" },
-        { "marker": "FANOUT",     "next": "probe",       "count": 4, "prompt": "Probe 4 variants in parallel" }
+        { "marker": "STAGE_DONE", "next": null,                         "prompt": "Stop iterating" },
+        { "marker": "STAGE_KEEP", "template": "experiment",              "prompt": "Run another experiment (stitch template)" },
+        { "marker": "STAGE_RESET","template": "revert-tpl",              "prompt": "Revert and try again (stitch revert template)" },
+        { "marker": "FANOUT",     "template": "probe", "count": 4,       "prompt": "Probe 4 variants in parallel" }
       ]
     }
   ],
@@ -156,7 +157,7 @@ Templates live at `__art__/templates/<name>.json` and hold reusable sub-graphs. 
     { "name": "test",   "command": "...", "transitions": [{ "marker": "OK", "next": "review" }] },
     { "name": "review", "prompt": "...", "mounts": {...}, "transitions": [
       { "marker": "STAGE_DONE", "next": null },
-      { "marker": "STAGE_KEEP", "next": "experiment" }   // self-reference — stitched again
+      { "marker": "STAGE_KEEP", "template": "experiment" }   // re-stitch self at runtime
     ] }
   ]
 }
@@ -165,10 +166,10 @@ Templates live at `__art__/templates/<name>.json` and hold reusable sub-graphs. 
 Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
 
 Rules:
-- A transition's `next` may reference an existing **stage name** OR a **template name**. Unknown names are treated as templates.
-- `count` is valid only when `next` is a template name.
-- `count > 1` inserts N lanes and a barrier with `next: null` (parallel block is terminal — template owns downstream flow).
-- Templates must have internally acyclic transitions; external references (to base stages or other templates) are resolved at stitch-time and the full graph is re-validated as a DAG.
+- `next` and `template` are **mutually exclusive** per transition. `next` is scope-local: it must reference a stage in the current scope (base pipeline or the same template).
+- Cross-template (or base-to-template) handoffs use `template: "<name>"`, not `next`.
+- `count` requires `template`. `count > 1` inserts N lanes and a barrier with `next: null` (parallel block is terminal — template owns downstream flow).
+- Templates must have internally acyclic transitions. Cross-scope `next` references are rejected at load — use `template:` instead.
 - Inserted stage names follow `{origin}__{template}{index}__{templateStage}` — visible in logs, `PIPELINE_STATE.insertedStages`, and container names.
 - Templates **cannot** declare `retry`, `next_dynamic`, `kind: "dynamic-fanout"`, `fan_in: "dynamic"`, or authored array `next` — those are all gone.
 
@@ -444,7 +445,8 @@ When this skill is invoked:
 Before writing the JSON, verify ALL of the following:
 
 - [ ] Every stage has a unique `name`
-- [ ] Every transition `next` references an existing stage name or is `null`
+- [ ] Every transition has exactly one of `next` (string), `next: null`, or `template` — never both `next` (non-null) and `template`
+- [ ] Every transition's `next` (when a string) references an existing stage in the same scope (base pipeline for base transitions; same template for template-internal transitions)
 - [ ] Every stage has at least one transition
 - [ ] Command stages have `prompt: ""`, an `image` field, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions
 - [ ] Command stages use `successMarker` if success depends on stdout content (otherwise exit code is used)
@@ -463,8 +465,7 @@ Before writing the JSON, verify ALL of the following:
 - [ ] No transition uses legacy `retry` or `next_dynamic` (both removed)
 - [ ] No stage uses `kind: "dynamic-fanout"` or `fan_in: "dynamic"` (both removed)
 - [ ] No transition has an authored array `next` — multi-target arrays are only produced by parallel stitch
-- [ ] The base PIPELINE.json graph is acyclic (DAG). If you need a loop, express it as a template that stitches itself
-- [ ] Each transition's `next` is either an existing stage name, a template name (file at `__art__/templates/<name>.json`), or `null`
-- [ ] `count` is only used when `next` is a template name, and is a positive integer
-- [ ] Templates live at `__art__/templates/<name>.json` with `{ entry?, stages }` shape; internal transitions are acyclic; names do not collide with base pipeline stages in a way that would prevent renaming
+- [ ] The base PIPELINE.json graph is acyclic (DAG). If you need a loop, express it as a template that stitches itself via `template:`
+- [ ] `count` is only used together with `template`, and is a positive integer
+- [ ] Templates live at `__art__/templates/<name>.json` with `{ entry?, stages }` shape; internal transitions are acyclic; `next` inside a template stays scope-local (cross-scope handoffs use `template:`)
 - [ ] The JSON is valid and parseable

@@ -75,8 +75,11 @@ export interface PipelineTransition {
 
 For every transition:
 
-- Reject if both `next` (non-null) and `template` are present.
-- Reject if `count` is present without `template`.
+- Exactly one of {`next` (non-null string), `next: null`, `template`} must be
+  present. Reject if both `next` (non-null) and `template` are present, and
+  reject if neither is present.
+- Reject if `count` is present without `template`. `count` with `template`
+  but no explicit value is valid — it means single stitch (same as `count: 1`).
 - If `next` is a string, it must appear in the base `stages[].name` set.
   (Today it emits a warning and defers to runtime — replace with an error.)
 - `template` string is *not* validated at load — file existence is a runtime
@@ -86,19 +89,31 @@ For every transition:
 
 For every transition inside the template:
 
-- Reject if both `next` and `template` are present.
-- Reject if `count` is present without `template`.
+- Same mutex rules as the base loader: exactly one of
+  {`next`-string, `next: null`, `template`}; `count` only with `template`.
 - If `next` is a string, it must appear in the template's own
   `stages[].name` set. (Today it accepts "any forward reference"; that
   permissive branch goes away.)
 
 ## Stitch core changes (`src/stitch.ts`)
 
-`rewireTransition` simplifies — the "external reference pass-through" branch
-is gone since template-internal `next` is guaranteed internal by the loader:
+`rewireTransition` simplifies — both the "external reference pass-through"
+branch and the `Array.isArray(t.next)` branch go away:
+
+- **String branch**: loader guarantees template-internal `next` resolves to
+  an internal stage, so the `internalNames.has(...) ? rename : pass-through`
+  ternary collapses to unconditional `rename`.
+- **Array branch**: `rewireTransition` is only invoked from
+  `cloneTemplateCopy` while cloning a *template's* transitions. Templates
+  reject authored array `next` at load time, and the runtime array (barrier
+  fan-out) is injected by `applyStitchToConfig` replacing the origin
+  transition — that path never flows through `rewireTransition`.
 
 ```ts
 function rewireTransition(t, internalNames, rename, convergenceTarget) {
+  // Only called while cloning template stages. Templates reject authored
+  // array `next` at load, and barrier fan-out arrays are injected by
+  // applyStitchToConfig — neither ever reaches this function.
   const out = { ...t };
   if (typeof t.next === 'string') {
     // Validator guarantees t.next is in internalNames
@@ -111,6 +126,12 @@ function rewireTransition(t, internalNames, rename, convergenceTarget) {
   return out;
 }
 ```
+
+`applyStitchToConfig` already does `delete copy.count` after consuming the
+origin transition (`stitch.ts:334`). Add a matching `delete copy.template`
+so the replaced origin transition carries only its new `next` (entry
+names / barrier target) — otherwise the runtime dispatch would re-trigger
+stitch on the already-stitched transition.
 
 Nothing else needs to change in stitch core — the cloning / barrier
 synthesis / substitution all still apply.
@@ -133,9 +154,14 @@ if (matched.template) {
     stageConfig,
     stageConfig.transitions.indexOf(matched),
     matched.template,
-    matched.count,
+    matched.count,          // undefined or 1 → stitchSingle; >1 → stitchParallel
   );
   // …register inserted stages, set targetName to stitched.newNext…
+} else if (Array.isArray(matched.next)) {
+  // Runtime-only: parallel-stitch barrier fan-out. Authored arrays are
+  // already rejected by the loader, so this branch only fires on
+  // stitch-injected transitions.
+  targetName = matched.next;
 } else {
   // matched.next is a string (existing stage) or null (pipeline end)
   targetName = matched.next ?? null;

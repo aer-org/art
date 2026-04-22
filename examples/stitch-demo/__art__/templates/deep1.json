@@ -8,7 +8,7 @@
       "transitions": [
         {
           "marker": "DEEPER",
-          "next": "deep2",
+          "template": "deep2",
           "prompt": "Stitch the deep2 template (level 3)"
         }
       ]
