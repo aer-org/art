@@ -2,14 +2,10 @@ import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
     marker: string;
     next?: string | string[] | null;
-    next_dynamic?: boolean;
-    retry?: boolean;
+    count?: number;
     prompt?: string;
 }
-export type StageKind = 'agent' | 'command' | 'dynamic-fanout';
-export interface FanoutSubstitution {
-    fields: string[];
-}
+export type StageKind = 'agent' | 'command';
 export interface PipelineStage {
     name: string;
     kind?: StageKind;
@@ -31,17 +27,12 @@ export interface PipelineStage {
     hostMounts?: AdditionalMount[];
     mcpAccess?: string[];
     resumeSession?: boolean;
-    fan_in?: 'all' | 'dynamic';
+    fan_in?: 'all';
     transitions: PipelineTransition[];
-    template?: string;
-    inputFrom?: 'payload';
-    substitutions?: FanoutSubstitution;
-    concurrency?: number;
-    failurePolicy?: 'all-success';
 }
 /**
  * Resolve the effective stage kind — explicit `kind` wins, otherwise infer
- * from presence of `command`. "dynamic-fanout" must be explicit.
+ * from presence of `command`.
  */
 export declare function resolveStageKind(stage: PipelineStage): StageKind;
 export interface PipelineConfig {
@@ -49,13 +40,14 @@ export interface PipelineConfig {
     entryStage?: string;
 }
 export interface PipelineState {
+    version?: 2;
     currentStage: string | string[] | null;
     completedStages: string[];
     lastUpdated: string;
     status: 'running' | 'error' | 'success';
     activations?: Record<string, number>;
     completions?: Record<string, number>;
-    pendingFanoutPayloads?: Record<string, string>;
+    insertedStages?: PipelineStage[];
 }
 export declare function assertValidScopeId(scopeId: string): void;
 /**
@@ -106,7 +98,7 @@ export declare class PipelineRunner {
     private aborted;
     private activeHandles;
     private stageSessionIds;
-    private pendingFanoutPayloads;
+    private baseStageCount;
     constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string, scopeId?: string);
     /**
      * Compute the virtual sub-group folder for a stage container.
@@ -162,27 +154,16 @@ export declare class PipelineRunner {
      */
     private buildPredecessorMap;
     /**
-     * Build reachability map: for each stage, which stages can it
-     * transitively reach through the pipeline's transition graph?
-     * Used by dynamic fan-in to determine if an unactivated predecessor
-     * could still be activated by a currently-alive stage.
-     */
-    private buildReachabilityMap;
-    /**
      * Check if a stage's fan-in gate is satisfied:
      * all predecessors must appear in completedStages.
      */
-    private static fanInReady;
     /**
-     * Check if a stage's dynamic fan-in gate is satisfied:
-     * only predecessors that have been activated are checked.
-     * A predecessor is "done" if its completion count matches its activation count.
-     *
-     * An unactivated predecessor (activation=0) is only skipped if no alive
-     * stage can transitively reach it. If any alive stage could still activate
-     * the predecessor via retry/error paths, the gate stays closed.
+     * Execute a stitch operation, mutating this.config to include the inserted
+     * stages and returning the new host transition target (single name or an
+     * array for parallel stitch).
      */
-    private static fanInReadyDynamic;
+    private performStitch;
+    private static fanInReady;
     /**
      * Determine entry stage and resume from previous state if applicable.
      */
@@ -201,22 +182,6 @@ export declare class PipelineRunner {
      * Self-contained: handles retries and container respawns internally.
      */
     private runSingleStage;
-    /**
-     * Execute a dynamic-fanout stage: spawn N child PipelineRunner instances in
-     * parallel, one per element of the payload forwarded by the preceding stage.
-     *
-     * All children run fully isolated via distinct scopeIds. Policy: wait for all
-     * children to settle before returning, then fail if any child failed
-     * ("all-success" failure policy). Recursion depth is capped via the
-     * ART_FANOUT_DEPTH env variable.
-     */
-    private runFanoutStage;
-    /**
-     * Pick the transition target for a dynamic-fanout stage based on outcome.
-     * Convention: marker containing "ERROR" → error path; otherwise → success path.
-     * Retry transitions are ignored (fanout stages don't retry).
-     */
-    private pickFanoutTransition;
     /**
      * Main FSM loop with fan-out/fan-in support.
      * Spawns stage containers on-demand, runs parallel stages concurrently,

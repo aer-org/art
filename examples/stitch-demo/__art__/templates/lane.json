@@ -1,0 +1,17 @@
+{
+  "entry": "task",
+  "stages": [
+    {
+      "name": "task",
+      "prompt": "You are lane index {{index}} (insertId={{insertId}}). This is one of 3 parallel lanes. Emit exactly [DONE] to finish this lane.",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "DONE",
+          "next": null,
+          "prompt": "Lane complete — converges on the synthesized barrier"
+        }
+      ]
+    }
+  ]
+}

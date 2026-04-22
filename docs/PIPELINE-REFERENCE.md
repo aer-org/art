@@ -2,6 +2,8 @@
 
 This document describes every configurable field in `__art__/PIPELINE.json`.
 
+> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions now use `{ marker, next, count? }` where `next` can reference a stage OR a pipeline template (see [Templates & Stitch](#templates--stitch)). Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
+
 ## Top-Level
 
 ```json
@@ -36,7 +38,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | Field         | Type                                   | Required | Default     | Description                                                                                                                                        |
 | ------------- | -------------------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`        | `string`                               | Yes      | —           | Unique stage identifier                                                                                                                            |
-| `kind`        | `"agent" \| "command" \| "dynamic-fanout"` | No   | inferred    | Explicit stage kind. If omitted, inferred: `command` when `command` is set, else `agent`. `dynamic-fanout` must be explicit. See [Dynamic Fan-out](#dynamic-fan-out) |
+| `kind`        | `"agent" \| "command"`                 | No       | inferred    | Explicit stage kind. If omitted, inferred: `command` when `command` is set, else `agent`.                                                          |
 | `prompt`      | `string`                               | Yes      | —           | System prompt sent to the agent. Describes what this stage should do                                                                               |
 | `image`       | `string`                               | No       | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry)                                           |
 | `command`     | `string`                               | No       | `null`      | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
@@ -167,7 +169,7 @@ Host mounts allow a stage to access directories from the host filesystem outside
   "gpu": true,
   "transitions": [
     { "marker": "STAGE_COMPLETE", "next": "evaluate" },
-    { "marker": "STAGE_ERROR", "retry": true }
+    { "marker": "STAGE_ERROR", "next": null }
   ]
 }
 ```
@@ -229,83 +231,69 @@ In `PIPELINE.json`, reference the registry keys:
 - `${ART_HOST_GATEWAY}` in registry values is replaced with the active container runtime's host gateway (`host.docker.internal`, `host.containers.internal`, etc.).
 - For strong stage-level isolation in both Claude and Codex, prefer one registry ref per isolated server endpoint. If you need different tool subsets for different stages, expose separate MCP servers or filtered proxies with distinct `name` values.
 
-## Dynamic Fan-out
+## Templates & Stitch
 
-A `dynamic-fanout` stage spawns `N` parallel **child pipelines** at runtime, one per element in a JSON payload emitted by the preceding stage. Each child runs in-process as its own isolated `PipelineRunner` — no container-in-container, no subprocess `art run`. The parent stage blocks until every child has settled.
+A **template** is a reusable sub-graph stored at `__art__/templates/<name>.json`. When a transition's `next` names a template instead of an existing stage, the template is **stitched** into the running pipeline at runtime: its stages are cloned with unique names and inserted downstream of the host stage. The host's transition is rewritten to point at the renamed entry stage of the template.
 
-```json
+### Template file
+
+```jsonc
+// __art__/templates/experiment.json
 {
-  "name": "per-module-build",
-  "kind": "dynamic-fanout",
-  "template": "templates/build-one.pipeline.json",
-  "inputFrom": "payload",
-  "substitutions": { "fields": ["prompt", "mounts"] },
-  "concurrency": 4,
-  "failurePolicy": "all-success",
-  "mounts": {},
-  "transitions": [
-    { "marker": "STAGE_COMPLETE", "next": "aggregate", "prompt": "All child pipelines succeeded" },
-    { "marker": "STAGE_ERROR", "next": null, "prompt": "One or more child pipelines failed" }
+  "entry": "build",               // optional; defaults to stages[0].name
+  "stages": [
+    { "name": "build",   "prompt": "...", "mounts": {...}, "transitions": [{ "marker": "OK", "next": "test" }] },
+    { "name": "test",    "command": "...", "transitions": [{ "marker": "OK", "next": "review" }] },
+    { "name": "review",  "prompt": "...", "mounts": {...}, "transitions": [
+      { "marker": "STAGE_DONE", "next": null },
+      { "marker": "STAGE_KEEP", "next": "experiment" }    // self-reference — stitched again at runtime
+    ] }
   ]
 }
 ```
 
-### Fields
+Internal transitions must be acyclic. External references (base-pipeline stage names or other template names) are valid — they are resolved at stitch-time.
 
-| Field             | Type                    | Required | Description                                                                                                        |
-| ----------------- | ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
-| `kind`            | `"dynamic-fanout"`      | Yes      | Must be exactly this value (cannot be inferred)                                                                    |
-| `template`        | `string`                | Yes      | Path to a child pipeline JSON, relative to `__art__/`. Must stay within `__art__/`                                 |
-| `inputFrom`       | `"payload"`             | Yes      | Only `"payload"` is supported. Inputs come from the preceding stage's marker payload                               |
-| `substitutions`   | `{ fields: string[] }`  | No       | Allowlist of child-stage fields where `{{key}}` placeholders are substituted per child. See [Substitutions](#fan-out-substitutions) |
-| `concurrency`     | `number` (int ≥ 1)      | No       | Max concurrent child pipelines. Default: unbounded                                                                 |
-| `failurePolicy`   | `"all-success"`         | No       | Only `"all-success"` is supported. Any child failure makes the parent stage fail; all children still run to completion |
+### Transition forms
 
-Agent/command fields (`prompt`, `command`, `image`, `chat`, `mcpAccess`, `hostMounts`, `devices`, `gpu`, `runAsRoot`, `privileged`, `env`, `exclusive`, `resumeSession`, `successMarker`, `errorMarker`) are **forbidden** on fanout stages. `next_dynamic` transitions are also forbidden.
-
-### Payload from the preceding stage
-
-The stage immediately before a fanout stage must emit a fenced-payload `STAGE_COMPLETE` whose body is a **JSON array of flat objects** (string / number / boolean values only — no nesting):
-
-```
-[STAGE_COMPLETE]
----PAYLOAD_START---
-[
-  { "name": "module-a", "port": 8080 },
-  { "name": "module-b", "port": 8081 }
-]
----PAYLOAD_END---
+```jsonc
+{ "marker": "OK",  "next": "finalize" }                   // → existing stage
+{ "marker": "OK",  "next": "experiment" }                  // → template (stitched once)
+{ "marker": "OK",  "next": "review",  "count": 4 }         // → template stitched 4× in parallel + synthesized barrier
 ```
 
-Each array element becomes the substitution context for one child pipeline.
+`count` is valid only when `next` resolves to a template name. With `count > 1`, `N` lane copies are inserted in parallel and a synthesized fan-in **barrier** (stage name `<origin>__<template>__barrier`) converges them. The barrier terminates with `next: null` (parallel block is terminal under **Option 1 semantics** — the template owns the flow beyond the host stage).
 
-### Fan-out substitutions
+### Stitched stage naming
 
-Placeholders like `{{name}}`, `{{port}}` are replaced with the matching input value. Substitution applies only to the allowed child-stage fields listed in `substitutions.fields`. Keys inside `mounts` are also substituted when `mounts` is allowed.
+Inserted stages get deterministic user-visible names:
 
-Allowed `substitutions.fields`: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`.
+- Single stitch: `{origin}__{template}0__{templateStage}`
+- Parallel stitch lane `i`: `{origin}__{template}{i}__{templateStage}`
+- Parallel barrier: `{origin}__{template}__barrier`
 
-Missing placeholders are left intact and a warning is logged — the child agent will see the literal `{{key}}`.
+Names appear in logs, the `insertedStages` section of `PIPELINE_STATE.json`, and container names (`pipeline-<name>`).
 
-### Isolation
+### Substitutions
 
-Each child is launched with a deterministic short `scopeId` (e.g., `fa3b7c1`). The parent and every child write to **non-overlapping** paths:
+Template fields get `{{insertId}}` and `{{index}}` substitution at stitch-time, applied to `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`.
 
-- `__art__/PIPELINE_STATE.<scopeId>.json` — child's own state file
-- `__art__/logs/<scopeId>/` — child's logs
-- `<DATA_DIR>/sessions/<folder>__<scopeId>__pipeline_<stageName>/` — child's session / IPC / conversations
+- `{{insertId}}` — unique per inserted copy (e.g., `review__revert-tpl0`)
+- `{{index}}` — lane index in parallel stitch (0..N-1). `0` for single stitch.
 
-On resume, stale child state files are deleted — children always restart from scratch. (TODO: scope-aware child resume.)
+Missing placeholders pass through unchanged.
 
-### Recursion
+### DAG invariant
 
-Nested fanout is allowed up to depth `2` (tracked via the `ART_FANOUT_DEPTH` env var set on each child process). A fanout stage at depth 3 is rejected with an error. This is a guard against runaway spawns.
+Every stitch re-validates the full pipeline graph for acyclicity. Because inserted stages are uniquely renamed and only point at each other (or at forward references), stitch can grow the DAG indefinitely without introducing cycles — which is the intended pattern for "loops":
 
-### Limitations
+```
+review → STAGE_KEEP → stitch experiment template again → new review → …
+```
 
-- `failurePolicy` is currently always `"all-success"`. No partial-success collection yet.
-- Parent fanout stages cannot themselves declare agent-mode fields; they are purely host-side orchestration.
-- Child logs interleave into the parent's console. (Scoped log files still separate under `logs/<scopeId>/`.)
+### Resume
+
+Stitched stages are persisted in `PIPELINE_STATE.<...>.json` under `insertedStages`. On resume, they are merged back into the base config before execution continues.
 
 ## Transitions
 
@@ -314,26 +302,28 @@ Transitions define how stages connect. The agent signals stage completion by emi
 ```json
 "transitions": [
   { "marker": "STAGE_COMPLETE", "next": "test", "prompt": "Work completed successfully" },
-  { "marker": "STAGE_ERROR", "retry": true, "prompt": "Recoverable error occurred" },
-  { "marker": "STAGE_ERROR_CODE", "next": null, "prompt": "Code-level error requiring human intervention" }
+  { "marker": "STAGE_PANIC",    "next": null,   "prompt": "Unrecoverable error — end pipeline" },
+  { "marker": "STAGE_CLEANUP",  "next": "cleanup-template", "prompt": "Stitch cleanup template" }
 ]
 ```
 
-| Field    | Type             | Required | Default | Description                                                                                                |
-| -------- | ---------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------- |
-| `marker` | `string`         | Yes      | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). The agent wraps it in brackets: `[STAGE_COMPLETE]` |
-| `next`   | `string \| null` | No       | `null`  | Target stage name. `null` = pipeline ends                                                                  |
-| `retry`  | `boolean`        | No       | `false` | If `true`, stay in the current stage and re-send the prompt with the error description                     |
-| `prompt` | `string`         | No       | —       | Description shown to the agent explaining when to use this marker                                          |
+| Field    | Type             | Required | Default | Description                                                                                                          |
+| -------- | ---------------- | -------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `marker` | `string`         | Yes      | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). Agent wraps it in brackets: `[STAGE_COMPLETE]`.              |
+| `next`   | `string \| null` | No       | `null`  | Stage name OR template name. `null` = pipeline ends. Unknown names are resolved as template names at stitch-time.    |
+| `count`  | `number` (≥1)    | No       | `1`     | Only valid when `next` is a template name. Inserts `N` lane copies + barrier (parallel stitch).                      |
+| `prompt` | `string`         | No       | —       | Description shown to the agent explaining when to use this marker.                                                   |
 
-**How matching works:** The pipeline FSM scans agent output for `[MARKER_NAME]` or `[MARKER_NAME: payload]`. The first match triggers the corresponding transition.
+**How matching works:** The FSM scans agent output for `[MARKER_NAME]` or `[MARKER_NAME: payload]`. The first transition whose marker matches fires. If no transition matches, the runner sends a retry hint and keeps the container running. Parse-miss retry is unlimited (agents get to try again with feedback).
 
-### Built-in fallback transitions
+### Built-in container-crash markers
 
-If the container exits without emitting any marker:
+If the container dies without emitting a user marker:
 
-- Exit code ≠ 0 → treated as a retry transition with `_CONTAINER_EXIT` marker
-- Command timeout → treated as a retry transition with `_CONTAINER_TIMEOUT` marker
+- Exit code ≠ 0 → synthetic `_CONTAINER_EXIT` marker triggers container respawn (up to `MAX_CONTAINER_RESPAWNS = 3`)
+- Uncaught error → synthetic `_CONTAINER_ERROR` marker triggers respawn
+
+These are the only respawn paths. There is no user-authored retry — use templates to express recovery flows.
 
 ## Command Mode
 
@@ -347,14 +337,14 @@ Set the `command` field to run a shell command instead of a Claude agent:
   "mounts": { "project": "ro" },
   "transitions": [
     { "marker": "STAGE_COMPLETE", "next": "build" },
-    { "marker": "STAGE_ERROR", "retry": true }
+    { "marker": "STAGE_ERROR", "next": null }
   ]
 }
 ```
 
 The command runs via `sh -c` inside the container. Markers are parsed from stdout — the command should `echo "[STAGE_COMPLETE]"` or `echo "[STAGE_ERROR: message]"` to signal transitions.
 
-If the command exits with code 0 and no marker was emitted, `STAGE_COMPLETE` is inferred. Non-zero exit without a marker triggers `_COMMAND_FAILED` (retry).
+If the command exits with code 0 and no marker was emitted, `STAGE_COMPLETE` is inferred. Non-zero exit without a marker triggers a container-crash respawn via `_CONTAINER_EXIT` (capped at `MAX_CONTAINER_RESPAWNS = 3`).
 
 ## Image Registry
 
@@ -393,7 +383,7 @@ If `image` is omitted, the `"default"` registry entry is used.
       },
       "transitions": [
         { "marker": "STAGE_COMPLETE", "next": "test" },
-        { "marker": "STAGE_ERROR", "retry": true }
+        { "marker": "STAGE_ERROR", "next": null }
       ]
     },
     {

@@ -20,13 +20,14 @@ import { logger } from './logger.js';
 import { generateRunId, writeRunManifest, } from './run-manifest.js';
 import { formatStageMcpAccessSummary, loadMcpRegistry, resolveStageMcpServers, } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
-import { applyFanoutSubstitutions, assertFanoutDepthAllowed, deriveChildScopeId, loadFanoutTemplate, parseFanoutPayload, withConcurrency, } from './fanout.js';
+import { loadPipelineTemplate } from './pipeline-template.js';
+import { assertConfigAcyclic, stitchParallel, stitchSingle, } from './stitch.js';
 function resolveProvider() {
     return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
 }
 /**
  * Resolve the effective stage kind — explicit `kind` wins, otherwise infer
- * from presence of `command`. "dynamic-fanout" must be explicit.
+ * from presence of `command`.
  */
 export function resolveStageKind(stage) {
     if (stage.kind)
@@ -109,17 +110,31 @@ export function pipelineTagFromPath(pipelinePath) {
 }
 export function savePipelineState(groupDir, state, tag, scopeId) {
     const filepath = path.join(groupDir, pipelineStateFileName(tag, scopeId));
-    atomicWrite(filepath, JSON.stringify(state, null, 2));
+    const stateOut = { ...state, version: 2 };
+    atomicWrite(filepath, JSON.stringify(stateOut, null, 2));
 }
 export function loadPipelineState(groupDir, tag, scopeId) {
     const filepath = path.join(groupDir, pipelineStateFileName(tag, scopeId));
+    let raw;
     try {
-        const raw = fs.readFileSync(filepath, 'utf-8');
-        return JSON.parse(raw);
+        raw = fs.readFileSync(filepath, 'utf-8');
     }
-    catch {
-        return null;
+    catch (err) {
+        if (err.code === 'ENOENT')
+            return null;
+        throw err;
     }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch (err) {
+        throw new Error(`Pipeline state file ${filepath} is not valid JSON: ${err.message}`);
+    }
+    if (parsed.version !== 2 || parsed.pendingFanoutPayloads !== undefined) {
+        throw new Error(`Pipeline state file ${filepath} is from a pre-stitch version — delete it to reset (rm "${filepath}")`);
+    }
+    return parsed;
 }
 /**
  * Parse stage markers dynamically from the stage's transitions array.
@@ -231,11 +246,12 @@ export class PipelineRunner {
     aborted = false;
     activeHandles = new Map();
     stageSessionIds = new Map();
-    pendingFanoutPayloads = new Map();
+    baseStageCount = 0;
     constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId, pipelineTag, scopeId) {
         this.group = group;
         this.chatJid = chatJid;
         this.config = pipelineConfig;
+        this.baseStageCount = pipelineConfig.stages.length;
         this.notify = notify;
         this.onProcess = onProcess;
         this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
@@ -580,7 +596,6 @@ export class PipelineRunner {
                     : {
                         matched: {
                             marker: '_CONTAINER_EXIT',
-                            retry: true,
                             prompt: 'Container exited unexpectedly',
                         },
                         payload: 'Container exited unexpectedly',
@@ -594,7 +609,6 @@ export class PipelineRunner {
                 handle.pendingResult.resolve({
                     matched: {
                         marker: '_CONTAINER_ERROR',
-                        retry: true,
                         prompt: 'Container error',
                     },
                     payload: `Container error: ${err instanceof Error ? err.message : String(err)}`,
@@ -795,9 +809,6 @@ export class PipelineRunner {
     buildCommonRules(stageConfig) {
         const markerLines = stageConfig.transitions.map((t) => {
             const desc = t.prompt || t.marker;
-            if (t.retry) {
-                return `- ${desc} → [${t.marker}: brief description]`;
-            }
             return `- ${desc} → [${t.marker}]`;
         });
         const modeRule = stageConfig.chat
@@ -912,12 +923,10 @@ PAYLOAD FORMATS:
     buildPredecessorMap() {
         const predecessors = new Map();
         for (const s of this.config.stages) {
-            // Only the first non-retry, non-dynamic transition (primary/success path)
-            // contributes to the predecessor map. Error/fallback transitions listed
-            // after the primary one create backward edges (child→parent) that must
-            // not gate fan-in — otherwise a re-entry from an eval/dynamic source
-            // gets blocked by its own downstream stage's pending work.
-            const primary = s.transitions.find((t) => !t.retry && !t.next_dynamic);
+            // Only the first transition (primary/success path) contributes to the
+            // predecessor map. Error/fallback transitions listed after the primary
+            // one do not gate fan-in.
+            const primary = s.transitions[0];
             if (!primary)
                 continue;
             for (const target of PipelineRunner.nextTargets(primary.next)) {
@@ -932,48 +941,50 @@ PAYLOAD FORMATS:
         return predecessors;
     }
     /**
-     * Build reachability map: for each stage, which stages can it
-     * transitively reach through the pipeline's transition graph?
-     * Used by dynamic fan-in to determine if an unactivated predecessor
-     * could still be activated by a currently-alive stage.
-     */
-    buildReachabilityMap() {
-        // Build adjacency list from all transitions with `next` targets
-        const adj = new Map();
-        for (const s of this.config.stages) {
-            if (!adj.has(s.name))
-                adj.set(s.name, new Set());
-            for (const t of s.transitions) {
-                if (t.retry && !t.next)
-                    continue;
-                for (const target of PipelineRunner.nextTargets(t.next)) {
-                    adj.get(s.name).add(target);
-                }
-            }
-        }
-        // BFS transitive closure per stage
-        const reachability = new Map();
-        for (const s of this.config.stages) {
-            const reachable = new Set();
-            const queue = [...(adj.get(s.name) ?? [])];
-            while (queue.length > 0) {
-                const current = queue.shift();
-                if (reachable.has(current))
-                    continue;
-                reachable.add(current);
-                for (const next of adj.get(current) ?? []) {
-                    if (!reachable.has(next))
-                        queue.push(next);
-                }
-            }
-            reachability.set(s.name, reachable);
-        }
-        return reachability;
-    }
-    /**
      * Check if a stage's fan-in gate is satisfied:
      * all predecessors must appear in completedStages.
      */
+    /**
+     * Execute a stitch operation, mutating this.config to include the inserted
+     * stages and returning the new host transition target (single name or an
+     * array for parallel stitch).
+     */
+    performStitch(stageConfig, transitionIdx, templateName, count) {
+        if (transitionIdx < 0) {
+            throw new Error(`Host transition for "${stageConfig.name}" not found in stage config`);
+        }
+        const template = loadPipelineTemplate(this.groupDir, templateName);
+        if (count !== undefined && count > 1) {
+            const r = stitchParallel({
+                config: this.config,
+                originStage: stageConfig.name,
+                originTransitionIdx: transitionIdx,
+                template,
+                count,
+            });
+            this.config = r.updatedConfig;
+            logger.info({
+                origin: stageConfig.name,
+                template: templateName,
+                insertId: r.insertId,
+                count,
+            }, 'Stitch (parallel) applied');
+            return { insertedStages: r.insertedStages, newNext: r.entryNames };
+        }
+        const r = stitchSingle({
+            config: this.config,
+            originStage: stageConfig.name,
+            originTransitionIdx: transitionIdx,
+            template,
+        });
+        this.config = r.updatedConfig;
+        logger.info({
+            origin: stageConfig.name,
+            template: templateName,
+            insertId: r.insertId,
+        }, 'Stitch (single) applied');
+        return { insertedStages: r.insertedStages, newNext: r.entryName };
+    }
     static fanInReady(stageName, predecessors, completedStages) {
         const preds = predecessors.get(stageName);
         if (!preds || preds.size <= 1)
@@ -984,39 +995,6 @@ PAYLOAD FORMATS:
                 return false;
         }
         return true;
-    }
-    /**
-     * Check if a stage's dynamic fan-in gate is satisfied:
-     * only predecessors that have been activated are checked.
-     * A predecessor is "done" if its completion count matches its activation count.
-     *
-     * An unactivated predecessor (activation=0) is only skipped if no alive
-     * stage can transitively reach it. If any alive stage could still activate
-     * the predecessor via retry/error paths, the gate stays closed.
-     */
-    static fanInReadyDynamic(stageName, predecessors, activations, completions, reachability, aliveStages) {
-        const preds = predecessors.get(stageName);
-        if (!preds || preds.size <= 1)
-            return true;
-        let anyActivated = false;
-        for (const pred of preds) {
-            const act = activations.get(pred) ?? 0;
-            if (act === 0) {
-                // Never activated — but could it still be activated?
-                // Check if any alive stage can transitively reach this predecessor.
-                for (const alive of aliveStages) {
-                    if (reachability.get(alive)?.has(pred)) {
-                        return false; // alive stage can still reach this predecessor — wait
-                    }
-                }
-                continue; // no alive stage can reach it — safe to skip
-            }
-            anyActivated = true;
-            const comp = completions.get(pred) ?? 0;
-            if (comp < act)
-                return false; // activated but not yet completed
-        }
-        return anyActivated; // at least one predecessor must have been activated
     }
     /**
      * Determine entry stage and resume from previous state if applicable.
@@ -1031,8 +1009,6 @@ PAYLOAD FORMATS:
             const hasOutgoing = new Set();
             for (const s of this.config.stages) {
                 for (const t of s.transitions) {
-                    if (t.retry)
-                        continue;
                     const targets = PipelineRunner.nextTargets(t.next);
                     if (targets.length > 0) {
                         hasOutgoing.add(s.name);
@@ -1047,9 +1023,6 @@ PAYLOAD FORMATS:
             const fallback = this.config.stages.find((s) => !hasIncoming.has(s.name));
             if (fallback)
                 return fallback.name;
-            const loopFallback = this.config.stages.find((s) => hasOutgoing.has(s.name));
-            if (loopFallback)
-                return loopFallback.name;
             return this.config.stages[0].name;
         };
         // Resume from last completed stage if pipeline was interrupted
@@ -1072,7 +1045,7 @@ PAYLOAD FORMATS:
                     if (!completedStages.includes(name))
                         return [name];
                     const stage = stagesByName.get(name);
-                    const primary = stage.transitions.find((t) => !t.retry);
+                    const primary = stage.transitions[0];
                     return primary ? PipelineRunner.nextTargets(primary.next) : [];
                 })
                     .filter((s, index, items) => items.indexOf(s) === index)
@@ -1088,11 +1061,13 @@ PAYLOAD FORMATS:
             // Restore activation/completion counts from persisted state
             const activations = new Map(Object.entries(existingState.activations ?? {}));
             const completions = new Map(Object.entries(existingState.completions ?? {}));
-            // Restore pending fanout payloads so resumed fanout stages have inputs
-            if (existingState.pendingFanoutPayloads) {
-                for (const [k, v] of Object.entries(existingState.pendingFanoutPayloads)) {
-                    this.pendingFanoutPayloads.set(k, v);
-                }
+            // Restore dynamically-inserted stages (from earlier stitch operations)
+            if (existingState.insertedStages && existingState.insertedStages.length > 0) {
+                this.config = {
+                    ...this.config,
+                    stages: [...this.config.stages, ...existingState.insertedStages],
+                };
+                // baseStageCount already reflects the pre-resume count; don't update
             }
             return { initialStages, completedStages, activations, completions };
         }
@@ -1134,51 +1109,12 @@ PAYLOAD FORMATS:
                 lastResult: null,
             };
         }
-        if (matched.retry) {
+        // Synthetic container exit/error — container is dead, must respawn in place.
+        if (matched.marker.startsWith('_CONTAINER')) {
             const errorDesc = payload || matched.marker;
             await this.notify(`⚠️ [Turn ${turnCount}] ${currentStageName} error: ${errorDesc}`);
-            // Synthetic container exit/error — container is dead, must respawn
-            if (matched.marker.startsWith('_CONTAINER')) {
-                if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
-                    await this.notify(`❌ [Turn ${turnCount}] ${currentStageName} container respawn limit exceeded (${ctx.maxContainerRespawns}) — stage failed`);
-                    return {
-                        stageResolved: true,
-                        nextStageName: null,
-                        nextInitialPrompt: null,
-                        lastResult: 'error',
-                    };
-                }
-                await this.notify(`🔄 [Turn ${turnCount}] ${currentStageName} container respawn (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`);
-                return {
-                    stageResolved: true,
-                    nextStageName: currentStageName,
-                    nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}${planContent}`,
-                    lastResult: null,
-                };
-            }
-            // Normal retry — container is still alive, re-send prompt via IPC
-            handle.pendingResult = createDeferred();
-            sendToStage(handle, `An error occurred in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}${planContent}`);
-            return {
-                stageResolved: false,
-                nextStageName: null,
-                nextInitialPrompt: null,
-                lastResult: null,
-            };
-        }
-        // Non-retry transition — move to next stage(s) or end pipeline
-        let targetName;
-        if (matched.next_dynamic && payload) {
-            // Dynamic transition: agent picks targets from payload
-            const requested = payload
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean);
-            const allowlist = new Set(PipelineRunner.nextTargets(matched.next));
-            const invalid = requested.filter((t) => !allowlist.has(t));
-            if (invalid.length > 0) {
-                logger.error({ stage: currentStageName, invalid, allowlist: [...allowlist] }, 'Dynamic transition target not in allowlist');
-                await this.notifyBanner(`❌ ${currentStageName}: dynamic transition target not in allowlist: ${invalid.join(', ')}`);
+            if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
+                await this.notify(`❌ [Turn ${turnCount}] ${currentStageName} container respawn limit exceeded (${ctx.maxContainerRespawns}) — stage failed`);
                 return {
                     stageResolved: true,
                     nextStageName: null,
@@ -1186,24 +1122,37 @@ PAYLOAD FORMATS:
                     lastResult: 'error',
                 };
             }
-            targetName =
-                requested.length === 0
-                    ? (matched.next ?? null) // empty payload → fallback to static next
-                    : requested.length === 1
-                        ? requested[0]
-                        : requested;
+            await this.notify(`🔄 [Turn ${turnCount}] ${currentStageName} container respawn (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`);
+            return {
+                stageResolved: true,
+                nextStageName: currentStageName,
+                nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}${planContent}`,
+                lastResult: null,
+            };
         }
-        else {
-            targetName = matched.next ?? null;
-        }
-        // Stash payload for any dynamic-fanout target. Only single-target,
-        // non-next_dynamic transitions forward payload downstream.
-        if (payload && !matched.next_dynamic) {
-            for (const t of PipelineRunner.nextTargets(targetName)) {
-                const targetCfg = stagesByName.get(t);
-                if (targetCfg && resolveStageKind(targetCfg) === 'dynamic-fanout') {
-                    this.pendingFanoutPayloads.set(t, payload);
+        // Regular transition — move to next stage or end pipeline. If `next` is
+        // not an existing stage name, treat it as a template name and stitch it
+        // into the graph in place.
+        let targetName = matched.next ?? null;
+        if (typeof matched.next === 'string' && !stagesByName.has(matched.next)) {
+            try {
+                const transitionIdx = stageConfig.transitions.indexOf(matched);
+                const stitched = this.performStitch(stageConfig, transitionIdx, matched.next, matched.count);
+                for (const s of stitched.insertedStages) {
+                    stagesByName.set(s.name, s);
                 }
+                targetName = stitched.newNext;
+                await this.notifyBanner(`🧵 Stitched template "${matched.next}" after ${currentStageName} — inserted ${stitched.insertedStages.length} stage(s)`);
+            }
+            catch (err) {
+                logger.error({ stage: currentStageName, template: matched.next, err }, 'Stitch failed');
+                await this.notifyBanner(`❌ ${currentStageName}: stitch of "${matched.next}" failed — ${err.message}`);
+                return {
+                    stageResolved: true,
+                    nextStageName: null,
+                    nextInitialPrompt: null,
+                    lastResult: 'error',
+                };
             }
         }
         const targetDisplay = Array.isArray(targetName)
@@ -1241,10 +1190,7 @@ PAYLOAD FORMATS:
             this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
         }
         this.activeHandles.delete(currentStageName);
-        // Payload forwarding only works for single-target non-dynamic transitions
-        // (dynamic payloads contain target names, not content to forward).
-        //
-        // Routing rule:
+        // Payload forwarding for single-target transitions.
         //   - Target has a resumed session (re-entry) → send payload via ephemeral
         //     system-prompt append so it does NOT persist in the transcript.
         //   - Target is entering fresh → bundle payload into the initial user
@@ -1252,7 +1198,7 @@ PAYLOAD FORMATS:
         let nextInitialPrompt = null;
         let nextEphemeralSystemPrompt = null;
         const targets = PipelineRunner.nextTargets(targetName);
-        if (targets.length === 1 && payload && !matched.next_dynamic) {
+        if (targets.length === 1 && payload) {
             const targetConfig = stagesByName.get(targets[0]);
             const targetRules = targetConfig
                 ? this.buildCommonRules(targetConfig)
@@ -1311,9 +1257,6 @@ PAYLOAD FORMATS:
                 nextEphemeralSystemPrompt: null,
                 result: 'error',
             };
-        }
-        if (resolveStageKind(stageConfig) === 'dynamic-fanout') {
-            return this.runFanoutStage(stageConfig, pipelineLogStream);
         }
         // Exclusive lock: wait for shared resource
         let exclusiveLock = null;
@@ -1430,146 +1373,6 @@ PAYLOAD FORMATS:
         };
     }
     /**
-     * Execute a dynamic-fanout stage: spawn N child PipelineRunner instances in
-     * parallel, one per element of the payload forwarded by the preceding stage.
-     *
-     * All children run fully isolated via distinct scopeIds. Policy: wait for all
-     * children to settle before returning, then fail if any child failed
-     * ("all-success" failure policy). Recursion depth is capped via the
-     * ART_FANOUT_DEPTH env variable.
-     */
-    async runFanoutStage(stageConfig, pipelineLogStream) {
-        const stageName = stageConfig.name;
-        await this.notifyBanner(`🌱 Stage: ${stageName} (dynamic-fanout)`);
-        const stageResultOnError = (err) => {
-            logger.error({ stage: stageName, err }, 'dynamic-fanout stage failed');
-            pipelineLogStream.write(`[${stageName}] dynamic-fanout failed: ${err.message || String(err)}\n`);
-            return {
-                stageName,
-                nextStages: this.pickFanoutTransition(stageConfig, false),
-                nextInitialPrompt: null,
-                nextEphemeralSystemPrompt: null,
-                result: 'error',
-            };
-        };
-        let childDepth;
-        try {
-            childDepth = assertFanoutDepthAllowed(stageName);
-        }
-        catch (err) {
-            return stageResultOnError(err);
-        }
-        const payload = this.pendingFanoutPayloads.get(stageName);
-        this.pendingFanoutPayloads.delete(stageName);
-        if (!payload) {
-            return stageResultOnError(new Error(`dynamic-fanout "${stageName}": no payload forwarded from predecessor (preceding stage must emit a STAGE_COMPLETE with a JSON array payload)`));
-        }
-        let inputs;
-        try {
-            inputs = parseFanoutPayload(payload, stageName);
-        }
-        catch (err) {
-            return stageResultOnError(err);
-        }
-        if (inputs.length === 0) {
-            // Zero-element fanout: nothing to spawn, emit success immediately.
-            await this.notifyBanner(`🌱 ${stageName}: 0 child pipelines (empty payload)`);
-            return {
-                stageName,
-                nextStages: this.pickFanoutTransition(stageConfig, true),
-                nextInitialPrompt: null,
-                nextEphemeralSystemPrompt: null,
-                result: 'success',
-            };
-        }
-        let template;
-        try {
-            template = loadFanoutTemplate(this.groupDir, stageConfig.template, stageName);
-        }
-        catch (err) {
-            return stageResultOnError(err);
-        }
-        const allowedFields = stageConfig.substitutions?.fields ?? [];
-        await this.notifyBanner(`🌱 ${stageName}: spawning ${inputs.length} child pipeline(s)` +
-            (stageConfig.concurrency
-                ? ` (concurrency ${stageConfig.concurrency})`
-                : ''));
-        const prevDepthEnv = process.env.ART_FANOUT_DEPTH;
-        process.env.ART_FANOUT_DEPTH = String(childDepth);
-        const childResults = new Array(inputs.length);
-        let anyFailure = false;
-        try {
-            const tasks = inputs.map((input, idx) => async () => {
-                const childScope = deriveChildScopeId(this.scopeId, stageName, idx);
-                const substituted = applyFanoutSubstitutions(template, input, allowedFields, stageName);
-                // Child-scoped state from a previous (interrupted) run is discarded.
-                // TODO: support scope-aware child resume instead of always restarting.
-                const staleStatePath = path.join(this.groupDir, `PIPELINE_STATE.${childScope}.json`);
-                try {
-                    fs.rmSync(staleStatePath, { force: true });
-                }
-                catch {
-                    /* ignore */
-                }
-                try {
-                    const child = new PipelineRunner(this.group, this.chatJid, substituted, this.notify, this.onProcess, this.groupDir, undefined, undefined, childScope);
-                    const result = await child.run();
-                    childResults[idx] = result;
-                    if (result === 'error')
-                        anyFailure = true;
-                }
-                catch (err) {
-                    logger.error({ stage: stageName, idx, childScope, err }, 'dynamic-fanout child threw');
-                    childResults[idx] = 'error';
-                    anyFailure = true;
-                }
-            });
-            await withConcurrency(stageConfig.concurrency, tasks);
-        }
-        finally {
-            if (prevDepthEnv === undefined)
-                delete process.env.ART_FANOUT_DEPTH;
-            else
-                process.env.ART_FANOUT_DEPTH = prevDepthEnv;
-        }
-        const succeeded = childResults.filter((r) => r === 'success').length;
-        const failed = childResults.length - succeeded;
-        await this.notifyBanner(`🌱 ${stageName}: fanout complete — ${succeeded} succeeded, ${failed} failed`);
-        if (anyFailure) {
-            return {
-                stageName,
-                nextStages: this.pickFanoutTransition(stageConfig, false),
-                nextInitialPrompt: null,
-                nextEphemeralSystemPrompt: null,
-                result: 'error',
-            };
-        }
-        return {
-            stageName,
-            nextStages: this.pickFanoutTransition(stageConfig, true),
-            nextInitialPrompt: null,
-            nextEphemeralSystemPrompt: null,
-            result: 'success',
-        };
-    }
-    /**
-     * Pick the transition target for a dynamic-fanout stage based on outcome.
-     * Convention: marker containing "ERROR" → error path; otherwise → success path.
-     * Retry transitions are ignored (fanout stages don't retry).
-     */
-    pickFanoutTransition(stageConfig, success) {
-        for (const t of stageConfig.transitions) {
-            if (t.retry)
-                continue;
-            const isError = t.marker.toUpperCase().includes('ERROR');
-            if (success && !isError)
-                return t.next ?? null;
-            if (!success && isError)
-                return t.next ?? null;
-        }
-        return null;
-    }
-    /**
      * Main FSM loop with fan-out/fan-in support.
      * Spawns stage containers on-demand, runs parallel stages concurrently,
      * and gates fan-in stages until all predecessors complete.
@@ -1591,10 +1394,11 @@ PAYLOAD FORMATS:
             status: 'running',
             activations: Object.fromEntries(activations),
             completions: Object.fromEntries(completions),
-            pendingFanoutPayloads: Object.fromEntries(this.pendingFanoutPayloads),
+            insertedStages: this.config.stages.slice(this.baseStageCount),
         }, this.pipelineTag, this.scopeId);
-        const predecessors = this.buildPredecessorMap();
-        const reachability = this.buildReachabilityMap();
+        // `predecessors` is recomputed per-call below — stitch may add stages at
+        // runtime, so a snapshot taken at run-start would miss barriers and
+        // lane-tails from parallel stitches that fire later.
         // Each entry: { name, initialPrompt, ephemeralSystemPrompt }
         // — set when payload forwarding applies (initialPrompt for fresh entries,
         //   ephemeralSystemPrompt for re-entry into a resumed stage).
@@ -1643,20 +1447,11 @@ PAYLOAD FORMATS:
             });
             running.add(p);
         };
-        // Helper: check fan-in readiness for a stage
+        // Helper: check fan-in readiness for a stage. Rebuild predecessors on
+        // demand so stitch-inserted stages (especially parallel barriers) see
+        // their lane-tails as predecessors.
         const isFanInReady = (stageName) => {
-            const cfg = stagesByName.get(stageName);
-            const fanInMode = cfg?.fan_in ?? 'all';
-            if (fanInMode === 'dynamic') {
-                // Compute alive stages: running + pending + waiting-for-fan-in, excluding self
-                const aliveStages = new Set([
-                    ...runningNames,
-                    ...pendingStages.map((s) => s.name),
-                    ...waitingForFanIn,
-                ]);
-                aliveStages.delete(stageName);
-                return PipelineRunner.fanInReadyDynamic(stageName, predecessors, activations, completions, reachability, aliveStages);
-            }
+            const predecessors = this.buildPredecessorMap();
             return PipelineRunner.fanInReady(stageName, predecessors, completedStages);
         };
         // Helper: launch a stage, deferring chat stages if pool is busy
@@ -1706,7 +1501,7 @@ PAYLOAD FORMATS:
                 status: 'running',
                 activations: Object.fromEntries(activations),
                 completions: Object.fromEntries(completions),
-                pendingFanoutPayloads: Object.fromEntries(this.pendingFanoutPayloads),
+                insertedStages: this.config.stages.slice(this.baseStageCount),
             }, this.pipelineTag, this.scopeId);
             // Wait for at least one stage to complete
             await waitForResult();
@@ -1751,83 +1546,6 @@ PAYLOAD FORMATS:
         return lastResult;
     }
 }
-const FANOUT_FORBIDDEN_FIELDS = [
-    'prompt',
-    'prompts',
-    'prompt_append',
-    'command',
-    'image',
-    'chat',
-    'successMarker',
-    'errorMarker',
-    'mcpAccess',
-    'exclusive',
-    'runAsRoot',
-    'privileged',
-    'hostMounts',
-    'devices',
-    'gpu',
-    'env',
-    'resumeSession',
-];
-const FANOUT_SUBSTITUTION_ALLOWED_FIELDS = new Set([
-    'prompt',
-    'prompts',
-    'prompt_append',
-    'mounts',
-    'hostMounts',
-    'env',
-    'image',
-    'command',
-    'transitions',
-    'successMarker',
-    'errorMarker',
-]);
-function validateFanoutStage(stage, groupFolder) {
-    if (typeof stage.template !== 'string' || stage.template.length === 0) {
-        logger.error({ groupFolder, stage: stage.name }, 'dynamic-fanout stage requires non-empty template path');
-        return false;
-    }
-    if (stage.inputFrom !== 'payload') {
-        logger.error({ groupFolder, stage: stage.name, inputFrom: stage.inputFrom }, 'dynamic-fanout stage requires inputFrom: "payload"');
-        return false;
-    }
-    if (stage.substitutions !== undefined) {
-        const subs = stage.substitutions;
-        if (typeof subs !== 'object' ||
-            subs === null ||
-            !Array.isArray(subs.fields) ||
-            subs.fields.some((f) => typeof f !== 'string')) {
-            logger.error({ groupFolder, stage: stage.name, substitutions: subs }, 'Invalid substitutions (must be { fields: string[] })');
-            return false;
-        }
-        for (const f of subs.fields) {
-            if (!FANOUT_SUBSTITUTION_ALLOWED_FIELDS.has(f)) {
-                logger.error({ groupFolder, stage: stage.name, field: f }, `substitutions.fields may only include [${[...FANOUT_SUBSTITUTION_ALLOWED_FIELDS].join(', ')}]`);
-                return false;
-            }
-        }
-    }
-    if (stage.concurrency !== undefined &&
-        (typeof stage.concurrency !== 'number' ||
-            !Number.isInteger(stage.concurrency) ||
-            stage.concurrency < 1)) {
-        logger.error({ groupFolder, stage: stage.name, concurrency: stage.concurrency }, 'concurrency must be a positive integer');
-        return false;
-    }
-    if (stage.failurePolicy !== undefined &&
-        stage.failurePolicy !== 'all-success') {
-        logger.error({ groupFolder, stage: stage.name, failurePolicy: stage.failurePolicy }, 'failurePolicy must be "all-success"');
-        return false;
-    }
-    for (const field of FANOUT_FORBIDDEN_FIELDS) {
-        if (stage[field] !== undefined) {
-            logger.error({ groupFolder, stage: stage.name, field }, `dynamic-fanout stages cannot declare "${field}"`);
-            return false;
-        }
-    }
-    return true;
-}
 /**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
@@ -1856,24 +1574,9 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
         for (const stage of config.stages) {
             if (stage.kind !== undefined &&
                 stage.kind !== 'agent' &&
-                stage.kind !== 'command' &&
-                stage.kind !== 'dynamic-fanout') {
-                logger.error({ groupFolder, stage: stage.name, kind: stage.kind }, 'Invalid stage kind (must be "agent", "command", or "dynamic-fanout")');
+                stage.kind !== 'command') {
+                logger.error({ groupFolder, stage: stage.name, kind: stage.kind }, 'Invalid stage kind (must be "agent" or "command")');
                 return null;
-            }
-            const effectiveKind = resolveStageKind(stage);
-            if (effectiveKind === 'dynamic-fanout') {
-                if (!validateFanoutStage(stage, groupFolder))
-                    return null;
-                // Skip agent/command-only validations below
-                // but still run transition validation at the bottom of the loop.
-                for (const t of stage.transitions) {
-                    if (t.next_dynamic) {
-                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'dynamic-fanout stages cannot use next_dynamic transitions');
-                        return null;
-                    }
-                }
-                continue;
             }
             if (stage.prompts !== undefined &&
                 (!Array.isArray(stage.prompts) ||
@@ -1921,38 +1624,48 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
                     return null;
                 }
             }
-            // Validate fan_in value
-            if (stage.fan_in !== undefined &&
-                stage.fan_in !== 'all' &&
-                stage.fan_in !== 'dynamic') {
-                logger.error({ groupFolder, stage: stage.name, fan_in: stage.fan_in }, 'Invalid fan_in value (must be "all" or "dynamic")');
+            if (stage.fan_in !== undefined && stage.fan_in !== 'all') {
+                logger.error({ groupFolder, stage: stage.name, fan_in: stage.fan_in }, 'Invalid fan_in value (must be "all")');
                 return null;
             }
             for (const t of stage.transitions) {
-                // next_dynamic + retry mutual exclusion
-                if (t.next_dynamic && t.retry) {
-                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'next_dynamic and retry cannot be used together');
+                const tAny = t;
+                if (tAny.retry !== undefined) {
+                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "retry" is no longer supported');
                     return null;
                 }
-                // next_dynamic requires non-null next
-                if (t.next_dynamic && t.next == null) {
-                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'next_dynamic requires next to be a non-null array (allowlist)');
+                if (tAny.next_dynamic !== undefined) {
+                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "next_dynamic" is no longer supported');
                     return null;
                 }
-                // Validate transition targets exist
-                if (!t.retry) {
-                    const targets = Array.isArray(t.next)
-                        ? t.next
-                        : t.next != null
-                            ? [t.next]
-                            : [];
-                    for (const target of targets) {
-                        if (!stageNames.has(target)) {
-                            logger.warn({ groupFolder, stage: stage.name, target }, 'Transition target references non-existent stage');
-                        }
+                if (Array.isArray(t.next)) {
+                    logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "next" must be a string or null — multi-target arrays are produced only by parallel stitch at runtime');
+                    return null;
+                }
+                if (t.count !== undefined) {
+                    if (!Number.isInteger(t.count) || t.count < 1) {
+                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "count" must be a positive integer');
+                        return null;
+                    }
+                    if (typeof t.next !== 'string' || t.next.length === 0) {
+                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "count" requires "next" to be a template name');
+                        return null;
                     }
                 }
+                if (typeof t.next === 'string' && !stageNames.has(t.next)) {
+                    // Unknown name here means either a template reference (resolved at
+                    // stitch-time) or a typo. We can't distinguish without loading
+                    // templates, so we only warn.
+                    logger.warn({ groupFolder, stage: stage.name, target: t.next }, 'Transition target is not an existing stage — will be resolved as a template at runtime');
+                }
             }
+        }
+        try {
+            assertConfigAcyclic(config);
+        }
+        catch (err) {
+            logger.error({ groupFolder, err: err.message }, 'PIPELINE.json contains a cycle — pipelines must be DAGs');
+            return null;
         }
         return config;
     }

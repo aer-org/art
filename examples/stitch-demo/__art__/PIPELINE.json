@@ -1,0 +1,17 @@
+{
+  "stages": [
+    {
+      "name": "start",
+      "prompt": "This is the stitch-demo kickoff. Emit exactly [GO] and nothing else to proceed.",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "GO",
+          "next": "demo",
+          "prompt": "Begin — stitches the top-level demo template"
+        }
+      ]
+    }
+  ],
+  "entryStage": "start"
+}

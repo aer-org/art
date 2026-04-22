@@ -1,0 +1,17 @@
+{
+  "entry": "intro",
+  "stages": [
+    {
+      "name": "intro",
+      "prompt": "You are at nesting level 1 inside the 'demo' template. Emit exactly [DEEPER] to stitch one level deeper.",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "DEEPER",
+          "next": "deep1",
+          "prompt": "Stitch the deep1 template (level 2)"
+        }
+      ]
+    }
+  ]
+}

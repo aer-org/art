@@ -1,0 +1,86 @@
+{
+  "entry": "build",
+  "stages": [
+    {
+      "name": "build",
+      "prompt": "You are an autonomous ML researcher. Your goal is to minimize val_bpb by modifying train.py.\n\n1. Read /workspace/project/src/train.py for context.\n2. Read /workspace/results/results.tsv (if it exists) to see past experiments.\n3. Choose an experiment idea — change architecture, optimizer, hyperparameters, batch size, model size, etc.\n4. Modify /workspace/project/src/train.py with your changes.\n5. Write a one-line description of what you changed to /workspace/msg/commit-msg.txt\n\nRules:\n- This project runs on GPU. CUDA is available.\n- Only modify src/train.py. Do NOT modify src/prepare.py or any other file.\n- Do NOT install new packages.\n- Do NOT run train.py or any Python script. You are the build stage — code modification only. Testing is handled by a separate stage.\n- Keep changes focused — one idea per iteration.\n- If you see repeated failures in results.tsv, try a different direction.\n\nWhen done, emit [STAGE_COMPLETE].",
+      "mounts": {
+        "project": "rw",
+        "msg": "rw",
+        "results": "ro"
+      },
+      "transitions": [
+        {
+          "marker": "STAGE_COMPLETE",
+          "next": "git-commit",
+          "prompt": "Code modification complete, commit message written"
+        },
+        {
+          "marker": "STAGE_ERROR",
+          "next": null,
+          "prompt": "Unrecoverable error — end this experiment"
+        }
+      ]
+    },
+    {
+      "name": "git-commit",
+      "prompt": "",
+      "command": "git config --global --add safe.directory /workspace/project && git config --global user.email 'art-agent@local' && git config --global user.name 'AerArt Agent' && cd /workspace/project && git add -A && git commit --allow-empty -m \"$(cat /workspace/msg/commit-msg.txt 2>/dev/null || echo 'experiment iteration')\" && echo '[STAGE_COMPLETE]'",
+      "image": "alpine/git",
+      "mounts": {
+        "project": "rw",
+        "msg": "ro"
+      },
+      "transitions": [
+        {
+          "marker": "STAGE_COMPLETE",
+          "next": "test"
+        }
+      ]
+    },
+    {
+      "name": "test",
+      "prompt": "",
+      "command": "apt-get update -qq && apt-get install -y -qq curl > /dev/null && curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1 && export PATH=\"$HOME/.local/bin:$PATH\" && mkdir -p /workspace/cache/uv-python /workspace/cache/uv-cache && ln -sfn /workspace/cache/uv-cache /root/.cache/uv && ln -sfn /workspace/cache/uv-python /root/.local/share/uv/python && cd /workspace/project && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/prepare.py && UV_PROJECT_ENVIRONMENT=/workspace/venv uv run src/train.py > /workspace/results/run.log 2>&1; grep '^val_bpb:\\|^peak_rss_mb:' /workspace/results/run.log > /workspace/results/metrics.txt 2>/dev/null; echo '[STAGE_COMPLETE]'",
+      "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04",
+      "gpu": true,
+      "mounts": {
+        "project": "ro",
+        "results": "rw",
+        "cache": "rw",
+        "venv": "rw"
+      },
+      "transitions": [
+        {
+          "marker": "STAGE_COMPLETE",
+          "next": "review"
+        }
+      ]
+    },
+    {
+      "name": "review",
+      "prompt": "You are reviewing the results of an ML experiment.\n\n1. Read /workspace/results/metrics.txt for the key metrics (val_bpb, peak_rss_mb).\n2. If metrics.txt is empty, the run crashed. Read the last 50 lines of /workspace/results/run.log to understand why.\n3. Read /workspace/results/results.tsv to compare with previous experiments.\n4. Decide:\n   - If val_bpb improved (lower than best previous) and you want to run another experiment: emit [STAGE_KEEP]\n   - If val_bpb is worse (or run crashed) and you want to retry: emit [STAGE_RESET]\n   - If you want to stop iterating (converged or budget exhausted): emit [STAGE_DONE]\n5. Append a row to /workspace/results/results.tsv:\n   commit\\tval_bpb\\tmemory_gb\\tstatus\\tdescription\n   - Use `git rev-parse --short HEAD` for the commit hash\n   - status: keep, discard, or crash\n\nIMPORTANT: Emit exactly one of [STAGE_KEEP], [STAGE_RESET], or [STAGE_DONE].",
+      "mounts": {
+        "project": "ro",
+        "results": "rw"
+      },
+      "transitions": [
+        {
+          "marker": "STAGE_DONE",
+          "next": null,
+          "prompt": "Stop iterating — no more experiments needed"
+        },
+        {
+          "marker": "STAGE_KEEP",
+          "next": "experiment",
+          "prompt": "Improvement — keep commit and run another experiment (stitches a fresh experiment template downstream)"
+        },
+        {
+          "marker": "STAGE_RESET",
+          "next": "revert-and-continue",
+          "prompt": "Regression or crash — revert commit and try again (stitches revert + experiment downstream)"
+        }
+      ]
+    }
+  ]
+}

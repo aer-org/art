@@ -11,47 +11,53 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a va
 
 ## Schema Reference
 
+> **Breaking schema (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are **gone**. Pipelines must be **DAGs** (no cycles). Dynamic expansion happens via **stitch**: a transition's `next` may reference a **pipeline template** (file at `__art__/templates/<name>.json`), which is inserted into the live graph at runtime. See [Templates & Stitch](#templates--stitch).
+
 ```typescript
 interface PipelineTransition {
   marker: string;        // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
-  next?: string | string[] | null;  // Target stage(s), array for fan-out, null to end pipeline
-  next_dynamic?: boolean; // Agent picks targets at runtime via payload; next becomes allowlist
-  retry?: boolean;       // true = retry current stage on this marker
+  next?: string | null;  // Target stage name OR template name. null = end pipeline.
+  count?: number;        // Only valid when next is a template name. Parallel stitch N lanes + synthesized barrier.
   prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
 }
 
 interface AdditionalMount {
-  hostPath: string;      // Absolute path or ~ for home
-  containerPath?: string; // Mounted at /workspace/extra/{value}, default: basename(hostPath)
-  readonly?: boolean;    // Default: true
+  hostPath: string;
+  containerPath?: string;
+  readonly?: boolean;
 }
 
 interface PipelineStage {
-  name: string;          // Unique stage identifier
-  kind?: "agent" | "command" | "dynamic-fanout"; // Explicit stage kind. Inferred if omitted (except for dynamic-fanout which must be explicit)
-  prompt: string;        // Agent instructions (must be "" for command stages)
-  command?: string;      // Shell command — presence makes this a command stage
-  successMarker?: string; // Command mode only: stdout substring that means success → STAGE_COMPLETE
-  errorMarker?: string;   // Command mode only: stdout substring that means failure → STAGE_ERROR (resolves immediately, kills process)
-  chat?: boolean;        // Interactive chatting stage (agent converses with user via stdin)
-  image?: string;        // Docker image (required for command stages, optional for agent)
+  name: string;
+  kind?: "agent" | "command";
+  prompt: string;
+  command?: string;
+  successMarker?: string;
+  errorMarker?: string;
+  chat?: boolean;
+  image?: string;
   mounts: Record<string, "ro" | "rw" | null>;
-  hostMounts?: AdditionalMount[]; // Host path mounts (validated against allowlist)
-  gpu?: boolean;         // Pass --gpus all
-  runAsRoot?: boolean;   // Run container as root
-  privileged?: boolean;  // Run with --privileged (full device access)
-  env?: Record<string, string>; // Environment variables passed to container
-  devices?: string[];    // Device passthrough
-  exclusive?: string;    // Mutex key — only one stage with same key runs at a time
-  mcpAccess?: string[];  // External MCP registry refs available to this agent stage
-  resumeSession?: boolean; // false = fresh session every time. default true = resume previous session
-  fan_in?: "all" | "dynamic"; // Default "all". "dynamic" = wait only for activated predecessors
+  hostMounts?: AdditionalMount[];
+  gpu?: boolean;
+  runAsRoot?: boolean;
+  privileged?: boolean;
+  env?: Record<string, string>;
+  devices?: string[];
+  exclusive?: string;
+  mcpAccess?: string[];
+  resumeSession?: boolean;
+  fan_in?: "all";       // Only "all" is supported.
   transitions: PipelineTransition[];
 }
 
 interface PipelineConfig {
   stages: PipelineStage[];
-  entryStage?: string;   // Defaults to first stage in array
+  entryStage?: string;
+}
+
+interface PipelineTemplate {      // __art__/templates/<name>.json
+  entry?: string;                  // defaults to stages[0].name
+  stages: PipelineStage[];
 }
 ```
 
@@ -65,7 +71,7 @@ interface PipelineConfig {
 | Execution | Claude agent with tools | `sh -c <command>`, no agent |
 | Marker emission | Agent prints `[MARKER]` in response | Automatic: `STAGE_COMPLETE` / `STAGE_ERROR` based on `successMarker` or exit code |
 | Transitions | N transitions with custom markers | Fixed: `STAGE_COMPLETE` + `STAGE_ERROR` only |
-| Retry | Supported (`retry: true`) | Not supported — fails immediately |
+| Retry | No user-authored retry; emit an error marker and let the next stage handle it, or stitch a recovery template | Same — exit non-zero triggers container respawn (capped), user-authored retry is gone |
 
 #### Command stage success detection
 
@@ -114,70 +120,57 @@ Rules:
 - Prefer one ref per isolated capability/server when stage-level access must also hold for Codex
 - If the same backend needs different tool subsets for different stages, prefer separate MCP endpoints such as `/mcp-reader`, `/mcp-examiner`, `/mcp-reviewer`
 
-#### Dynamic fan-out (`kind: "dynamic-fanout"`)
+#### Templates & Stitch
 
-A `dynamic-fanout` stage spawns `N` parallel **child pipelines** at runtime, one per element of a JSON array emitted by the preceding stage. No container runs for the fanout stage itself — it is pure host-side orchestration.
+Templates live at `__art__/templates/<name>.json` and hold reusable sub-graphs. When a transition's `next` names a template, the template is cloned into the live graph at runtime (**stitch**). Use this for:
+- Recovery paths (emit marker, insert cleanup/revert template, terminate).
+- "Looping" iteration without cycles — e.g., review emits `STAGE_KEEP`, which stitches a fresh experiment template downstream of itself. Each stitched copy has uniquely-prefixed stage names so the graph stays acyclic.
+- Parallel work — `count: N` inserts N lane copies + a synthesized barrier (`<origin>__<template>__barrier`).
 
-```json
-{
-  "name": "producer",
-  "prompt": "List all modules to build. Emit [STAGE_COMPLETE] with a JSON array payload of {\"name\":...} objects.",
-  "mounts": { "project": "ro" },
-  "transitions": [{ "marker": "STAGE_COMPLETE", "next": "per-module-build", "prompt": "Module list produced" }]
-},
-{
-  "name": "per-module-build",
-  "kind": "dynamic-fanout",
-  "template": "templates/build-one.pipeline.json",
-  "inputFrom": "payload",
-  "substitutions": { "fields": ["prompt", "mounts"] },
-  "concurrency": 4,
-  "failurePolicy": "all-success",
-  "mounts": {},
-  "transitions": [
-    { "marker": "STAGE_COMPLETE", "next": "aggregate", "prompt": "All child pipelines succeeded" },
-    { "marker": "STAGE_ERROR", "next": null, "prompt": "Any child pipeline failed" }
-  ]
-}
-```
-
-The preceding stage emits a fenced payload. Both **agent** and **command** stages can produce the payload — a command stage prints the fenced block to stdout alongside its success marker:
-
-```
-[STAGE_COMPLETE]
----PAYLOAD_START---
-[{"name":"module-a","port":8080},{"name":"module-b","port":8081}]
----PAYLOAD_END---
-```
-
-The child template can reference placeholders from those payload elements:
-
-```json
-// templates/build-one.pipeline.json
+```jsonc
+// __art__/PIPELINE.json
 {
   "stages": [
     {
-      "name": "child_build",
-      "prompt": "Build {{name}} on port {{port}}",
-      "mounts": { "project": "ro", "src": "rw" },
-      "transitions": [{ "marker": "BUILD_DONE", "next": null, "prompt": "Built {{name}}" }]
+      "name": "review",
+      "prompt": "...",
+      "mounts": {"results": "rw"},
+      "transitions": [
+        { "marker": "STAGE_DONE", "next": null,          "prompt": "Stop iterating" },
+        { "marker": "STAGE_KEEP", "next": "experiment",  "prompt": "Run another experiment (stitch template)" },
+        { "marker": "STAGE_RESET","next": "revert-tpl",  "prompt": "Revert and try again (stitch revert template)" },
+        { "marker": "FANOUT",     "next": "probe",       "count": 4, "prompt": "Probe 4 variants in parallel" }
+      ]
     }
+  ],
+  "entryStage": "review"
+}
+```
+
+```jsonc
+// __art__/templates/experiment.json
+{
+  "entry": "build",
+  "stages": [
+    { "name": "build",  "prompt": "...", "mounts": {...}, "transitions": [{ "marker": "OK", "next": "test" }] },
+    { "name": "test",   "command": "...", "transitions": [{ "marker": "OK", "next": "review" }] },
+    { "name": "review", "prompt": "...", "mounts": {...}, "transitions": [
+      { "marker": "STAGE_DONE", "next": null },
+      { "marker": "STAGE_KEEP", "next": "experiment" }   // self-reference — stitched again
+    ] }
   ]
 }
 ```
 
+Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
+
 Rules:
-- `kind: "dynamic-fanout"` must be **explicit** (never inferred)
-- Preceding stage payload must be a **JSON array of flat objects** (string/number/boolean values only)
-- `template` path is relative to `__art__/` and must stay within it
-- `substitutions.fields` whitelist defaults to none — if substitutions are needed, list them explicitly
-- Allowed substitution fields: `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`, `successMarker`, `errorMarker`
-- `failurePolicy` currently supports only `"all-success"` (any child failure fails the parent, all children still complete)
-- `concurrency` caps parallelism. Omit for unbounded
-- Agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, …) are **forbidden** on fanout stages
-- `next_dynamic` transitions are forbidden on fanout stages
-- Maximum nesting depth is **2** (parent → fanout → grandchild-fanout → grandgrandchild-fanout would fail)
-- A child pipeline whose terminal `next: null` transition fires on an ERROR marker ends with `lastResult: 'error'`, which counts as a failure for the parent fanout's `all-success` policy. Route error markers to `null` only when you actually want that child flagged as failed.
+- A transition's `next` may reference an existing **stage name** OR a **template name**. Unknown names are treated as templates.
+- `count` is valid only when `next` is a template name.
+- `count > 1` inserts N lanes and a barrier with `next: null` (parallel block is terminal — template owns downstream flow).
+- Templates must have internally acyclic transitions; external references (to base stages or other templates) are resolved at stitch-time and the full graph is re-validated as a DAG.
+- Inserted stage names follow `{origin}__{template}{index}__{templateStage}` — visible in logs, `PIPELINE_STATE.insertedStages`, and container names.
+- Templates **cannot** declare `retry`, `next_dynamic`, `kind: "dynamic-fanout"`, `fan_in: "dynamic"`, or authored array `next` — those are all gone.
 
 ---
 
@@ -297,11 +290,11 @@ git-start → (work stages) → git-save → (more stages)
 ```
 Wrap iteration loops with git agent stages. Use `project:ro` + `project:.git:rw`.
 
-### Error retry (agent stages only)
-Add to any **agent** stage (not command stages — they fail immediately):
-```json
-{ "marker": "STAGE_ERROR", "retry": true, "prompt": "Recoverable error — retry" }
-```
+### Error handling
+No user-authored retry. Options when something fails:
+- Terminate: `{ "marker": "STAGE_ERROR", "next": null }` — pipeline ends.
+- Recover via stitch: `{ "marker": "STAGE_ERROR", "next": "recovery-tpl" }` — template runs a corrective flow.
+- Parse-miss loop: if the agent emits no recognizable marker, the runner automatically re-prompts with a hint. Unlimited — use markers carefully.
 
 ### GPU command stage
 ```json
@@ -345,110 +338,47 @@ Add to any **agent** stage (not command stages — they fail immediately):
   "mounts": { "project": "ro", "plan": "rw" },
   "transitions": [
     { "marker": "INTERVIEW_COMPLETE", "next": "implement", "prompt": "Requirements clarified" },
-    { "marker": "STAGE_ERROR", "retry": true }
+    { "marker": "STAGE_ERROR", "next": null, "prompt": "Interview could not proceed — abort" }
   ]
 }
 ```
 
-### Fan-out / Fan-in (parallel stages)
-`next` can be an array to fan-out into parallel stages. Fan-in is automatic: a stage with multiple predecessors waits for all to complete.
-```json
+### Parallel work via stitch (`count: N`)
+Parallel execution comes from stitching a template `N` times with a synthesized fan-in barrier. Author the parallel work as a template and reference it with `count`:
+
+```jsonc
+// PIPELINE.json
 {
   "stages": [
     {
-      "name": "build",
-      "prompt": "Build the project...",
-      "mounts": { "src": "ro", "build": "rw" },
-      "transitions": [{ "marker": "BUILD_OK", "next": ["test-unit", "test-e2e"] }]
-    },
+      "name": "plan",
+      "prompt": "Decide how many variants to probe (emit [GO]).",
+      "mounts": { "plan": "rw" },
+      "transitions": [
+        { "marker": "GO", "next": "probe-variant", "count": 4, "prompt": "Probe 4 variants in parallel" }
+      ]
+    }
+  ],
+  "entryStage": "plan"
+}
+```
+
+```jsonc
+// __art__/templates/probe-variant.json
+{
+  "entry": "probe",
+  "stages": [
     {
-      "name": "test-unit",
-      "prompt": "Run unit tests...",
-      "mounts": { "build": "ro", "results": "rw" },
-      "transitions": [{ "marker": "DONE", "next": "deploy" }]
-    },
-    {
-      "name": "test-e2e",
-      "prompt": "Run e2e tests...",
-      "mounts": { "build": "ro", "results": "rw" },
-      "transitions": [{ "marker": "DONE", "next": "deploy" }]
-    },
-    {
-      "name": "deploy",
-      "prompt": "Deploy after all tests pass...",
-      "mounts": { "build": "ro" },
-      "transitions": [{ "marker": "DEPLOYED", "next": null }]
+      "name": "probe",
+      "prompt": "Probe variant {{index}} (insertId={{insertId}}). Write result to /workspace/results/{{insertId}}.txt",
+      "mounts": { "results": "rw" },
+      "transitions": [{ "marker": "DONE", "next": null }]
     }
   ]
 }
 ```
 
-### Dynamic Transition (selective fan-out)
-`next_dynamic: true`를 쓰면 agent가 런타임에 fan-out target을 선택할 수 있다. `next`는 허용 목록(allowlist)으로 작동하며, agent는 marker payload로 subset을 지정한다.
-
-Agent emission format:
-- `[MARKER:stage1]` → single target
-- `[MARKER:stage1,stage2]` → multiple targets (selective fan-out)
-- `[MARKER]` → payload 없으면 `next` 전체 사용 (fallback)
-
-```json
-{
-  "name": "review-router",
-  "prompt": "Analyze test failure log at /workspace/results/router-test.log.\nDetermine which modules caused the failure.\nEmit [FIX:edit-arbiter] or [FIX:edit-arbiter,edit-crossbar] depending on the cause.",
-  "mounts": { "project": "ro", "results": "ro" },
-  "transitions": [
-    {
-      "marker": "FIX",
-      "next_dynamic": true,
-      "next": ["edit-arbiter", "edit-crossbar", "edit-router"],
-      "prompt": "Agent identified failing modules — re-edit only those"
-    },
-    { "marker": "PASS", "next": "test-system", "prompt": "All modules pass" },
-    { "marker": "STAGE_ERROR", "retry": true, "prompt": "Environment error" }
-  ]
-}
-```
-
-Rules:
-- `next_dynamic` and `retry` cannot be used together
-- `next_dynamic` requires `next` to be a non-null array (allowlist)
-- Agent payload targets must be in the allowlist, otherwise runtime error
-
-### Conditional Fan-in (`fan_in: "dynamic"`)
-기본 fan-in은 모든 predecessor가 완료되어야 실행된다. `fan_in: "dynamic"`이면 **활성화된 predecessor만** 기다린다. Dynamic transition으로 일부 경로만 재실행할 때, 재실행하지 않은 경로를 기다리지 않게 한다.
-
-```json
-{
-  "name": "test-router",
-  "fan_in": "dynamic",
-  "prompt": "",
-  "command": "cd /workspace/project && make test-router 2>&1",
-  "image": "sim-runner:latest",
-  "mounts": { "project": "ro", "results": "rw" },
-  "transitions": [
-    { "marker": "STAGE_COMPLETE", "next": "test-system" },
-    { "marker": "STAGE_ERROR", "next": "review-router" }
-  ]
-}
-```
-
-Use `fan_in: "dynamic"` on any stage that:
-- Is the convergence point after a `next_dynamic` transition
-- Might not have all predecessors re-run in every execution cycle
-
-### Hierarchical test promotion (dynamic fan-out + conditional fan-in)
-Bottom-up test promotion pattern. On failure, review agent selectively re-runs only the causal modules.
-```
-plan → [edit-arbiter, edit-crossbar] → [test-arbiter, test-crossbar]
-                                        ↓ fan-in (dynamic)
-                                    edit-router → test-router
-                                        ↓ FAIL
-                                    review-router → [FIX:edit-arbiter] (dynamic)
-                                        ↓ re-run arbiter only
-                                    edit-arbiter → test-arbiter → edit-router (fan-in: dynamic)
-                                        ↓
-                                    test-router → PASS → done
-```
+At runtime this expands to `plan → [plan__probe-variant0__probe, plan__probe-variant1__probe, plan__probe-variant2__probe, plan__probe-variant3__probe] → plan__probe-variant__barrier → (pipeline ends)`.
 
 ---
 
@@ -516,7 +446,7 @@ Before writing the JSON, verify ALL of the following:
 - [ ] Every stage has a unique `name`
 - [ ] Every transition `next` references an existing stage name or is `null`
 - [ ] Every stage has at least one transition
-- [ ] Command stages have `prompt: ""`, an `image` field, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions (no retry)
+- [ ] Command stages have `prompt: ""`, an `image` field, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions
 - [ ] Command stages use `successMarker` if success depends on stdout content (otherwise exit code is used)
 - [ ] Agent stages have a non-empty `prompt` and no `command` field
 - [ ] `mcpAccess` appears only on agent stages
@@ -530,15 +460,11 @@ Before writing the JSON, verify ALL of the following:
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
 - [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values
-- [ ] `next_dynamic` transitions have `next` as a non-null array (allowlist)
-- [ ] `next_dynamic` and `retry` are not used on the same transition
-- [ ] `dynamic-fanout` stages set `kind: "dynamic-fanout"` explicitly and declare `template` + `inputFrom: "payload"`
-- [ ] `dynamic-fanout` stages do not declare any agent/command fields (`prompt`, `command`, `image`, `mcpAccess`, `chat`, `env`, `hostMounts`, `devices`, `gpu`, `runAsRoot`, `privileged`, `exclusive`, `resumeSession`, `successMarker`, `errorMarker`)
-- [ ] Stage immediately before a `dynamic-fanout` emits a fenced payload with a JSON array of flat objects (string/number/boolean values) — agent or command stage
-- [ ] Fanout `substitutions.fields` only includes allowed fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `transitions`, `successMarker`, `errorMarker`)
-- [ ] Child pipeline terminal `next: null` on an ERROR marker is intended — such a child reports as failed to the parent fanout
-- [ ] Fanout `template` path is relative to `__art__/` and stays inside it
-- [ ] Nesting depth of fanout stages is ≤ 2 (one pipeline may contain at most two nested `dynamic-fanout` levels)
-- [ ] `fan_in: "dynamic"` stages have multiple predecessors (otherwise meaningless)
-- [ ] Dynamic fan-out → fan-in paths use `fan_in: "dynamic"` at convergence points
+- [ ] No transition uses legacy `retry` or `next_dynamic` (both removed)
+- [ ] No stage uses `kind: "dynamic-fanout"` or `fan_in: "dynamic"` (both removed)
+- [ ] No transition has an authored array `next` — multi-target arrays are only produced by parallel stitch
+- [ ] The base PIPELINE.json graph is acyclic (DAG). If you need a loop, express it as a template that stitches itself
+- [ ] Each transition's `next` is either an existing stage name, a template name (file at `__art__/templates/<name>.json`), or `null`
+- [ ] `count` is only used when `next` is a template name, and is a positive integer
+- [ ] Templates live at `__art__/templates/<name>.json` with `{ entry?, stages }` shape; internal transitions are acyclic; names do not collide with base pipeline stages in a way that would prevent renaming
 - [ ] The JSON is valid and parseable
