@@ -37,11 +37,7 @@ import {
 } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
-import {
-  assertConfigAcyclic,
-  stitchParallel,
-  stitchSingle,
-} from './stitch.js';
+import { assertConfigAcyclic, stitchParallel, stitchSingle } from './stitch.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
 
 function resolveProvider(): 'claude' | 'codex' {
@@ -1431,7 +1427,10 @@ PAYLOAD FORMATS:
         Object.entries(existingState.completions ?? {}),
       );
       // Restore dynamically-inserted stages (from earlier stitch operations)
-      if (existingState.insertedStages && existingState.insertedStages.length > 0) {
+      if (
+        existingState.insertedStages &&
+        existingState.insertedStages.length > 0
+      ) {
         this.config = {
           ...this.config,
           stages: [...this.config.stages, ...existingState.insertedStages],
@@ -1554,8 +1553,7 @@ PAYLOAD FORMATS:
     let targetName: string | string[] | null = matched.next ?? null;
     if (typeof matched.next === 'string' && !stagesByName.has(matched.next)) {
       try {
-        const transitionIdx =
-          stageConfig.transitions.indexOf(matched);
+        const transitionIdx = stageConfig.transitions.indexOf(matched);
         const stitched = this.performStitch(
           stageConfig,
           transitionIdx,
@@ -1892,7 +1890,6 @@ PAYLOAD FORMATS:
       result: stageResult,
     };
   }
-
 
   /**
    * Main FSM loop with fan-out/fan-in support.

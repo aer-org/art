@@ -50,7 +50,9 @@ describe('resolveTemplatePath', () => {
     );
   });
   it('rejects names with slashes', () => {
-    expect(() => resolveTemplatePath('/tmp/group', 'sub/name')).toThrow(/match/);
+    expect(() => resolveTemplatePath('/tmp/group', 'sub/name')).toThrow(
+      /match/,
+    );
   });
   it('resolves a simple name', () => {
     const p = resolveTemplatePath('/tmp/group', 'revert');
@@ -81,7 +83,11 @@ describe('validatePipelineTemplate', () => {
       {
         stages: [
           { name: 'a', mounts: {}, transitions: [{ marker: 'OK', next: 'b' }] },
-          { name: 'b', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
+          {
+            name: 'b',
+            mounts: {},
+            transitions: [{ marker: 'OK', next: null }],
+          },
         ],
       },
       'tpl',
@@ -94,8 +100,16 @@ describe('validatePipelineTemplate', () => {
       {
         entry: 'b',
         stages: [
-          { name: 'a', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
-          { name: 'b', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
+          {
+            name: 'a',
+            mounts: {},
+            transitions: [{ marker: 'OK', next: null }],
+          },
+          {
+            name: 'b',
+            mounts: {},
+            transitions: [{ marker: 'OK', next: null }],
+          },
         ],
       },
       'tpl',
@@ -197,9 +211,7 @@ describe('validatePipelineTemplate', () => {
             {
               name: 's1',
               mounts: {},
-              transitions: [
-                { marker: 'OK', next_dynamic: true, next: ['x'] },
-              ],
+              transitions: [{ marker: 'OK', next_dynamic: true, next: ['x'] }],
             },
           ],
         },
@@ -283,8 +295,16 @@ describe('validatePipelineTemplate', () => {
       validatePipelineTemplate(
         {
           stages: [
-            { name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'b' }] },
-            { name: 'b', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] },
+            {
+              name: 'a',
+              mounts: {},
+              transitions: [{ marker: 'x', next: 'b' }],
+            },
+            {
+              name: 'b',
+              mounts: {},
+              transitions: [{ marker: 'x', next: 'a' }],
+            },
           ],
         },
         'tpl',
@@ -297,7 +317,11 @@ describe('validatePipelineTemplate', () => {
       validatePipelineTemplate(
         {
           stages: [
-            { name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] },
+            {
+              name: 'a',
+              mounts: {},
+              transitions: [{ marker: 'x', next: 'a' }],
+            },
           ],
         },
         'tpl',
@@ -318,9 +342,21 @@ describe('validatePipelineTemplate', () => {
                 { marker: 'R', next: 'c' },
               ],
             },
-            { name: 'b', mounts: {}, transitions: [{ marker: 'x', next: 'd' }] },
-            { name: 'c', mounts: {}, transitions: [{ marker: 'x', next: 'd' }] },
-            { name: 'd', mounts: {}, transitions: [{ marker: 'x', next: null }] },
+            {
+              name: 'b',
+              mounts: {},
+              transitions: [{ marker: 'x', next: 'd' }],
+            },
+            {
+              name: 'c',
+              mounts: {},
+              transitions: [{ marker: 'x', next: 'd' }],
+            },
+            {
+              name: 'd',
+              mounts: {},
+              transitions: [{ marker: 'x', next: null }],
+            },
           ],
         },
         'tpl',

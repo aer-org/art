@@ -886,7 +886,11 @@ describe('Stitch integration', () => {
 
   function ensureIpc(stageName: string) {
     fs.mkdirSync(
-      path.join(TEST_IPC_BASE, `${group.folder}__pipeline_${stageName}`, 'input'),
+      path.join(
+        TEST_IPC_BASE,
+        `${group.folder}__pipeline_${stageName}`,
+        'input',
+      ),
       { recursive: true },
     );
   }
@@ -1571,9 +1575,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     const result = loadPipelineConfig('test', tmpDir);
     expect(result).toBeNull();
   });
-
 });
-
 
 describe('savePipelineState with activations/completions', () => {
   let tmpDir: string;

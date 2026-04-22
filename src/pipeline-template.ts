@@ -43,9 +43,7 @@ export function resolveTemplatePath(groupDir: string, name: string): string {
   const resolved = path.resolve(dir, `${name}.json`);
   const rel = path.relative(dir, resolved);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(
-      `Template name "${name}" resolves outside templates dir`,
-    );
+    throw new Error(`Template name "${name}" resolves outside templates dir`);
   }
   return resolved;
 }
@@ -112,9 +110,7 @@ export function validatePipelineTemplate(
   let entry: string;
   if (obj.entry !== undefined) {
     if (typeof obj.entry !== 'string' || obj.entry.length === 0) {
-      throw new Error(
-        `Template "${name}": "entry" must be a non-empty string`,
-      );
+      throw new Error(`Template "${name}": "entry" must be a non-empty string`);
     }
     if (!stageNames.has(obj.entry)) {
       throw new Error(

@@ -96,7 +96,9 @@ describe('stitchSingle', () => {
 
     expect(result.entryName).toBe('review__revert-tpl0__checkout');
 
-    const review = result.updatedConfig.stages.find((s) => s.name === 'review')!;
+    const review = result.updatedConfig.stages.find(
+      (s) => s.name === 'review',
+    )!;
     expect(review.transitions[1].next).toBe('review__revert-tpl0__checkout');
     // untouched transitions preserved
     expect(review.transitions[0].next).toBe('continue-tpl');
@@ -172,14 +174,18 @@ describe('stitchSingle', () => {
 
   it('drops count field from the host transition', () => {
     const config = baseConfig();
-    (config.stages[1].transitions[1] as unknown as Record<string, unknown>).count = 3;
+    (
+      config.stages[1].transitions[1] as unknown as Record<string, unknown>
+    ).count = 3;
     const result = stitchSingle({
       config,
       originStage: 'review',
       originTransitionIdx: 1,
       template: revertTemplate(),
     });
-    const review = result.updatedConfig.stages.find((s) => s.name === 'review')!;
+    const review = result.updatedConfig.stages.find(
+      (s) => s.name === 'review',
+    )!;
     expect(
       (review.transitions[1] as unknown as Record<string, unknown>).count,
     ).toBeUndefined();
@@ -277,7 +283,9 @@ describe('stitchParallel', () => {
     expect(typeof barrier.prompt).toBe('string');
 
     // Host transition becomes multi-target
-    const review = result.updatedConfig.stages.find((s) => s.name === 'review')!;
+    const review = result.updatedConfig.stages.find(
+      (s) => s.name === 'review',
+    )!;
     expect(review.transitions[1].next).toEqual(result.entryNames);
   });
 
@@ -344,7 +352,9 @@ describe('stitchParallel', () => {
       count: 1,
     });
     expect(result.entryNames).toEqual(['review__revert-tpl0__checkout']);
-    expect(result.updatedConfig.stages.find((s) => s.name === result.barrierName)).toBeTruthy();
+    expect(
+      result.updatedConfig.stages.find((s) => s.name === result.barrierName),
+    ).toBeTruthy();
   });
 });
 
