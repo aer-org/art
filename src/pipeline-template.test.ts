@@ -295,7 +295,11 @@ describe('validatePipelineTemplate', () => {
       validatePipelineTemplate(
         {
           stages: [
-            { name: 's1', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [{ marker: 'OK', next: null }],
+            },
             {
               name: 's2',
               mounts: {},

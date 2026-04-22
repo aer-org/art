@@ -208,7 +208,6 @@ describe('stitchSingle', () => {
       }),
     ).toThrow(/Duplicate/);
   });
-
 });
 
 describe('stitchParallel', () => {
