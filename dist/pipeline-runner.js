@@ -21,7 +21,7 @@ import { generateRunId, writeRunManifest, } from './run-manifest.js';
 import { formatStageMcpAccessSummary, loadMcpRegistry, resolveStageMcpServers, } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
-import { assertConfigAcyclic, stitchParallel, stitchSingle, } from './stitch.js';
+import { assertConfigAcyclic, stitchParallel, stitchSingle } from './stitch.js';
 function resolveProvider() {
     return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
 }
@@ -1062,7 +1062,8 @@ PAYLOAD FORMATS:
             const activations = new Map(Object.entries(existingState.activations ?? {}));
             const completions = new Map(Object.entries(existingState.completions ?? {}));
             // Restore dynamically-inserted stages (from earlier stitch operations)
-            if (existingState.insertedStages && existingState.insertedStages.length > 0) {
+            if (existingState.insertedStages &&
+                existingState.insertedStages.length > 0) {
                 this.config = {
                     ...this.config,
                     stages: [...this.config.stages, ...existingState.insertedStages],

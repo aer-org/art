@@ -59,7 +59,11 @@ describe('validatePipelineTemplate', () => {
         const t = validatePipelineTemplate({
             stages: [
                 { name: 'a', mounts: {}, transitions: [{ marker: 'OK', next: 'b' }] },
-                { name: 'b', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
+                {
+                    name: 'b',
+                    mounts: {},
+                    transitions: [{ marker: 'OK', next: null }],
+                },
             ],
         }, 'tpl');
         expect(t.entry).toBe('a');
@@ -68,8 +72,16 @@ describe('validatePipelineTemplate', () => {
         const t = validatePipelineTemplate({
             entry: 'b',
             stages: [
-                { name: 'a', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
-                { name: 'b', mounts: {}, transitions: [{ marker: 'OK', next: null }] },
+                {
+                    name: 'a',
+                    mounts: {},
+                    transitions: [{ marker: 'OK', next: null }],
+                },
+                {
+                    name: 'b',
+                    mounts: {},
+                    transitions: [{ marker: 'OK', next: null }],
+                },
             ],
         }, 'tpl');
         expect(t.entry).toBe('b');
@@ -138,9 +150,7 @@ describe('validatePipelineTemplate', () => {
                 {
                     name: 's1',
                     mounts: {},
-                    transitions: [
-                        { marker: 'OK', next_dynamic: true, next: ['x'] },
-                    ],
+                    transitions: [{ marker: 'OK', next_dynamic: true, next: ['x'] }],
                 },
             ],
         }, 'tpl')).toThrow(/next_dynamic/);
@@ -194,15 +204,27 @@ describe('validatePipelineTemplate', () => {
     it('detects internal cycles', () => {
         expect(() => validatePipelineTemplate({
             stages: [
-                { name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'b' }] },
-                { name: 'b', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] },
+                {
+                    name: 'a',
+                    mounts: {},
+                    transitions: [{ marker: 'x', next: 'b' }],
+                },
+                {
+                    name: 'b',
+                    mounts: {},
+                    transitions: [{ marker: 'x', next: 'a' }],
+                },
             ],
         }, 'tpl')).toThrow(/cycle/);
     });
     it('detects self-loop', () => {
         expect(() => validatePipelineTemplate({
             stages: [
-                { name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] },
+                {
+                    name: 'a',
+                    mounts: {},
+                    transitions: [{ marker: 'x', next: 'a' }],
+                },
             ],
         }, 'tpl')).toThrow(/cycle/);
     });
@@ -217,9 +239,21 @@ describe('validatePipelineTemplate', () => {
                         { marker: 'R', next: 'c' },
                     ],
                 },
-                { name: 'b', mounts: {}, transitions: [{ marker: 'x', next: 'd' }] },
-                { name: 'c', mounts: {}, transitions: [{ marker: 'x', next: 'd' }] },
-                { name: 'd', mounts: {}, transitions: [{ marker: 'x', next: null }] },
+                {
+                    name: 'b',
+                    mounts: {},
+                    transitions: [{ marker: 'x', next: 'd' }],
+                },
+                {
+                    name: 'c',
+                    mounts: {},
+                    transitions: [{ marker: 'x', next: 'd' }],
+                },
+                {
+                    name: 'd',
+                    mounts: {},
+                    transitions: [{ marker: 'x', next: null }],
+                },
             ],
         }, 'tpl')).not.toThrow();
     });
