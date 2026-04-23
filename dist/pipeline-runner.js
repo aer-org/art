@@ -21,7 +21,7 @@ import { generateRunId, writeRunManifest, } from './run-manifest.js';
 import { formatStageMcpAccessSummary, loadMcpRegistry, resolveStageMcpServers, } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
-import { assertConfigAcyclic, stitchParallel, stitchSingle } from './stitch.js';
+import { assertConfigAcyclic, stitchParallel, stitchSingle, RESERVED_SUBSTITUTION_KEYS, } from './stitch.js';
 function resolveProvider() {
     return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
 }
@@ -33,6 +33,73 @@ export function resolveStageKind(stage) {
     if (stage.kind)
         return stage.kind;
     return stage.command ? 'command' : 'agent';
+}
+/**
+ * Pure helper: given a matched transition and the payload captured from the
+ * agent's marker, return the StitchDirective that performStitch should use.
+ * Throws with a descriptive message on any invalid payload shape.
+ *
+ * Callers must pass `payload` only when the transition has `countFrom:
+ * "payload"`; otherwise the argument is ignored. The caller catches thrown
+ * errors and surfaces them as STAGE_ERROR outcomes.
+ */
+export function resolveStitchInputs(t, payload) {
+    // Static count path — unchanged from pre-payload behavior.
+    if (t.countFrom === undefined) {
+        if (t.count !== undefined && t.count > 1) {
+            return { mode: 'parallel', count: t.count };
+        }
+        return { mode: 'single' };
+    }
+    // Dynamic (payload-driven) path.
+    if (payload === null || payload.length === 0) {
+        throw new Error('countFrom: "payload" requires the agent to emit a fenced ---PAYLOAD_START---...---PAYLOAD_END--- block after the marker');
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(payload);
+    }
+    catch (err) {
+        throw new Error(`Payload is not valid JSON: ${err.message}`);
+    }
+    if (!Array.isArray(parsed)) {
+        throw new Error('Payload must be a JSON array');
+    }
+    if (parsed.length === 0) {
+        throw new Error('Payload array must be non-empty');
+    }
+    const wantSubs = t.substitutionsFrom === 'payload';
+    const perCopySubs = [];
+    for (let i = 0; i < parsed.length; i++) {
+        const el = parsed[i];
+        if (el === null || typeof el !== 'object' || Array.isArray(el)) {
+            throw new Error(`Payload element [${i}] must be a flat JSON object (got ${el === null ? 'null' : Array.isArray(el) ? 'array' : typeof el})`);
+        }
+        const subs = {};
+        for (const [key, value] of Object.entries(el)) {
+            if (RESERVED_SUBSTITUTION_KEYS.includes(key)) {
+                throw new Error(`Payload element [${i}] uses reserved key "${key}" (reserved: ${RESERVED_SUBSTITUTION_KEYS.join(', ')})`);
+            }
+            if (typeof value !== 'string' &&
+                typeof value !== 'number' &&
+                typeof value !== 'boolean') {
+                throw new Error(`Payload element [${i}] field "${key}" must be string/number/boolean (got ${typeof value})`);
+            }
+            subs[key] = value;
+        }
+        perCopySubs.push(subs);
+    }
+    if (perCopySubs.length === 1) {
+        return {
+            mode: 'single',
+            subs: wantSubs ? perCopySubs[0] : undefined,
+        };
+    }
+    return {
+        mode: 'parallel',
+        count: perCopySubs.length,
+        perCopySubs: wantSubs ? perCopySubs : undefined,
+    };
 }
 // --- Exclusive stage lock ---
 // Stages with the same `exclusive` key share a mutex.
@@ -949,25 +1016,27 @@ PAYLOAD FORMATS:
      * stages and returning the new host transition target (single name or an
      * array for parallel stitch).
      */
-    performStitch(stageConfig, transitionIdx, templateName, count) {
+    performStitch(stageConfig, transitionIdx, templateName, directive) {
         if (transitionIdx < 0) {
             throw new Error(`Host transition for "${stageConfig.name}" not found in stage config`);
         }
         const template = loadPipelineTemplate(this.groupDir, templateName);
-        if (count !== undefined && count > 1) {
+        if (directive.mode === 'parallel') {
             const r = stitchParallel({
                 config: this.config,
                 originStage: stageConfig.name,
                 originTransitionIdx: transitionIdx,
                 template,
-                count,
+                count: directive.count,
+                perCopySubstitutions: directive.perCopySubs,
             });
             this.config = r.updatedConfig;
             logger.info({
                 origin: stageConfig.name,
                 template: templateName,
                 insertId: r.insertId,
-                count,
+                count: directive.count,
+                subs: directive.perCopySubs !== undefined,
             }, 'Stitch (parallel) applied');
             return { insertedStages: r.insertedStages, newNext: r.entryNames };
         }
@@ -976,12 +1045,14 @@ PAYLOAD FORMATS:
             originStage: stageConfig.name,
             originTransitionIdx: transitionIdx,
             template,
+            substitutions: directive.subs,
         });
         this.config = r.updatedConfig;
         logger.info({
             origin: stageConfig.name,
             template: templateName,
             insertId: r.insertId,
+            subs: directive.subs !== undefined,
         }, 'Stitch (single) applied');
         return { insertedStages: r.insertedStages, newNext: r.entryName };
     }
@@ -1139,8 +1210,9 @@ PAYLOAD FORMATS:
         let targetName = matched.next ?? null;
         if (matched.template) {
             try {
+                const directive = resolveStitchInputs(matched, payload);
                 const transitionIdx = stageConfig.transitions.indexOf(matched);
-                const stitched = this.performStitch(stageConfig, transitionIdx, matched.template, matched.count);
+                const stitched = this.performStitch(stageConfig, transitionIdx, matched.template, directive);
                 for (const s of stitched.insertedStages) {
                     stagesByName.set(s.name, s);
                 }
@@ -1664,6 +1736,30 @@ export function loadPipelineConfig(groupFolder, groupDir, pipelinePath) {
                     }
                     if (!hasTemplate) {
                         logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "count" requires "template"');
+                        return null;
+                    }
+                }
+                if (t.countFrom !== undefined) {
+                    if (t.countFrom !== 'payload') {
+                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "countFrom" only accepts "payload"');
+                        return null;
+                    }
+                    if (!hasTemplate) {
+                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "countFrom" requires "template"');
+                        return null;
+                    }
+                    if (t.count !== undefined) {
+                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition must have either "count" or "countFrom", not both');
+                        return null;
+                    }
+                }
+                if (t.substitutionsFrom !== undefined) {
+                    if (t.substitutionsFrom !== 'payload') {
+                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "substitutionsFrom" only accepts "payload"');
+                        return null;
+                    }
+                    if (t.countFrom !== 'payload') {
+                        logger.error({ groupFolder, stage: stage.name, marker: t.marker }, 'Transition "substitutionsFrom" requires "countFrom: \\"payload\\""');
                         return null;
                     }
                 }

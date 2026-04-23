@@ -15,6 +15,7 @@
 import type { PipelineConfig, PipelineStage } from './pipeline-runner.js';
 import type { PipelineTemplate } from './pipeline-template.js';
 export declare const STITCH_SUBSTITUTION_FIELDS: readonly string[];
+export declare const RESERVED_SUBSTITUTION_KEYS: readonly ["index", "insertId"];
 export type SubstitutionValue = string | number | boolean;
 export type SubstitutionMap = Record<string, SubstitutionValue>;
 export interface StitchSingleInput {

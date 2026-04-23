@@ -261,9 +261,48 @@ Inside a template, `next` is scope-local — it must name a stage defined in the
 { "marker": "OK",  "next": null }                              // → pipeline end
 { "marker": "OK",  "template": "experiment" }                   // → stitch template once
 { "marker": "OK",  "template": "lane",       "count": 4 }       // → stitch 4× in parallel + barrier
+{ "marker": "PLAN_READY", "template": "per_id",
+  "countFrom": "payload", "substitutionsFrom": "payload" }      // → payload-driven fanout
 ```
 
 `next` and `template` are mutually exclusive. `count` requires `template`. With `count > 1`, `N` lane copies are inserted in parallel and a synthesized fan-in **barrier** (stage name `<origin>__<template>__barrier`) converges them. The barrier terminates with `next: null` (parallel block is terminal under **Option 1 semantics** — the template owns the flow beyond the host stage). Omitting `count` (or setting `count: 1`) performs a single stitch.
+
+### Payload-driven fanout
+
+When lane count isn't known at authoring time, use `countFrom: "payload"`. The preceding agent emits a fenced JSON array; the runtime uses its length as the lane count, and (if `substitutionsFrom: "payload"` is also set) feeds each element's fields as per-lane substitutions.
+
+```
+[PLAN_READY]
+---PAYLOAD_START---
+[
+  { "id": "alpha", "kind": "stimulus" },
+  { "id": "beta",  "kind": "monitor"  },
+  { "id": "gamma", "kind": "probe"    }
+]
+---PAYLOAD_END---
+```
+
+With the transition above plus this payload, the runtime clones `per_id` three times and substitutes `{{id}}` / `{{kind}}` per lane inside every substitution-eligible field (`prompt`, `mounts`, `env`, `transitions`, etc.). Length-1 payloads collapse to a single stitch with no barrier (a 1-lane barrier has nothing to converge).
+
+Rules:
+
+- `countFrom` accepts only `"payload"`. Mutually exclusive with `count`.
+- `substitutionsFrom` accepts only `"payload"`, and requires `countFrom: "payload"`.
+- Payload must be a JSON array of flat objects whose values are strings, numbers, or booleans.
+- Elements may not use reserved keys `index` or `insertId` — those are injected by stitch and would collide with the per-lane metadata (`{{index}}` / `{{insertId}}` remain available alongside payload fields).
+- Missing / unparseable / empty-array / invalid-element payload → stitch fails and the transition resolves as `STAGE_ERROR`.
+
+### Unresolved placeholder check
+
+After substitution applies, stitch scans every substitution-eligible field of every cloned stage for leftover `{{X}}` patterns. Any match is a contract violation — the template referenced a key the substitution map did not provide — and stitch fails immediately with a descriptive error.
+
+Common triggers:
+
+- Template typo: `{{tpye}}` instead of `{{kind}}`.
+- Payload missing a key the template expects.
+- Key mismatch: template uses `{{id}}` but payload emits `{{identifier}}`.
+
+This catches configuration drift at stitch time, before any stitched agent receives a broken prompt. `{{index}}` and `{{insertId}}` are always injected by stitch core, so they never trigger the check.
 
 ### Stitched stage naming
 
@@ -310,13 +349,15 @@ Transitions define how stages connect. The agent signals stage completion by emi
 
 Exactly one of `next` (string), `next: null`, or `template` must be present per transition.
 
-| Field      | Type             | Required      | Default | Description                                                                                                          |
-| ---------- | ---------------- | ------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `marker`   | `string`         | Yes           | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). Agent wraps it in brackets: `[STAGE_COMPLETE]`.              |
-| `next`     | `string \| null` | No (see note) | `null`  | Scope-local stage name, or `null` to end the pipeline. Inside a template, must name a stage in the same template.   |
-| `template` | `string`         | No (see note) | —       | Template name to stitch at runtime. Mutually exclusive with a non-null `next`.                                       |
-| `count`    | `number` (≥1)    | No            | `1`     | Valid only with `template`. Inserts `N` lane copies + barrier (parallel stitch).                                     |
-| `prompt`   | `string`         | No            | —       | Description shown to the agent explaining when to use this marker.                                                   |
+| Field               | Type             | Required      | Default | Description                                                                                                          |
+| ------------------- | ---------------- | ------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `marker`            | `string`         | Yes           | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). Agent wraps it in brackets: `[STAGE_COMPLETE]`.              |
+| `next`              | `string \| null` | No (see note) | `null`  | Scope-local stage name, or `null` to end the pipeline. Inside a template, must name a stage in the same template.   |
+| `template`          | `string`         | No (see note) | —       | Template name to stitch at runtime. Mutually exclusive with a non-null `next`.                                       |
+| `count`             | `number` (≥1)    | No            | `1`     | Valid only with `template`. Inserts `N` lane copies + barrier (parallel stitch). Mutually exclusive with `countFrom`.|
+| `countFrom`         | `"payload"`      | No            | —       | Derive lane count from the marker payload's JSON array length. Requires `template`.                                  |
+| `substitutionsFrom` | `"payload"`      | No            | —       | Per-lane substitution map comes from `payload[i]` fields. Requires `countFrom: "payload"`.                           |
+| `prompt`            | `string`         | No            | —       | Description shown to the agent explaining when to use this marker.                                                   |
 
 **How matching works:** The FSM scans agent output for `[MARKER_NAME]` or `[MARKER_NAME: payload]`. The first transition whose marker matches fires. If no transition matches, the runner sends a retry hint and keeps the container running. Parse-miss retry is unlimited (agents get to try again with feedback).
 

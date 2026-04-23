@@ -9,7 +9,12 @@ export const STITCH_SUBSTITUTION_FIELDS = [
     'command',
     'successMarker',
     'errorMarker',
+    'transitions',
 ];
+// Reserved substitution keys that callers may not include in per-copy
+// substitution maps — they are injected by stitch core and must not be
+// overridden by payload-provided data.
+export const RESERVED_SUBSTITUTION_KEYS = ['index', 'insertId'];
 const SUBSTITUTION_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 const BARRIER_MARKER = 'STAGE_COMPLETE';
 const BARRIER_PROMPT = `You are a parallel-stitch barrier stage. All predecessor lanes have completed. Emit exactly [${BARRIER_MARKER}] and nothing else.`;
@@ -150,8 +155,53 @@ function cloneTemplateCopy(template, origin, copyIndex, subs, convergenceTarget)
             name: rename(stage.name),
             transitions: stage.transitions.map((t) => rewireTransition(t, rename, convergenceTarget)),
         };
-        return applySubstitutionsToStage(renamed, subs);
+        const substituted = applySubstitutionsToStage(renamed, subs);
+        assertNoUnresolvedPlaceholders(substituted, origin, template.name);
+        return substituted;
     });
+}
+/**
+ * After substitution runs, any remaining `{{X}}` in a substitution-eligible
+ * field means the template referenced a placeholder the substitution map
+ * didn't provide — either a template-author typo or a payload missing the
+ * expected key. Fail at stitch time with a descriptive message instead of
+ * letting the literal placeholder reach the agent's prompt.
+ */
+function assertNoUnresolvedPlaceholders(stage, origin, templateName) {
+    for (const field of STITCH_SUBSTITUTION_FIELDS) {
+        const value = stage[field];
+        if (value === undefined)
+            continue;
+        const unresolved = collectPlaceholders(value);
+        if (unresolved.size > 0) {
+            const keys = [...unresolved].map((k) => `{{${k}}}`).join(', ');
+            throw new Error(`Unresolved placeholder(s) ${keys} in stitched stage "${stage.name}" field "${field}" (origin: "${origin}", template: "${templateName}"). The substitution map did not provide values for these keys.`);
+        }
+    }
+}
+function collectPlaceholders(value) {
+    const found = new Set();
+    walkPlaceholders(value, found);
+    return found;
+}
+function walkPlaceholders(value, acc) {
+    if (typeof value === 'string') {
+        for (const m of value.matchAll(SUBSTITUTION_PATTERN)) {
+            acc.add(m[1]);
+        }
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (const v of value)
+            walkPlaceholders(v, acc);
+        return;
+    }
+    if (value !== null && typeof value === 'object') {
+        for (const [k, v] of Object.entries(value)) {
+            walkPlaceholders(k, acc);
+            walkPlaceholders(v, acc);
+        }
+    }
 }
 function rewireTransition(t, rename, convergenceTarget) {
     // Only called while cloning template stages. Templates reject authored

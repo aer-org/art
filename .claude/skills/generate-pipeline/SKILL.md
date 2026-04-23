@@ -15,11 +15,13 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a va
 
 ```typescript
 interface PipelineTransition {
-  marker: string;        // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
-  next?: string | null;  // Scope-local stage name, or null to end the pipeline. Mutually exclusive with `template`.
-  template?: string;     // Template name (file at __art__/templates/<name>.json) to stitch at runtime.
-  count?: number;        // Valid only with `template`. Parallel stitch N lanes + synthesized barrier.
-  prompt?: string;       // **Required in practice** — describes when the agent should emit this marker
+  marker: string;                     // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
+  next?: string | null;               // Scope-local stage name, or null to end the pipeline. Mutually exclusive with `template`.
+  template?: string;                  // Template name (file at __art__/templates/<name>.json) to stitch at runtime.
+  count?: number;                     // Valid only with `template`. Parallel stitch N lanes + synthesized barrier.
+  countFrom?: "payload";              // Derive lane count from the marker payload array length. Requires `template`.
+  substitutionsFrom?: "payload";      // Per-lane subs come from payload[i] fields. Requires `countFrom: "payload"`.
+  prompt?: string;                    // **Required in practice** — describes when the agent should emit this marker
 }
 
 interface AdditionalMount {
@@ -172,6 +174,21 @@ Rules:
 - Templates must have internally acyclic transitions. Cross-scope `next` references are rejected at load — use `template:` instead.
 - Inserted stage names follow `{origin}__{template}{index}__{templateStage}` — visible in logs, `PIPELINE_STATE.insertedStages`, and container names.
 - Templates **cannot** declare `retry`, `next_dynamic`, `kind: "dynamic-fanout"`, `fan_in: "dynamic"`, or authored array `next` — those are all gone.
+
+#### Payload-driven fanout
+
+When lane count can only be decided at runtime (e.g., one lane per discovered ID), use `countFrom: "payload"` on the transition. The preceding agent emits a fenced JSON array after its marker; runtime uses its length as the lane count, and (if `substitutionsFrom: "payload"` is set) feeds each element's fields as per-lane substitutions:
+
+```
+[PLAN_READY]
+---PAYLOAD_START---
+[{"id":"alpha","kind":"stimulus"}, {"id":"beta","kind":"monitor"}, {"id":"gamma","kind":"probe"}]
+---PAYLOAD_END---
+```
+
+The template then uses `{{id}}` / `{{kind}}` in any substitution-eligible field (prompt / mounts / env / transitions / etc.) and each lane gets its own payload-object values. Length-1 payloads collapse to a single stitch (no barrier). Payload elements may NOT use reserved keys `index` / `insertId`.
+
+Stitch verifies after substitution that every `{{X}}` placeholder in a cloned stage was actually resolved — any leftover `{{X}}` (template typo, missing payload field, key-name mismatch) is a stitch-time error, so broken prompts never reach the agent.
 
 ---
 
@@ -467,5 +484,8 @@ Before writing the JSON, verify ALL of the following:
 - [ ] No transition has an authored array `next` — multi-target arrays are only produced by parallel stitch
 - [ ] The base PIPELINE.json graph is acyclic (DAG). If you need a loop, express it as a template that stitches itself via `template:`
 - [ ] `count` is only used together with `template`, and is a positive integer
+- [ ] `countFrom` is only `"payload"`, only used with `template`, and not together with `count`
+- [ ] `substitutionsFrom` is only `"payload"` and only used with `countFrom: "payload"`
+- [ ] For payload-driven fanout, the preceding agent emits a fenced `---PAYLOAD_START--- ... ---PAYLOAD_END---` JSON array of flat objects; payload elements never use reserved keys `index` / `insertId`
 - [ ] Templates live at `__art__/templates/<name>.json` with `{ entry?, stages }` shape; internal transitions are acyclic; `next` inside a template stays scope-local (cross-scope handoffs use `template:`)
 - [ ] The JSON is valid and parseable

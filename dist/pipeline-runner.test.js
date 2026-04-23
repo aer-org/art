@@ -158,7 +158,7 @@ vi.mock('child_process', async () => {
         spawn: vi.fn(() => fakeProc),
     };
 });
-import { parseStageMarkers, loadPipelineConfig, savePipelineState, loadPipelineState, PipelineRunner, } from './pipeline-runner.js';
+import { parseStageMarkers, loadPipelineConfig, savePipelineState, loadPipelineState, PipelineRunner, resolveStitchInputs, } from './pipeline-runner.js';
 import * as mcpRegistry from './mcp-registry.js';
 const mockLoadMcpRegistry = vi.mocked(mcpRegistry.loadMcpRegistry);
 const mockResolveStageMcpServers = vi.mocked(mcpRegistry.resolveStageMcpServers);
@@ -282,6 +282,76 @@ describe('parseStageMarkers', () => {
     });
 });
 // generateRunId tests are in run-manifest.test.ts
+describe('resolveStitchInputs', () => {
+    function t(over = {}) {
+        return { marker: 'OK', template: 'tpl', ...over };
+    }
+    it('returns single mode when no count or countFrom', () => {
+        expect(resolveStitchInputs(t(), null)).toEqual({ mode: 'single' });
+    });
+    it('returns single mode for count: 1', () => {
+        expect(resolveStitchInputs(t({ count: 1 }), null)).toEqual({
+            mode: 'single',
+        });
+    });
+    it('returns parallel mode for count >= 2', () => {
+        expect(resolveStitchInputs(t({ count: 4 }), null)).toEqual({
+            mode: 'parallel',
+            count: 4,
+        });
+    });
+    it('derives parallel mode from payload length with subs', () => {
+        const payload = JSON.stringify([
+            { id: 'a', kind: 'x' },
+            { id: 'b', kind: 'y' },
+            { id: 'c', kind: 'z' },
+        ]);
+        const d = resolveStitchInputs(t({ countFrom: 'payload', substitutionsFrom: 'payload' }), payload);
+        expect(d).toEqual({
+            mode: 'parallel',
+            count: 3,
+            perCopySubs: [
+                { id: 'a', kind: 'x' },
+                { id: 'b', kind: 'y' },
+                { id: 'c', kind: 'z' },
+            ],
+        });
+    });
+    it('derives parallel mode from payload length without subs when substitutionsFrom is absent', () => {
+        const payload = JSON.stringify([{ id: 'a' }, { id: 'b' }]);
+        const d = resolveStitchInputs(t({ countFrom: 'payload' }), payload);
+        expect(d).toEqual({ mode: 'parallel', count: 2, perCopySubs: undefined });
+    });
+    it('collapses length-1 payload to single mode', () => {
+        const payload = JSON.stringify([{ id: 'solo', kind: 'stimulus' }]);
+        const d = resolveStitchInputs(t({ countFrom: 'payload', substitutionsFrom: 'payload' }), payload);
+        expect(d).toEqual({
+            mode: 'single',
+            subs: { id: 'solo', kind: 'stimulus' },
+        });
+    });
+    it('throws when countFrom is set but payload is missing', () => {
+        expect(() => resolveStitchInputs(t({ countFrom: 'payload' }), null)).toThrow(/requires.*PAYLOAD_START/);
+    });
+    it('throws on invalid JSON payload', () => {
+        expect(() => resolveStitchInputs(t({ countFrom: 'payload' }), '{not json')).toThrow(/not valid JSON/);
+    });
+    it('throws when payload is not an array', () => {
+        expect(() => resolveStitchInputs(t({ countFrom: 'payload' }), '{"id":"a"}')).toThrow(/must be a JSON array/);
+    });
+    it('throws on empty payload array', () => {
+        expect(() => resolveStitchInputs(t({ countFrom: 'payload' }), '[]')).toThrow(/non-empty/);
+    });
+    it('throws when a payload element is not an object', () => {
+        expect(() => resolveStitchInputs(t({ countFrom: 'payload' }), JSON.stringify([{ id: 'a' }, 'bad']))).toThrow(/\[1\].*flat JSON object/);
+    });
+    it('throws when a payload element uses a reserved key', () => {
+        expect(() => resolveStitchInputs(t({ countFrom: 'payload', substitutionsFrom: 'payload' }), JSON.stringify([{ id: 'a', index: 99 }]))).toThrow(/reserved key "index"/);
+    });
+    it('throws when a payload field has a non-primitive value', () => {
+        expect(() => resolveStitchInputs(t({ countFrom: 'payload', substitutionsFrom: 'payload' }), JSON.stringify([{ id: 'a', nested: { x: 1 } }]))).toThrow(/field "nested".*string\/number\/boolean/);
+    });
+});
 describe('loadPipelineConfig', () => {
     let tmpDir;
     beforeEach(() => {
@@ -756,6 +826,89 @@ describe('Stitch integration', () => {
             expect(callNames).toContain(`pipeline-${laneTask(i)}`);
         }
     }, 30000);
+    it('payload-driven fanout — agent emits 3-element payload, 3 lanes spawn with per-lane subs', async () => {
+        // Template has one agent stage that uses {{id}} in its prompt. The planner
+        // emits a 3-element fanout payload; runtime derives count=3 and maps
+        // payload[i] → lane i substitutions.
+        fs.writeFileSync(path.join(groupDir, 'templates', 'per_id.json'), JSON.stringify({
+            entry: 'author',
+            stages: [
+                {
+                    name: 'author',
+                    prompt: 'author {{id}} of kind {{kind}}',
+                    mounts: {},
+                    transitions: [
+                        { marker: 'DONE', next: null, prompt: 'wrote {{id}}' },
+                    ],
+                },
+            ],
+        }));
+        const config = {
+            stages: [
+                {
+                    name: 'planner',
+                    prompt: 'emit payload',
+                    mounts: {},
+                    transitions: [
+                        {
+                            marker: 'PLAN_READY',
+                            template: 'per_id',
+                            countFrom: 'payload',
+                            substitutionsFrom: 'payload',
+                        },
+                    ],
+                },
+            ],
+        };
+        const laneName = (id) => `planner__per_id0__author`.replace('per_id0', `per_id${['alpha', 'beta', 'gamma'].indexOf(id)}`);
+        const allNames = [
+            'planner',
+            'planner__per_id0__author',
+            'planner__per_id1__author',
+            'planner__per_id2__author',
+            'planner__per_id__barrier',
+        ];
+        for (const n of allNames) {
+            fs.mkdirSync(path.join(TEST_IPC_BASE, `${group.folder}__pipeline_${n}`, 'input'), { recursive: true });
+        }
+        const payloadBlock = '[PLAN_READY]\n---PAYLOAD_START---\n' +
+            JSON.stringify([
+                { id: 'alpha', kind: 'stimulus' },
+                { id: 'beta', kind: 'monitor' },
+                { id: 'gamma', kind: 'probe' },
+            ]) +
+            '\n---PAYLOAD_END---';
+        enqueueStageOutput('planner', [{ result: payloadBlock }]);
+        for (const lane of [0, 1, 2]) {
+            enqueueStageOutput(`planner__per_id${lane}__author`, [
+                { result: '[DONE]' },
+            ]);
+        }
+        enqueueStageOutput('planner__per_id__barrier', [
+            { result: '[STAGE_COMPLETE]' },
+        ]);
+        const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
+        const result = await runner.run();
+        expect(result).toBe('success');
+        const { runContainerAgent } = await import('./container-runner.js');
+        const calls = vi.mocked(runContainerAgent).mock.calls;
+        // The per-lane container was spawned with the lane-specific prompt (via
+        // substitution of {{id}} / {{kind}} from payload[i]). The prompt reaches
+        // the container through the stage config captured at spawn time.
+        const authorCalls = calls.filter((c) => /^pipeline-planner__per_id\d+__author$/.test(c[0].name));
+        expect(authorCalls).toHaveLength(3);
+        const prompts = authorCalls
+            .map((c) => c[1].prompt ?? '')
+            .sort();
+        expect(prompts[0]).toContain('author alpha of kind stimulus');
+        expect(prompts[1]).toContain('author beta of kind monitor');
+        expect(prompts[2]).toContain('author gamma of kind probe');
+        // Transition prompt substitution is applied too (transitions whitelist).
+        // Hard to inspect directly without exposing runtime internals — the fact
+        // that the barrier fired proves all three lanes reached null, meaning
+        // their transitions were wired correctly.
+        void laneName;
+    }, 30000);
 });
 // ============================================================
 // Group C: Command mode + Exclusive lock
@@ -1075,6 +1228,98 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
                     prompt: 'A',
                     mounts: {},
                     transitions: [{ marker: 'OK', template: 'my-tpl', count: 3 }],
+                },
+            ],
+        };
+        fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
+        expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
+    });
+    it('rejects countFrom without template', () => {
+        const config = {
+            stages: [
+                {
+                    name: 'a',
+                    prompt: 'A',
+                    mounts: {},
+                    transitions: [{ marker: 'OK', next: null, countFrom: 'payload' }],
+                },
+            ],
+        };
+        fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
+        expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+    });
+    it('rejects countFrom with unknown literal', () => {
+        const config = {
+            stages: [
+                {
+                    name: 'a',
+                    prompt: 'A',
+                    mounts: {},
+                    transitions: [
+                        { marker: 'OK', template: 'my-tpl', countFrom: 'stdin' },
+                    ],
+                },
+            ],
+        };
+        fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
+        expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+    });
+    it('rejects count + countFrom both present', () => {
+        const config = {
+            stages: [
+                {
+                    name: 'a',
+                    prompt: 'A',
+                    mounts: {},
+                    transitions: [
+                        {
+                            marker: 'OK',
+                            template: 'my-tpl',
+                            count: 3,
+                            countFrom: 'payload',
+                        },
+                    ],
+                },
+            ],
+        };
+        fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
+        expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+    });
+    it('rejects substitutionsFrom without countFrom', () => {
+        const config = {
+            stages: [
+                {
+                    name: 'a',
+                    prompt: 'A',
+                    mounts: {},
+                    transitions: [
+                        {
+                            marker: 'OK',
+                            template: 'my-tpl',
+                            substitutionsFrom: 'payload',
+                        },
+                    ],
+                },
+            ],
+        };
+        fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
+        expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+    });
+    it('accepts template + countFrom + substitutionsFrom (payload-driven fanout)', () => {
+        const config = {
+            stages: [
+                {
+                    name: 'a',
+                    prompt: 'A',
+                    mounts: {},
+                    transitions: [
+                        {
+                            marker: 'OK',
+                            template: 'my-tpl',
+                            countFrom: 'payload',
+                            substitutionsFrom: 'payload',
+                        },
+                    ],
                 },
             ],
         };

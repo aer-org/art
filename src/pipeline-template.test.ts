@@ -346,6 +346,113 @@ describe('validatePipelineTemplate', () => {
     ).not.toThrow();
   });
 
+  it('rejects countFrom without template', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [{ marker: 'OK', next: null, countFrom: 'payload' }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/countFrom.*requires.*template/);
+  });
+
+  it('rejects countFrom with unknown literal', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [
+                { marker: 'OK', template: 'tpl2', countFrom: 'stdin' },
+              ],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/countFrom.*only accepts "payload"/);
+  });
+
+  it('rejects count + countFrom both present', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [
+                {
+                  marker: 'OK',
+                  template: 'tpl2',
+                  count: 3,
+                  countFrom: 'payload',
+                },
+              ],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/either "count" or "countFrom"/);
+  });
+
+  it('rejects substitutionsFrom without countFrom', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [
+                {
+                  marker: 'OK',
+                  template: 'tpl2',
+                  substitutionsFrom: 'payload',
+                },
+              ],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/substitutionsFrom.*requires.*countFrom/);
+  });
+
+  it('accepts countFrom + substitutionsFrom payload-driven fanout', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              mounts: {},
+              transitions: [
+                {
+                  marker: 'OK',
+                  template: 'tpl2',
+                  countFrom: 'payload',
+                  substitutionsFrom: 'payload',
+                },
+              ],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).not.toThrow();
+  });
+
   it('detects internal cycles', () => {
     expect(() =>
       validatePipelineTemplate(

@@ -37,7 +37,13 @@ import {
 } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
-import { assertConfigAcyclic, stitchParallel, stitchSingle } from './stitch.js';
+import {
+  assertConfigAcyclic,
+  stitchParallel,
+  stitchSingle,
+  RESERVED_SUBSTITUTION_KEYS,
+  type SubstitutionMap,
+} from './stitch.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
 
 function resolveProvider(): 'claude' | 'codex' {
@@ -50,7 +56,9 @@ export interface PipelineTransition {
   marker: string; // Marker name (e.g. "STAGE_COMPLETE")
   next?: string | string[] | null; // Stage name (scope-local) or null (pipeline end). Arrays are runtime-only (parallel-stitch barrier fan-out).
   template?: string; // Template name to stitch at runtime. Mutually exclusive with non-null `next`.
-  count?: number; // With `template`: insert N copies in parallel + synthesized fan-in barrier. Requires `template`.
+  count?: number; // With `template`: insert N copies in parallel + synthesized fan-in barrier. Requires `template`. Mutually exclusive with `countFrom`.
+  countFrom?: 'payload'; // Derive lane count from marker payload (JSON array length). Requires `template`. Mutually exclusive with `count`.
+  substitutionsFrom?: 'payload'; // Per-lane substitution map comes from payload[i] object fields. Requires `countFrom: "payload"`.
   prompt?: string; // Description for the agent on when to use this marker
 }
 
@@ -93,6 +101,97 @@ export function resolveStageKind(stage: PipelineStage): StageKind {
 export interface PipelineConfig {
   stages: PipelineStage[];
   entryStage?: string;
+}
+
+// --- Stitch directive (result of resolving a transition into stitch inputs) ---
+
+export type StitchDirective =
+  | { mode: 'single'; subs?: SubstitutionMap }
+  | {
+      mode: 'parallel';
+      count: number;
+      perCopySubs?: SubstitutionMap[];
+    };
+
+/**
+ * Pure helper: given a matched transition and the payload captured from the
+ * agent's marker, return the StitchDirective that performStitch should use.
+ * Throws with a descriptive message on any invalid payload shape.
+ *
+ * Callers must pass `payload` only when the transition has `countFrom:
+ * "payload"`; otherwise the argument is ignored. The caller catches thrown
+ * errors and surfaces them as STAGE_ERROR outcomes.
+ */
+export function resolveStitchInputs(
+  t: PipelineTransition,
+  payload: string | null,
+): StitchDirective {
+  // Static count path — unchanged from pre-payload behavior.
+  if (t.countFrom === undefined) {
+    if (t.count !== undefined && t.count > 1) {
+      return { mode: 'parallel', count: t.count };
+    }
+    return { mode: 'single' };
+  }
+
+  // Dynamic (payload-driven) path.
+  if (payload === null || payload.length === 0) {
+    throw new Error(
+      'countFrom: "payload" requires the agent to emit a fenced ---PAYLOAD_START---...---PAYLOAD_END--- block after the marker',
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    throw new Error(`Payload is not valid JSON: ${(err as Error).message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('Payload must be a JSON array');
+  }
+  if (parsed.length === 0) {
+    throw new Error('Payload array must be non-empty');
+  }
+  const wantSubs = t.substitutionsFrom === 'payload';
+  const perCopySubs: SubstitutionMap[] = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const el = parsed[i];
+    if (el === null || typeof el !== 'object' || Array.isArray(el)) {
+      throw new Error(
+        `Payload element [${i}] must be a flat JSON object (got ${el === null ? 'null' : Array.isArray(el) ? 'array' : typeof el})`,
+      );
+    }
+    const subs: SubstitutionMap = {};
+    for (const [key, value] of Object.entries(el)) {
+      if ((RESERVED_SUBSTITUTION_KEYS as readonly string[]).includes(key)) {
+        throw new Error(
+          `Payload element [${i}] uses reserved key "${key}" (reserved: ${RESERVED_SUBSTITUTION_KEYS.join(', ')})`,
+        );
+      }
+      if (
+        typeof value !== 'string' &&
+        typeof value !== 'number' &&
+        typeof value !== 'boolean'
+      ) {
+        throw new Error(
+          `Payload element [${i}] field "${key}" must be string/number/boolean (got ${typeof value})`,
+        );
+      }
+      subs[key] = value;
+    }
+    perCopySubs.push(subs);
+  }
+  if (perCopySubs.length === 1) {
+    return {
+      mode: 'single',
+      subs: wantSubs ? perCopySubs[0] : undefined,
+    };
+  }
+  return {
+    mode: 'parallel',
+    count: perCopySubs.length,
+    perCopySubs: wantSubs ? perCopySubs : undefined,
+  };
 }
 
 // --- Exclusive stage lock ---
@@ -1283,7 +1382,7 @@ PAYLOAD FORMATS:
     stageConfig: PipelineStage,
     transitionIdx: number,
     templateName: string,
-    count: number | undefined,
+    directive: StitchDirective,
   ): {
     insertedStages: PipelineStage[];
     newNext: string | string[];
@@ -1294,13 +1393,14 @@ PAYLOAD FORMATS:
       );
     }
     const template = loadPipelineTemplate(this.groupDir, templateName);
-    if (count !== undefined && count > 1) {
+    if (directive.mode === 'parallel') {
       const r = stitchParallel({
         config: this.config,
         originStage: stageConfig.name,
         originTransitionIdx: transitionIdx,
         template,
-        count,
+        count: directive.count,
+        perCopySubstitutions: directive.perCopySubs,
       });
       this.config = r.updatedConfig;
       logger.info(
@@ -1308,7 +1408,8 @@ PAYLOAD FORMATS:
           origin: stageConfig.name,
           template: templateName,
           insertId: r.insertId,
-          count,
+          count: directive.count,
+          subs: directive.perCopySubs !== undefined,
         },
         'Stitch (parallel) applied',
       );
@@ -1319,6 +1420,7 @@ PAYLOAD FORMATS:
       originStage: stageConfig.name,
       originTransitionIdx: transitionIdx,
       template,
+      substitutions: directive.subs,
     });
     this.config = r.updatedConfig;
     logger.info(
@@ -1326,6 +1428,7 @@ PAYLOAD FORMATS:
         origin: stageConfig.name,
         template: templateName,
         insertId: r.insertId,
+        subs: directive.subs !== undefined,
       },
       'Stitch (single) applied',
     );
@@ -1556,12 +1659,13 @@ PAYLOAD FORMATS:
     let targetName: string | string[] | null = matched.next ?? null;
     if (matched.template) {
       try {
+        const directive = resolveStitchInputs(matched, payload);
         const transitionIdx = stageConfig.transitions.indexOf(matched);
         const stitched = this.performStitch(
           stageConfig,
           transitionIdx,
           matched.template,
-          matched.count,
+          directive,
         );
         for (const s of stitched.insertedStages) {
           stagesByName.set(s.name, s);
@@ -2332,6 +2436,45 @@ export function loadPipelineConfig(
             logger.error(
               { groupFolder, stage: stage.name, marker: t.marker },
               'Transition "count" requires "template"',
+            );
+            return null;
+          }
+        }
+        if (t.countFrom !== undefined) {
+          if (t.countFrom !== 'payload') {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition "countFrom" only accepts "payload"',
+            );
+            return null;
+          }
+          if (!hasTemplate) {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition "countFrom" requires "template"',
+            );
+            return null;
+          }
+          if (t.count !== undefined) {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition must have either "count" or "countFrom", not both',
+            );
+            return null;
+          }
+        }
+        if (t.substitutionsFrom !== undefined) {
+          if (t.substitutionsFrom !== 'payload') {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition "substitutionsFrom" only accepts "payload"',
+            );
+            return null;
+          }
+          if (t.countFrom !== 'payload') {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition "substitutionsFrom" requires "countFrom: \\"payload\\""',
             );
             return null;
           }

@@ -118,6 +118,34 @@ describe('stitchSingle', () => {
         expect(s.env).toEqual({ SCOPE: 'review__subst-tpl0', IDX: '0' });
         expect(s.mounts).toHaveProperty('scope-review__subst-tpl0', 'rw');
     });
+    it('applies substitutions inside transition fields', () => {
+        const tpl = {
+            name: 'trans-subst',
+            entry: 'a',
+            stages: [
+                {
+                    name: 'a',
+                    mounts: {},
+                    transitions: [
+                        {
+                            marker: 'OK',
+                            next: null,
+                            prompt: 'done for {{id}} ({{kind}})',
+                        },
+                    ],
+                },
+            ],
+        };
+        const result = stitchSingle({
+            config: baseConfig(),
+            originStage: 'review',
+            originTransitionIdx: 1,
+            template: tpl,
+            substitutions: { id: 'foo', kind: 'stimulus' },
+        });
+        const a = result.updatedConfig.stages.find((s) => s.name === 'review__trans-subst0__a');
+        expect(a.transitions[0].prompt).toBe('done for foo (stimulus)');
+    });
     it('drops count field from the host transition', () => {
         const config = baseConfig();
         config.stages[1].transitions[1].count = 3;
@@ -279,6 +307,120 @@ describe('assertNoNameCollision', () => {
 describe('renamedStage', () => {
     it('composes origin, template name, index, and stage name', () => {
         expect(renamedStage('review', 'revert-tpl', 2, 'checkout')).toBe('review__revert-tpl2__checkout');
+    });
+});
+describe('unresolved placeholder detection', () => {
+    it('throws when a template uses a placeholder not in the subs map', () => {
+        const tpl = {
+            name: 'typo-tpl',
+            entry: 'a',
+            stages: [
+                {
+                    name: 'a',
+                    prompt: 'handle {{id}} of {{tpye}}', // "tpye" typo — not provided
+                    mounts: {},
+                    transitions: [{ marker: 'OK', next: null }],
+                },
+            ],
+        };
+        expect(() => stitchSingle({
+            config: baseConfig(),
+            originStage: 'review',
+            originTransitionIdx: 1,
+            template: tpl,
+            substitutions: { id: 'alpha' },
+        })).toThrow(/Unresolved placeholder.*\{\{tpye\}\}.*field "prompt"/);
+    });
+    it('throws when a placeholder is in a mount key', () => {
+        const tpl = {
+            name: 'mount-tpl',
+            entry: 'a',
+            stages: [
+                {
+                    name: 'a',
+                    mounts: { 'scope-{{missing}}': 'rw' },
+                    transitions: [{ marker: 'OK', next: null }],
+                },
+            ],
+        };
+        expect(() => stitchSingle({
+            config: baseConfig(),
+            originStage: 'review',
+            originTransitionIdx: 1,
+            template: tpl,
+        })).toThrow(/Unresolved placeholder.*\{\{missing\}\}.*field "mounts"/);
+    });
+    it('throws when a placeholder is in a transition prompt', () => {
+        const tpl = {
+            name: 'trans-tpl',
+            entry: 'a',
+            stages: [
+                {
+                    name: 'a',
+                    mounts: {},
+                    transitions: [
+                        {
+                            marker: 'OK',
+                            next: null,
+                            prompt: 'done for {{kind}}',
+                        },
+                    ],
+                },
+            ],
+        };
+        expect(() => stitchSingle({
+            config: baseConfig(),
+            originStage: 'review',
+            originTransitionIdx: 1,
+            template: tpl,
+            substitutions: { id: 'alpha' }, // kind missing
+        })).toThrow(/Unresolved placeholder.*\{\{kind\}\}.*field "transitions"/);
+    });
+    it('throws at stitchParallel time too (lane with missing key)', () => {
+        const tpl = {
+            name: 'par-tpl',
+            entry: 'a',
+            stages: [
+                {
+                    name: 'a',
+                    prompt: 'lane for {{id}} kind={{kind}}',
+                    mounts: {},
+                    transitions: [{ marker: 'OK', next: null }],
+                },
+            ],
+        };
+        expect(() => stitchParallel({
+            config: baseConfig(),
+            originStage: 'review',
+            originTransitionIdx: 1,
+            template: tpl,
+            count: 2,
+            perCopySubstitutions: [
+                { id: 'alpha', kind: 'fast' },
+                { id: 'beta' }, // missing kind
+            ],
+        })).toThrow(/Unresolved placeholder.*\{\{kind\}\}/);
+    });
+    it('does not throw when every placeholder is satisfied', () => {
+        const tpl = {
+            name: 'ok-tpl',
+            entry: 'a',
+            stages: [
+                {
+                    name: 'a',
+                    prompt: '{{id}} / {{insertId}} / {{index}}',
+                    mounts: { '{{id}}-dir': 'rw' },
+                    transitions: [{ marker: 'OK', next: null, prompt: 'for {{id}}' }],
+                },
+            ],
+        };
+        expect(() => stitchSingle({
+            config: baseConfig(),
+            originStage: 'review',
+            originTransitionIdx: 1,
+            template: tpl,
+            substitutions: { id: 'alpha' },
+        })).not.toThrow();
     });
 });
 //# sourceMappingURL=stitch.test.js.map

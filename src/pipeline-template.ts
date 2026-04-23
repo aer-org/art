@@ -232,6 +232,35 @@ function validateTransitionShape(
       );
     }
   }
+  if (t.countFrom !== undefined) {
+    if (t.countFrom !== 'payload') {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "countFrom" only accepts "payload"`,
+      );
+    }
+    if (!hasTemplate) {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "countFrom" requires "template"`,
+      );
+    }
+    if (tAny.count !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — must have either "count" or "countFrom", not both`,
+      );
+    }
+  }
+  if (t.substitutionsFrom !== undefined) {
+    if (t.substitutionsFrom !== 'payload') {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "substitutionsFrom" only accepts "payload"`,
+      );
+    }
+    if (t.countFrom !== 'payload') {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "substitutionsFrom" requires "countFrom: \\"payload\\""`,
+      );
+    }
+  }
 }
 
 /**

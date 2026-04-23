@@ -1,9 +1,12 @@
+import { type SubstitutionMap } from './stitch.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
     marker: string;
     next?: string | string[] | null;
     template?: string;
     count?: number;
+    countFrom?: 'payload';
+    substitutionsFrom?: 'payload';
     prompt?: string;
 }
 export type StageKind = 'agent' | 'command';
@@ -40,6 +43,24 @@ export interface PipelineConfig {
     stages: PipelineStage[];
     entryStage?: string;
 }
+export type StitchDirective = {
+    mode: 'single';
+    subs?: SubstitutionMap;
+} | {
+    mode: 'parallel';
+    count: number;
+    perCopySubs?: SubstitutionMap[];
+};
+/**
+ * Pure helper: given a matched transition and the payload captured from the
+ * agent's marker, return the StitchDirective that performStitch should use.
+ * Throws with a descriptive message on any invalid payload shape.
+ *
+ * Callers must pass `payload` only when the transition has `countFrom:
+ * "payload"`; otherwise the argument is ignored. The caller catches thrown
+ * errors and surfaces them as STAGE_ERROR outcomes.
+ */
+export declare function resolveStitchInputs(t: PipelineTransition, payload: string | null): StitchDirective;
 export interface PipelineState {
     version?: 2;
     currentStage: string | string[] | null;
