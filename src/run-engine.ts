@@ -113,9 +113,8 @@ export async function runPipeline(opts: {
   // image tag so independent machines converge on the same image name.
   const stagesWithRefs = pipelineConfig.stages.filter((s) => s.agent);
   if (stagesWithRefs.length > 0) {
-    const { RegistryClient, loadCredentials, canonicalImageTag } = await import(
-      './registry-client.js'
-    );
+    const { RegistryClient, loadCredentials, canonicalImageTag } =
+      await import('./registry-client.js');
     const creds = loadCredentials();
     if (!creds) {
       console.error(
@@ -145,9 +144,13 @@ export async function runPipeline(opts: {
           );
           const imageTag = canonicalImageTag(df.image_name, df.content_hash);
 
-          const inspect = spawnSync(runtimeBin, ['image', 'inspect', imageTag], {
-            stdio: 'pipe',
-          });
+          const inspect = spawnSync(
+            runtimeBin,
+            ['image', 'inspect', imageTag],
+            {
+              stdio: 'pipe',
+            },
+          );
           if (inspect.status !== 0) {
             const shortHash = df.content_hash
               .replace('sha256:', '')

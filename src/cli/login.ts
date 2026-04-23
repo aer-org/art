@@ -28,10 +28,7 @@ async function readTokenFromStdinOrPrompt(): Promise<string> {
   return answer.trim();
 }
 
-async function promptLine(
-  prompt: string,
-  fallback: string,
-): Promise<string> {
+async function promptLine(prompt: string, fallback: string): Promise<string> {
   if (!process.stdin.isTTY) return fallback;
   const rl = readline.createInterface({
     input: process.stdin,
