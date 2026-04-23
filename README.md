@@ -4,6 +4,8 @@
 
 > **Alpha release** — expect rough edges. We're iterating fast and would love your feedback.
 
+<!-- token-count --><!-- /token-count -->
+
 Turn any existing project into a self-improving pipeline. Draw your own harness for agentic loops.
 
 - 🤖 **Auto Mode** — Full auto 24/7, agents set up their own intuition into next experiment plan
