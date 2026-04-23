@@ -67,6 +67,7 @@ export type StageKind = 'agent' | 'command';
 export interface PipelineStage {
   name: string;
   kind?: StageKind; // Explicit stage kind. Default: inferred (command if `command` set, else agent).
+  agent?: string; // Registry ref like "builder:latest". Resolved to prompt/mcp at run start.
   prompt?: string;
   prompts?: string[];
   prompt_append?: string;

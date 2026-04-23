@@ -13,6 +13,7 @@ export type StageKind = 'agent' | 'command';
 export interface PipelineStage {
     name: string;
     kind?: StageKind;
+    agent?: string;
     prompt?: string;
     prompts?: string[];
     prompt_append?: string;
