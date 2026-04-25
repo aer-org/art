@@ -2,7 +2,7 @@
 
 This document describes every configurable field in `__art__/PIPELINE.json`.
 
-> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions are now `{ marker, next, template?, count?, joinPolicy? }`. `next` is always required and names the downstream node in the current scope (or `null` to end the current scope). If `template` is present, the template is spawned first and then returns to `next`. Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
+> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions are now `{ marker?, next, template?, count?, joinPolicy?, afterTimeout? }`. `next` is always required and names the downstream node in the current scope (or `null` to end the current scope). `marker` is required unless `afterTimeout: true`. If `template` is present, the template is spawned first and then returns to `next`. Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
 
 ## Top-Level
 
@@ -26,6 +26,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
   "prompt": "Read PLAN.md and implement the described changes.",
   "image": "default",
   "command": null,
+  "timeout": null,
   "mounts": { "plan": "ro", "src": "rw", "project": "ro" },
   "mcpAccess": ["sqlite.read"],
   "devices": [],
@@ -42,6 +43,7 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | `prompt`      | `string`                               | Yes      | —           | System prompt sent to the agent. Describes what this stage should do                                                                               |
 | `image`       | `string`                               | No       | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry)                                           |
 | `command`     | `string`                               | No       | `null`      | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
+| `timeout`     | `number`                               | No       | inherited   | Command mode only. Maximum runtime in milliseconds before the command is terminated. Overrides the group/container timeout for this stage.         |
 | `mounts`      | `Record<string, "ro" \| "rw" \| null>` | Yes      | —           | Mount permissions for `__art__/` subdirectories and the project root. See [Mounts](#mounts)                                                        |
 | `devices`     | `string[]`                             | No       | `[]`        | Host devices to pass through (e.g., `"/dev/bus/usb"`)                                                                                              |
 | `runAsRoot`   | `boolean`                              | No       | `false`     | Run this stage's container as root (`--user 0:0`)                                                                                                  |
@@ -114,14 +116,14 @@ This mounts only `<groupDir>/cov_per_section/S-01/` at `/workspace/cov_per_secti
 
 ### How mounts map to containers
 
-| Mount key           | Container path                                              |
-| ------------------- | ----------------------------------------------------------- |
-| `plan`              | `/workspace/plan`                                           |
-| `src`               | `/workspace/src`                                            |
-| `outputs`           | `/workspace/outputs`                                        |
-| `project`           | `/workspace/project`                                        |
-| `project:src/foo`   | `/workspace/project/src/foo` (overlay on project mount)     |
-| `results:draft`     | `/workspace/results/draft` (override nested under `results`) |
+| Mount key              | Container path                                                 |
+| ---------------------- | -------------------------------------------------------------- |
+| `plan`                 | `/workspace/plan`                                              |
+| `src`                  | `/workspace/src`                                               |
+| `outputs`              | `/workspace/outputs`                                           |
+| `project`              | `/workspace/project`                                           |
+| `project:src/foo`      | `/workspace/project/src/foo` (overlay on project mount)        |
+| `results:draft`        | `/workspace/results/draft` (override nested under `results`)   |
 | `cov_per_section:S-01` | `/workspace/cov_per_section/S-01` (direct, parent not mounted) |
 
 The agent's working directory is `/workspace`.
@@ -343,25 +345,27 @@ Transitions define how stages connect. The agent signals stage completion by emi
 "transitions": [
   { "marker": "STAGE_COMPLETE", "next": "test", "prompt": "Work completed successfully" },
   { "marker": "STAGE_PANIC",    "next": null,   "prompt": "Unrecoverable error — end pipeline" },
-  { "marker": "STAGE_CLEANUP",  "template": "cleanup-template", "next": null, "prompt": "Stitch cleanup template" }
+  { "marker": "STAGE_CLEANUP",  "template": "cleanup-template", "next": null, "prompt": "Stitch cleanup template" },
+  { "afterTimeout": true, "next": "cleanup", "prompt": "Run only if a command stage times out" }
 ]
 ```
 
 `next` must always be present. `template` is optional; when present, the transition means "spawn this template, then continue to `next`".
 
-| Field               | Type             | Required      | Default | Description                                                                                                          |
-| ------------------- | ---------------- | ------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `marker`            | `string`         | Yes           | —       | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). Agent wraps it in brackets: `[STAGE_COMPLETE]`.              |
-| `next`              | `string \| null` | Yes           | —       | Scope-local stage name, or `null` to end the current scope. Inside a template, must name a stage in the same template. |
-| `template`          | `string`         | No            | —       | Template name to stitch at runtime. When present, the spawned template returns to `next`.                            |
-| `count`             | `number` (≥1)    | No            | `1`     | Valid only with `template`. Inserts `N` lane copies + join (parallel stitch). Mutually exclusive with `countFrom`.   |
-| `countFrom`         | `"payload"`      | No            | —       | Derive lane count from the marker payload's JSON array length. Requires `template`.                                  |
-| `substitutionsFrom` | `"payload"`      | No            | —       | Per-lane substitution map comes from `payload[i]` fields. Requires `countFrom: "payload"`.                           |
-| `joinPolicy`        | `"all_success" \| "any_success" \| "all_settled"` | No | `"all_success"` | Valid only with `template`. Controls whether the synthesized join continues to `next`. |
-| `outcome`           | `"success" \| "error"` | No       | inferred | Optional explicit outcome classification for the transition. If omitted, markers containing `ERROR` are treated as errors. |
-| `prompt`            | `string`         | No            | —       | Description shown to the agent explaining when to use this marker.                                                   |
+| Field               | Type                                              | Required | Default         | Description                                                                                                                                   |
+| ------------------- | ------------------------------------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `marker`            | `string`                                          | Usually  | —               | Marker name the agent emits (e.g., `"STAGE_COMPLETE"`). Required unless `afterTimeout: true`. Agent wraps it in brackets: `[STAGE_COMPLETE]`. |
+| `next`              | `string \| null`                                  | Yes      | —               | Scope-local stage name, or `null` to end the current scope. Inside a template, must name a stage in the same template.                        |
+| `template`          | `string`                                          | No       | —               | Template name to stitch at runtime. When present, the spawned template returns to `next`.                                                     |
+| `count`             | `number` (≥1)                                     | No       | `1`             | Valid only with `template`. Inserts `N` lane copies + join (parallel stitch). Mutually exclusive with `countFrom`.                            |
+| `countFrom`         | `"payload"`                                       | No       | —               | Derive lane count from the marker payload's JSON array length. Requires `template`.                                                           |
+| `substitutionsFrom` | `"payload"`                                       | No       | —               | Per-lane substitution map comes from `payload[i]` fields. Requires `countFrom: "payload"`.                                                    |
+| `joinPolicy`        | `"all_success" \| "any_success" \| "all_settled"` | No       | `"all_success"` | Valid only with `template`. Controls whether the synthesized join continues to `next`.                                                        |
+| `outcome`           | `"success" \| "error"`                            | No       | inferred        | Optional explicit outcome classification for the transition. If omitted, markers containing `ERROR` are treated as errors.                    |
+| `afterTimeout`      | `boolean`                                         | No       | `false`         | Command mode only. When `true`, this transition fires only after the command is killed because its timeout elapsed.                           |
+| `prompt`            | `string`                                          | No       | —               | Description shown to the agent explaining when to use this marker.                                                                            |
 
-**How matching works:** The FSM scans agent output for `[MARKER_NAME]` or `[MARKER_NAME: payload]`. The first transition whose marker matches fires. If no transition matches, the runner sends a retry hint and keeps the container running. Parse-miss retry is unlimited (agents get to try again with feedback).
+**How matching works:** The FSM scans agent output for `[MARKER_NAME]` or `[MARKER_NAME: payload]`. The first transition whose marker matches fires. If no transition matches, the runner sends a retry hint and keeps the container running. Parse-miss retry is unlimited (agents get to try again with feedback). `afterTimeout: true` transitions are not marker-matched; they are only considered when a command stage times out.
 
 ### Built-in container-crash markers
 
@@ -380,18 +384,22 @@ Set the `command` field to run a shell command instead of a Claude agent:
 {
   "name": "lint",
   "command": "cd /workspace/project && npm run lint",
+  "timeout": 600000,
   "prompt": "",
   "mounts": { "project": "ro" },
   "transitions": [
     { "marker": "STAGE_COMPLETE", "next": "build" },
-    { "marker": "STAGE_ERROR", "next": null }
+    { "marker": "STAGE_ERROR", "next": null },
+    { "afterTimeout": true, "next": "cleanup" }
   ]
 }
 ```
 
 The command runs via `sh -c` inside the container. Markers are parsed from stdout — the command should `echo "[STAGE_COMPLETE]"` or `echo "[STAGE_ERROR: message]"` to signal transitions.
 
-If the command exits with code 0 and no marker was emitted, `STAGE_COMPLETE` is inferred. Non-zero exit without a marker triggers a container-crash respawn via `_CONTAINER_EXIT` (capped at `MAX_CONTAINER_RESPAWNS = 3`).
+If the command exits with code 0 and no marker was emitted, `STAGE_COMPLETE` is inferred. Non-zero exit without a marker resolves the `STAGE_ERROR` transition (or falls back to a synthetic terminal `STAGE_ERROR` transition if none is authored).
+
+If `timeout` elapses, ART sends `SIGTERM`, then `SIGKILL` 15 seconds later if needed. When an authored `afterTimeout: true` transition exists, that transition fires instead of the normal `STAGE_ERROR` path. Only one `afterTimeout` transition is allowed per stage, and it cannot declare a `marker`.
 
 ## Image Registry
 

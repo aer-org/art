@@ -113,8 +113,11 @@ export function validatePipelineTemplate(
   for (const stage of stages) {
     for (const t of stage.transitions) {
       if (typeof t.next === 'string' && !stageNames.has(t.next)) {
+        const transitionName = t.afterTimeout
+          ? 'afterTimeout'
+          : (t.marker ?? '<missing-marker>');
         throw new Error(
-          `Template "${name}": stage "${stage.name}" transition "${t.marker}" — "next" must reference a stage inside this template (got "${t.next}"; use "template" for cross-template handoffs)`,
+          `Template "${name}": stage "${stage.name}" transition "${transitionName}" — "next" must reference a stage inside this template (got "${t.next}"; use "template" for cross-template handoffs)`,
         );
       }
     }
@@ -156,8 +159,10 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       `Template "${templateName}": stage "${stage.name}" missing "transitions" array`,
     );
   }
+  let afterTimeoutTransitions = 0;
   for (const t of stage.transitions) {
     validateTransitionShape(t, stage.name, templateName);
+    if (t.afterTimeout) afterTimeoutTransitions++;
   }
   if (
     stage.kind !== undefined &&
@@ -168,6 +173,18 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       `Template "${templateName}": stage "${stage.name}" has invalid kind "${String(stage.kind)}" (must be "agent" or "command")`,
     );
   }
+  if (stage.timeout !== undefined) {
+    if (!Number.isFinite(stage.timeout) || stage.timeout <= 0) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" has invalid timeout "${String(stage.timeout)}" (must be a positive number of milliseconds)`,
+      );
+    }
+    if (!stage.command) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" may only use "timeout" on command stages`,
+      );
+    }
+  }
   if (stage.fan_in !== undefined && stage.fan_in !== 'all') {
     throw new Error(
       `Template "${templateName}": stage "${stage.name}" has invalid fan_in "${String(stage.fan_in)}" (must be "all")`,
@@ -176,6 +193,16 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
   if (stage.join !== undefined) {
     throw new Error(
       `Template "${templateName}": stage "${stage.name}" cannot author runtime "join" metadata`,
+    );
+  }
+  if (afterTimeoutTransitions > 0 && !stage.command) {
+    throw new Error(
+      `Template "${templateName}": stage "${stage.name}" may only use "afterTimeout" transitions on command stages`,
+    );
+  }
+  if (afterTimeoutTransitions > 1) {
+    throw new Error(
+      `Template "${templateName}": stage "${stage.name}" may only declare one "afterTimeout" transition`,
     );
   }
 }
@@ -190,43 +217,57 @@ function validateTransitionShape(
       `Template "${templateName}": stage "${stageName}" has a non-object transition`,
     );
   }
-  if (typeof t.marker !== 'string' || t.marker.length === 0) {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" has transition with empty marker`,
-    );
-  }
   const tAny = t as unknown as Record<string, unknown>;
+  const transitionName = t.afterTimeout
+    ? 'afterTimeout'
+    : (t.marker ?? '<missing-marker>');
   if (tAny.retry !== undefined) {
     throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "retry" is no longer supported`,
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "retry" is no longer supported`,
     );
   }
   if (tAny.next_dynamic !== undefined) {
     throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next_dynamic" is no longer supported`,
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next_dynamic" is no longer supported`,
+    );
+  }
+  if (t.afterTimeout !== undefined && typeof t.afterTimeout !== 'boolean') {
+    throw new Error(
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "afterTimeout" must be a boolean`,
+    );
+  }
+  if (t.afterTimeout) {
+    if (t.marker !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "afterTimeout" cannot be combined with "marker"`,
+      );
+    }
+  } else if (typeof t.marker !== 'string' || t.marker.length === 0) {
+    throw new Error(
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "marker" is required unless "afterTimeout" is true`,
     );
   }
   if (t.next !== undefined && t.next !== null && typeof t.next !== 'string') {
     throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next" must be a string or null (authored arrays are not allowed)`,
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next" must be a string or null (authored arrays are not allowed)`,
     );
   }
   if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
     throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next" is required (use null to end the current template invocation)`,
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next" is required (use null to end the current template invocation)`,
     );
   }
   const hasNext = t.next === null || typeof t.next === 'string';
   const hasTemplate = t.template !== undefined;
   if (!hasNext) {
     throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next" must be a string or null`,
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next" must be a string or null`,
     );
   }
   if (hasTemplate) {
     if (typeof t.template !== 'string' || t.template.length === 0) {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "template" must be a non-empty string`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "template" must be a non-empty string`,
       );
     }
   }
@@ -234,41 +275,46 @@ function validateTransitionShape(
     const c = tAny.count;
     if (typeof c !== 'number' || !Number.isInteger(c) || c < 1) {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "count" must be a positive integer`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "count" must be a positive integer`,
       );
     }
     if (!hasTemplate) {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "count" requires "template"`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "count" requires "template"`,
       );
     }
   }
   if (t.countFrom !== undefined) {
     if (t.countFrom !== 'payload') {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "countFrom" only accepts "payload"`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "countFrom" only accepts "payload"`,
       );
     }
     if (!hasTemplate) {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "countFrom" requires "template"`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "countFrom" requires "template"`,
       );
     }
     if (tAny.count !== undefined) {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — must have either "count" or "countFrom", not both`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — must have either "count" or "countFrom", not both`,
       );
     }
   }
   if (t.substitutionsFrom !== undefined) {
     if (t.substitutionsFrom !== 'payload') {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "substitutionsFrom" only accepts "payload"`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "substitutionsFrom" only accepts "payload"`,
       );
     }
     if (t.countFrom !== 'payload') {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "substitutionsFrom" requires "countFrom: \\"payload\\""`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "substitutionsFrom" requires "countFrom: \\"payload\\""`,
+      );
+    }
+    if (t.afterTimeout) {
+      throw new Error(
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "afterTimeout" does not support payload-driven fanout fields`,
       );
     }
   }
@@ -279,12 +325,12 @@ function validateTransitionShape(
       t.joinPolicy !== 'all_settled'
     ) {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "joinPolicy" must be one of "all_success", "any_success", or "all_settled"`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "joinPolicy" must be one of "all_success", "any_success", or "all_settled"`,
       );
     }
     if (!hasTemplate) {
       throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "joinPolicy" requires "template"`,
+        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "joinPolicy" requires "template"`,
       );
     }
   }
@@ -294,7 +340,7 @@ function validateTransitionShape(
     t.outcome !== 'error'
   ) {
     throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "outcome" must be "success" or "error"`,
+      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "outcome" must be "success" or "error"`,
     );
   }
 }

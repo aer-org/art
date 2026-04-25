@@ -53,7 +53,7 @@ function resolveProvider(): 'claude' | 'codex' {
 // --- Pipeline JSON Schema ---
 
 export interface PipelineTransition {
-  marker: string; // Marker name (e.g. "STAGE_COMPLETE")
+  marker?: string; // Marker name (e.g. "STAGE_COMPLETE"). Required unless `afterTimeout` is true.
   next?: string | string[] | null; // Downstream stage in the current scope, or null to end the current scope. Arrays are runtime-only fan-out targets.
   template?: string; // Template name to stitch before continuing to `next`.
   count?: number; // With `template`: insert N copies in parallel + synthesized join. Requires `template`. Mutually exclusive with `countFrom`.
@@ -61,6 +61,7 @@ export interface PipelineTransition {
   substitutionsFrom?: 'payload'; // Per-lane substitution map comes from payload[i] object fields. Requires `countFrom: "payload"`.
   joinPolicy?: JoinPolicy; // With `template`: how the spawned copies decide whether to continue to `next`.
   outcome?: TransitionOutcome; // Optional explicit outcome classification for this transition.
+  afterTimeout?: boolean; // Command mode only: fire this transition only after the command is terminated for timeout.
   prompt?: string; // Description for the agent on when to use this marker
 }
 
@@ -79,6 +80,7 @@ export interface PipelineStage {
   command?: string; // Shell command mode (runs sh -c, no agent)
   successMarker?: string; // Command mode: stdout substring that indicates success → STAGE_COMPLETE
   errorMarker?: string; // Command mode: stdout substring that indicates failure → STAGE_ERROR (resolves immediately)
+  timeout?: number; // Command mode only: max runtime in milliseconds before the process is terminated.
   chat?: boolean; // Interactive chatting stage (agent + user conversation via stdin)
   mounts: Record<string, 'ro' | 'rw' | null | undefined>;
   devices?: string[];
@@ -110,7 +112,19 @@ export function resolveStageKind(stage: PipelineStage): StageKind {
 
 function transitionOutcome(transition: PipelineTransition): TransitionOutcome {
   if (transition.outcome) return transition.outcome;
-  return transition.marker.includes('ERROR') ? 'error' : 'success';
+  if (transition.afterTimeout) return 'error';
+  return transition.marker?.includes('ERROR') ? 'error' : 'success';
+}
+
+function transitionDisplayName(transition: PipelineTransition): string {
+  if (transition.afterTimeout) return 'afterTimeout';
+  return transition.marker ?? 'transition';
+}
+
+function primaryTransition(
+  stage: Pick<PipelineStage, 'transitions'>,
+): PipelineTransition | undefined {
+  return stage.transitions.find((t) => !t.afterTimeout) ?? stage.transitions[0];
 }
 
 export interface PipelineConfig {
@@ -392,6 +406,7 @@ export function parseStageMarkers(
 ): StageMarkerResult {
   const combined = resultTexts.join('\n');
   for (const transition of transitions) {
+    if (transition.afterTimeout || !transition.marker) continue;
     const markerName = escapeRegExp(transition.marker);
     // Fenced payload: [MARKER] followed by ---PAYLOAD_START---...---PAYLOAD_END---
     const fencedRegex = new RegExp(
@@ -1144,38 +1159,47 @@ export class PipelineRunner {
       let markerResolved = false;
 
       const completeTransition = stageConfig.transitions.find(
-        (t) => t.marker === 'STAGE_COMPLETE',
+        (t) => !t.afterTimeout && t.marker === 'STAGE_COMPLETE',
       );
       const errorTransition = stageConfig.transitions.find(
-        (t) => t.marker === 'STAGE_ERROR',
+        (t) => !t.afterTimeout && t.marker === 'STAGE_ERROR',
+      );
+      const timeoutTransition = stageConfig.transitions.find(
+        (t) => t.afterTimeout,
       );
 
-      const resolveMarker = (isSuccess: boolean, payload: string | null) => {
+      const resolveTransition = (
+        transition: PipelineTransition | undefined,
+        fallback: PipelineTransition,
+        payload: string | null,
+        isSuccess: boolean,
+        shouldTerminateProcess = false,
+      ) => {
         if (markerResolved || !handle.pendingResult) return;
         markerResolved = true;
-        const transition = isSuccess ? completeTransition : errorTransition;
         // On success, scan stdout for a fenced marker payload to forward to
         // the next stage. Command stages don't emit payload structurally, but
         // fenced `[MARKER] ... ---PAYLOAD_START--- ... ---PAYLOAD_END---`
         // blocks in stdout are picked up so a command stage can feed a
         // downstream dynamic-fanout.
         let effectivePayload = payload;
-        if (isSuccess && transition && effectivePayload === null) {
+        if (
+          isSuccess &&
+          transition &&
+          !transition.afterTimeout &&
+          effectivePayload === null
+        ) {
           const parsed = parseStageMarkers([stdout], [transition]);
           if (parsed.matched && parsed.payload !== null) {
             effectivePayload = parsed.payload;
           }
         }
         handle.pendingResult.resolve({
-          matched: transition ?? {
-            marker: isSuccess ? 'STAGE_COMPLETE' : 'STAGE_ERROR',
-            next: null,
-          },
+          matched: transition ?? fallback,
           payload: effectivePayload,
         });
         handle.pendingResult = null;
-        // Kill process on error marker — no need to wait for cleanup
-        if (!isSuccess) {
+        if (shouldTerminateProcess) {
           container.kill('SIGTERM');
         }
       };
@@ -1207,14 +1231,22 @@ export class PipelineRunner {
             stageConfig.successMarker &&
             stdout.includes(stageConfig.successMarker)
           ) {
-            resolveMarker(true, null);
+            resolveTransition(
+              completeTransition,
+              { marker: 'STAGE_COMPLETE', next: null },
+              null,
+              true,
+            );
           } else if (
             stageConfig.errorMarker &&
             stdout.includes(stageConfig.errorMarker)
           ) {
-            resolveMarker(
-              false,
+            resolveTransition(
+              errorTransition,
+              { marker: 'STAGE_ERROR', next: null, outcome: 'error' },
               `errorMarker detected: ${stageConfig.errorMarker}`,
+              false,
+              true,
             );
           }
         }
@@ -1234,7 +1266,8 @@ export class PipelineRunner {
         }
       });
 
-      const configTimeout = this.group.containerConfig?.timeout || 14400000; // 4 hour default for commands
+      const configTimeout =
+        stageConfig.timeout ?? this.group.containerConfig?.timeout ?? 14400000; // 4 hour default for commands
       let timedOut = false;
       const timeout = setTimeout(() => {
         timedOut = true;
@@ -1268,7 +1301,14 @@ export class PipelineRunner {
         }
 
         if (timedOut) {
-          resolveMarker(false, `Command timed out after ${configTimeout}ms`);
+          resolveTransition(
+            timeoutTransition ?? errorTransition,
+            timeoutTransition
+              ? { afterTimeout: true, next: null, outcome: 'error' }
+              : { marker: 'STAGE_ERROR', next: null, outcome: 'error' },
+            `Command timed out after ${configTimeout}ms`,
+            false,
+          );
           resolve({
             status: 'error',
             result: null,
@@ -1282,13 +1322,17 @@ export class PipelineRunner {
           ? stdout.includes(stageConfig.successMarker)
           : code === 0;
 
-        resolveMarker(
-          isSuccess,
+        resolveTransition(
+          isSuccess ? completeTransition : errorTransition,
+          isSuccess
+            ? { marker: 'STAGE_COMPLETE', next: null }
+            : { marker: 'STAGE_ERROR', next: null, outcome: 'error' },
           isSuccess
             ? null
             : code !== 0
               ? `Exit code ${code}: ${stderr.slice(-500)}`
               : `successMarker not found in output`,
+          isSuccess,
         );
 
         resolve({
@@ -1300,7 +1344,12 @@ export class PipelineRunner {
 
       container.on('error', (err) => {
         clearTimeout(timeout);
-        resolveMarker(false, err.message);
+        resolveTransition(
+          errorTransition,
+          { marker: 'STAGE_ERROR', next: null, outcome: 'error' },
+          err.message,
+          false,
+        );
         resolve({
           status: 'error',
           result: null,
@@ -1337,10 +1386,12 @@ export class PipelineRunner {
    * Build commonRules dynamically from a stage's transitions.
    */
   private buildCommonRules(stageConfig: PipelineStage): string {
-    const markerLines = stageConfig.transitions.map((t) => {
-      const desc = t.prompt || t.marker;
-      return `- ${desc} → [${t.marker}]`;
-    });
+    const markerLines = stageConfig.transitions
+      .filter((t) => !t.afterTimeout && t.marker)
+      .map((t) => {
+        const desc = t.prompt || t.marker;
+        return `- ${desc} → [${t.marker}]`;
+      });
 
     const modeRule = stageConfig.chat
       ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
@@ -1478,7 +1529,7 @@ PAYLOAD FORMATS:
       // Only the first transition (primary/success path) contributes to the
       // predecessor map. Error/fallback transitions listed after the primary
       // one do not gate fan-in.
-      const primary = s.transitions[0];
+      const primary = primaryTransition(s);
       if (!primary) continue;
       for (const target of PipelineRunner.nextTargets(primary.next)) {
         let set = predecessors.get(target);
@@ -1638,7 +1689,7 @@ PAYLOAD FORMATS:
             if (!stagesByName.has(name)) return [];
             if (!completedStages.includes(name)) return [name];
             const stage = stagesByName.get(name)!;
-            const primary = stage.transitions[0];
+            const primary = primaryTransition(stage);
             return primary ? PipelineRunner.nextTargets(primary.next) : [];
           })
           .filter((s, index, items) => items.indexOf(s) === index)
@@ -1756,9 +1807,10 @@ PAYLOAD FORMATS:
         lastResult: null,
       };
     }
+    const matchedLabel = transitionDisplayName(matched);
 
     // Synthetic container exit/error — container is dead, must respawn in place.
-    if (matched.marker.startsWith('_CONTAINER')) {
+    if (matched.marker?.startsWith('_CONTAINER')) {
       const errorDesc = payload || matched.marker;
       await this.notify(
         `⚠️ [Turn ${turnCount}] ${currentStageName} error: ${errorDesc}`,
@@ -1845,14 +1897,14 @@ PAYLOAD FORMATS:
     if (isErrorTransition) {
       await this.notifyBanner(
         targetDisplay
-          ? `⚠️ Warning: ${payload || matched.marker}\n🔄 Returning to ${targetDisplay}`
-          : `⚠️ Warning: ${payload || matched.marker}`,
+          ? `⚠️ Warning: ${payload || matchedLabel}\n🔄 Returning to ${targetDisplay}`
+          : `⚠️ Warning: ${payload || matchedLabel}`,
       );
     } else {
       await this.notifyBanner(
         targetDisplay
-          ? `✅ ${currentStageName} → ${targetDisplay} (${matched.marker})`
-          : `✅ ${currentStageName} completed! (${matched.marker})`,
+          ? `✅ ${currentStageName} → ${targetDisplay} (${matchedLabel})`
+          : `✅ ${currentStageName} completed! (${matchedLabel})`,
       );
     }
 
@@ -1910,9 +1962,10 @@ PAYLOAD FORMATS:
       nextInitialPrompt,
       nextEphemeralSystemPrompt,
       stageOutcome,
-      // Terminal transition: an ERROR marker ends the pipeline with 'error',
-      // any other marker ends it with 'success'. Non-terminal transitions
-      // leave the result undetermined until a later stage decides.
+      // Terminal transition: error-classified transitions (including
+      // `afterTimeout`) end the pipeline with 'error'; success-classified
+      // transitions end it with 'success'. Non-terminal transitions leave
+      // the result undetermined until a later stage decides.
       lastResult: targets.length === 0 ? stageOutcome : null,
     };
   }
@@ -2495,6 +2548,7 @@ export function loadPipelineConfig(
     // Validate stage names and transitions
     const stageNames = new Set(config.stages.map((s) => s.name));
     for (const stage of config.stages) {
+      const isCommandStage = typeof stage.command === 'string';
       if (
         stage.kind !== undefined &&
         stage.kind !== 'agent' &&
@@ -2541,6 +2595,22 @@ export function loadPipelineConfig(
         );
         return null;
       }
+      if (stage.timeout !== undefined) {
+        if (!Number.isFinite(stage.timeout) || stage.timeout <= 0) {
+          logger.error(
+            { groupFolder, stage: stage.name, timeout: stage.timeout },
+            'Invalid timeout field (must be a positive number of milliseconds)',
+          );
+          return null;
+        }
+        if (!isCommandStage) {
+          logger.error(
+            { groupFolder, stage: stage.name },
+            'Stage "timeout" is only supported for command stages',
+          );
+          return null;
+        }
+      }
 
       if (
         stage.mcpAccess !== undefined &&
@@ -2567,7 +2637,7 @@ export function loadPipelineConfig(
         return null;
       }
 
-      if (stage.command && stage.mcpAccess && stage.mcpAccess.length > 0) {
+      if (isCommandStage && stage.mcpAccess && stage.mcpAccess.length > 0) {
         logger.error(
           { groupFolder, stage: stage.name },
           'Command stages cannot declare mcpAccess',
@@ -2604,39 +2674,88 @@ export function loadPipelineConfig(
         return null;
       }
 
+      let afterTimeoutTransitions = 0;
       for (const t of stage.transitions) {
         const tAny = t as unknown as Record<string, unknown>;
+        const transitionName = t.afterTimeout
+          ? 'afterTimeout'
+          : (t.marker ?? '<missing-marker>');
         if (tAny.retry !== undefined) {
           logger.error(
-            { groupFolder, stage: stage.name, marker: t.marker },
+            { groupFolder, stage: stage.name, marker: transitionName },
             'Transition "retry" is no longer supported',
           );
           return null;
         }
         if (tAny.next_dynamic !== undefined) {
           logger.error(
-            { groupFolder, stage: stage.name, marker: t.marker },
+            { groupFolder, stage: stage.name, marker: transitionName },
             'Transition "next_dynamic" is no longer supported',
+          );
+          return null;
+        }
+        if (
+          t.afterTimeout !== undefined &&
+          typeof t.afterTimeout !== 'boolean'
+        ) {
+          logger.error(
+            { groupFolder, stage: stage.name, marker: transitionName },
+            'Transition "afterTimeout" must be a boolean',
+          );
+          return null;
+        }
+        if (t.afterTimeout) {
+          afterTimeoutTransitions++;
+          if (!isCommandStage) {
+            logger.error(
+              { groupFolder, stage: stage.name },
+              'Transition "afterTimeout" is only supported for command stages',
+            );
+            return null;
+          }
+          if (t.marker !== undefined) {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition "afterTimeout" cannot be combined with "marker"',
+            );
+            return null;
+          }
+          if (t.countFrom !== undefined || t.substitutionsFrom !== undefined) {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: transitionName },
+              'Transition "afterTimeout" does not support payload-driven fanout fields',
+            );
+            return null;
+          }
+        } else if (typeof t.marker !== 'string' || t.marker.length === 0) {
+          logger.error(
+            { groupFolder, stage: stage.name },
+            'Transition "marker" is required unless "afterTimeout" is true',
           );
           return null;
         }
         if (Array.isArray(t.next)) {
           logger.error(
-            { groupFolder, stage: stage.name, marker: t.marker },
+            { groupFolder, stage: stage.name, marker: transitionName },
             'Transition "next" must be a string or null — multi-target arrays are produced only by parallel stitch at runtime',
           );
           return null;
         }
         if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
           logger.error(
-            { groupFolder, stage: stage.name, marker: t.marker },
+            { groupFolder, stage: stage.name, marker: transitionName },
             'Transition "next" is required (use null to end the current scope)',
           );
           return null;
         }
         if (t.next !== null && typeof t.next !== 'string') {
           logger.error(
-            { groupFolder, stage: stage.name, marker: t.marker, next: t.next },
+            {
+              groupFolder,
+              stage: stage.name,
+              marker: transitionName,
+              next: t.next,
+            },
             'Transition "next" must be a string or null',
           );
           return null;
@@ -2646,7 +2765,7 @@ export function loadPipelineConfig(
         if (hasTemplate) {
           if (typeof t.template !== 'string' || t.template.length === 0) {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "template" must be a non-empty string',
             );
             return null;
@@ -2655,14 +2774,14 @@ export function loadPipelineConfig(
         if (t.count !== undefined) {
           if (!Number.isInteger(t.count) || (t.count as number) < 1) {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "count" must be a positive integer',
             );
             return null;
           }
           if (!hasTemplate) {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "count" requires "template"',
             );
             return null;
@@ -2671,21 +2790,21 @@ export function loadPipelineConfig(
         if (t.countFrom !== undefined) {
           if (t.countFrom !== 'payload') {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "countFrom" only accepts "payload"',
             );
             return null;
           }
           if (!hasTemplate) {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "countFrom" requires "template"',
             );
             return null;
           }
           if (t.count !== undefined) {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition must have either "count" or "countFrom", not both',
             );
             return null;
@@ -2694,14 +2813,14 @@ export function loadPipelineConfig(
         if (t.substitutionsFrom !== undefined) {
           if (t.substitutionsFrom !== 'payload') {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "substitutionsFrom" only accepts "payload"',
             );
             return null;
           }
           if (t.countFrom !== 'payload') {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "substitutionsFrom" requires "countFrom: \\"payload\\""',
             );
             return null;
@@ -2717,7 +2836,7 @@ export function loadPipelineConfig(
               {
                 groupFolder,
                 stage: stage.name,
-                marker: t.marker,
+                marker: transitionName,
                 joinPolicy: t.joinPolicy,
               },
               'Transition "joinPolicy" must be one of "all_success", "any_success", or "all_settled"',
@@ -2726,7 +2845,7 @@ export function loadPipelineConfig(
           }
           if (!hasTemplate) {
             logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
+              { groupFolder, stage: stage.name, marker: transitionName },
               'Transition "joinPolicy" requires "template"',
             );
             return null;
@@ -2741,7 +2860,7 @@ export function loadPipelineConfig(
             {
               groupFolder,
               stage: stage.name,
-              marker: t.marker,
+              marker: transitionName,
               outcome: t.outcome,
             },
             'Transition "outcome" must be "success" or "error"',
@@ -2755,6 +2874,13 @@ export function loadPipelineConfig(
           );
           return null;
         }
+      }
+      if (afterTimeoutTransitions > 1) {
+        logger.error(
+          { groupFolder, stage: stage.name },
+          'At most one transition may declare "afterTimeout: true"',
+        );
+        return null;
       }
     }
 
