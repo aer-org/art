@@ -9,6 +9,7 @@
         {
           "marker": "DEEPER",
           "template": "deep1",
+          "next": null,
           "prompt": "Stitch the deep1 template (level 2)"
         }
       ]

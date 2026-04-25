@@ -8,12 +8,13 @@
  * File layout: <groupDir>/templates/<name>.json
  * File shape:  { entry?: string, stages: PipelineStage[] }
  *
- * Semantics (Option 1 — template owns downstream):
- *   - A template stage with `next: null` terminates the pipeline. There is no
- *     implicit re-wire to a fallback target outside the template.
- *   - `next` is scope-local: it must name a stage inside this template. To
- *     hand control off to another template, use `template: "<name>"` — that
- *     gets stitched at runtime. Cross-template node references are rejected.
+ * Semantics:
+ *   - `next` is always scope-local: it must name a stage inside this template
+ *     (or be `null` to end the current template invocation).
+ *   - If `template` is also present, the named template is spawned first and
+ *     returns to this transition's `next`.
+ *   - Cross-template node references are rejected. `template` is the only way
+ *     to cross a template boundary.
  */
 import fs from 'fs';
 import path from 'path';
@@ -123,6 +124,9 @@ function validateStageShape(stage, templateName) {
     if (stage.fan_in !== undefined && stage.fan_in !== 'all') {
         throw new Error(`Template "${templateName}": stage "${stage.name}" has invalid fan_in "${String(stage.fan_in)}" (must be "all")`);
     }
+    if (stage.join !== undefined) {
+        throw new Error(`Template "${templateName}": stage "${stage.name}" cannot author runtime "join" metadata`);
+    }
 }
 function validateTransitionShape(t, stageName, templateName) {
     if (!t || typeof t !== 'object') {
@@ -141,10 +145,13 @@ function validateTransitionShape(t, stageName, templateName) {
     if (t.next !== undefined && t.next !== null && typeof t.next !== 'string') {
         throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next" must be a string or null (authored arrays are not allowed)`);
     }
-    const hasNextString = typeof t.next === 'string';
+    if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
+        throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next" is required (use null to end the current template invocation)`);
+    }
+    const hasNext = t.next === null || typeof t.next === 'string';
     const hasTemplate = t.template !== undefined;
-    if (hasNextString && hasTemplate) {
-        throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — must have either "next" or "template", not both`);
+    if (!hasNext) {
+        throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "next" must be a string or null`);
     }
     if (hasTemplate) {
         if (typeof t.template !== 'string' || t.template.length === 0) {
@@ -178,6 +185,19 @@ function validateTransitionShape(t, stageName, templateName) {
         if (t.countFrom !== 'payload') {
             throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "substitutionsFrom" requires "countFrom: \\"payload\\""`);
         }
+    }
+    if (t.joinPolicy !== undefined) {
+        if (t.joinPolicy !== 'all_success' &&
+            t.joinPolicy !== 'any_success' &&
+            t.joinPolicy !== 'all_settled') {
+            throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "joinPolicy" must be one of "all_success", "any_success", or "all_settled"`);
+        }
+        if (!hasTemplate) {
+            throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "joinPolicy" requires "template"`);
+        }
+    }
+    if (t.outcome !== undefined && t.outcome !== 'success' && t.outcome !== 'error') {
+        throw new Error(`Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "outcome" must be "success" or "error"`);
     }
 }
 /**

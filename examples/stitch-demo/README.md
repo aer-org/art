@@ -1,7 +1,7 @@
 # stitch-demo
 
 Minimal pipeline that exercises every stitch primitive: three levels of nested
-single stitch followed by a parallel stitch with a synthesized fan-in barrier.
+single stitch followed by a parallel stitch with a synthesized join stage.
 All stages are agent-mode with trivial prompts that ask Claude to emit one
 specific marker — the demo is about the host-side graph mutation, not the
 agent's reasoning.
@@ -15,7 +15,7 @@ start
               └── work ──[DEEPER]──►  deep2 (template, single stitch)
                     └── work ──[PARALLEL, count=3]──►  lane (template, parallel stitch)
                           ├── task #0 ─┐
-                          ├── task #1 ─┼─►  barrier (fan_in: all) ──►  (pipeline ends)
+                          ├── task #1 ─┼─►  join ──►  (pipeline ends)
                           └── task #2 ─┘
 ```
 
@@ -28,7 +28,7 @@ Resolved stage names at runtime (deterministic):
 - `start__demo0__intro__deep10__work__deep20__work__lane0__task`
 - `start__demo0__intro__deep10__work__deep20__work__lane1__task`
 - `start__demo0__intro__deep10__work__deep20__work__lane2__task`
-- `start__demo0__intro__deep10__work__deep20__work__lane__barrier`
+- `start__demo0__intro__deep10__work__deep20__work__lane__join`
 
 Every level of stitch logs a `🧵 Stitched template "<name>" after <origin>`
 banner to the pipeline log.
@@ -42,7 +42,7 @@ __art__/
     ├── demo.json                 # intro → deep1
     ├── deep1.json                # work  → deep2
     ├── deep2.json                # work  → lane (parallel count=3)
-    └── lane.json                 # task  → null (converges on barrier)
+    └── lane.json                 # task  → null (converges on join)
 ```
 
 ## Run
@@ -58,19 +58,16 @@ art run stitch-demo
 ```
 
 Watch the pipeline log stream — you should see the stitch banners in order,
-three agents in parallel during the lane phase, then the synthesized barrier
+three agents in parallel during the lane phase, then the synthesized join
 firing once all three `DONE`s have arrived.
 
 ## What is exercised vs. what is skipped
 
 Exercised:
-- Unknown-name transition (`next: "demo"`) being resolved as a template at
-  runtime.
 - Nested single stitch (template A → B → C each via single stitch).
-- Parallel stitch with `count: N` producing N renamed copies + synthesized
-  agent-mode barrier.
-- Fan-in barrier waiting for every lane (predecessor map rebuilt on demand so
-  stitch-added stages are counted).
+- Parallel stitch with `count: N` producing N renamed copies + a synthesized
+  join stage.
+- Join waiting for every lane before continuing.
 - `{{insertId}}` and `{{index}}` substitution (the lane prompt references
   both — inspect the lane agents' prompts in the log).
 - State persistence of `insertedStages` — if you `Ctrl+C` mid-run and resume,
@@ -90,6 +87,6 @@ Skipped (intentional):
   parallel lanes with unique names like `…__lane9__task`.
 - Replace `lane.json` with a 2-stage template (task1 → task2 → null) and
   re-run — each lane now has two sequential stages internally, and only
-  the final one hits the barrier.
+  the final one hits the join.
 - Insert another level: make `deep2.json` stitch a new `deep3.json` before
   the parallel step. Stitch depth is unlimited (DAG always grows downward).

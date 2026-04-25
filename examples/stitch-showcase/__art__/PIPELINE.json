@@ -32,6 +32,7 @@
         {
           "marker": "GO",
           "template": "main",
+          "next": null,
           "prompt": "Single-stitch the main template (3 stages inside)"
         }
       ]

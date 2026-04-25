@@ -12,7 +12,8 @@
       "transitions": [
         {
           "marker": "STAGE_COMPLETE",
-          "template": "experiment"
+          "template": "experiment",
+          "next": null
         }
       ]
     }

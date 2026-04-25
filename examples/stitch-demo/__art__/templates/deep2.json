@@ -9,8 +9,9 @@
         {
           "marker": "PARALLEL",
           "template": "lane",
+          "next": null,
           "count": 3,
-          "prompt": "Parallel-stitch 3 lanes of the lane template; a synthesized barrier waits for all"
+          "prompt": "Parallel-stitch 3 lanes of the lane template; a synthesized join waits for all copies"
         }
       ]
     }

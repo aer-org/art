@@ -54,15 +54,19 @@ function resolveProvider(): 'claude' | 'codex' {
 
 export interface PipelineTransition {
   marker: string; // Marker name (e.g. "STAGE_COMPLETE")
-  next?: string | string[] | null; // Stage name (scope-local) or null (pipeline end). Arrays are runtime-only (parallel-stitch barrier fan-out).
-  template?: string; // Template name to stitch at runtime. Mutually exclusive with non-null `next`.
-  count?: number; // With `template`: insert N copies in parallel + synthesized fan-in barrier. Requires `template`. Mutually exclusive with `countFrom`.
+  next?: string | string[] | null; // Downstream stage in the current scope, or null to end the current scope. Arrays are runtime-only fan-out targets.
+  template?: string; // Template name to stitch before continuing to `next`.
+  count?: number; // With `template`: insert N copies in parallel + synthesized join. Requires `template`. Mutually exclusive with `countFrom`.
   countFrom?: 'payload'; // Derive lane count from marker payload (JSON array length). Requires `template`. Mutually exclusive with `count`.
   substitutionsFrom?: 'payload'; // Per-lane substitution map comes from payload[i] object fields. Requires `countFrom: "payload"`.
+  joinPolicy?: JoinPolicy; // With `template`: how the spawned copies decide whether to continue to `next`.
+  outcome?: TransitionOutcome; // Optional explicit outcome classification for this transition.
   prompt?: string; // Description for the agent on when to use this marker
 }
 
 export type StageKind = 'agent' | 'command';
+export type TransitionOutcome = 'success' | 'error';
+export type JoinPolicy = 'all_success' | 'any_success' | 'all_settled';
 
 export interface PipelineStage {
   name: string;
@@ -87,6 +91,11 @@ export interface PipelineStage {
   mcpAccess?: string[]; // External MCP registry refs available to this stage
   resumeSession?: boolean; // false = always start fresh session. default true = resume
   fan_in?: 'all'; // Fan-in mode: waits for all predecessors. Reserved for future alternatives.
+  join?: {
+    policy: JoinPolicy;
+    expectedCopies: number;
+    copyPrefixes: string[];
+  }; // Runtime-generated join stage metadata. Not allowed in authored config.
   transitions: PipelineTransition[];
 }
 
@@ -97,6 +106,11 @@ export interface PipelineStage {
 export function resolveStageKind(stage: PipelineStage): StageKind {
   if (stage.kind) return stage.kind;
   return stage.command ? 'command' : 'agent';
+}
+
+function transitionOutcome(transition: PipelineTransition): TransitionOutcome {
+  if (transition.outcome) return transition.outcome;
+  return transition.marker.includes('ERROR') ? 'error' : 'success';
 }
 
 export interface PipelineConfig {
@@ -237,7 +251,7 @@ function getExclusiveLock(key: string): ExclusiveLock {
 // --- Pipeline State Tracking ---
 
 export interface PipelineState {
-  version?: 2; // Required on save; load rejects state files without version 2.
+  version?: 3; // Required on save; load rejects older state files.
   currentStage: string | string[] | null;
   completedStages: string[];
   lastUpdated: string;
@@ -245,6 +259,7 @@ export interface PipelineState {
   activations?: Record<string, number>; // Per-stage activation count for fan-in accounting.
   completions?: Record<string, number>; // Per-stage completion count for fan-in accounting.
   insertedStages?: PipelineStage[]; // Dynamically inserted stages (from runtime stitch). Merged into config on resume.
+  joinSettlements?: Record<string, Record<string, 'success' | 'error'>>; // Per join-stage copy outcomes keyed by copy index.
 }
 
 const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
@@ -298,7 +313,7 @@ export function savePipelineState(
   scopeId?: string,
 ): void {
   const filepath = path.join(groupDir, pipelineStateFileName(tag, scopeId));
-  const stateOut: PipelineState = { ...state, version: 2 };
+  const stateOut: PipelineState = { ...state, version: 3 };
   atomicWrite(filepath, JSON.stringify(stateOut, null, 2));
 }
 
@@ -323,9 +338,9 @@ export function loadPipelineState(
       `Pipeline state file ${filepath} is not valid JSON: ${(err as Error).message}`,
     );
   }
-  if (parsed.version !== 2 || parsed.pendingFanoutPayloads !== undefined) {
+  if (parsed.version !== 3 || parsed.pendingFanoutPayloads !== undefined) {
     throw new Error(
-      `Pipeline state file ${filepath} is from a pre-stitch version — delete it to reset (rm "${filepath}")`,
+      `Pipeline state file ${filepath} is from an older pipeline-state version — delete it to reset (rm "${filepath}")`,
     );
   }
   return parsed;
@@ -480,6 +495,7 @@ export class PipelineRunner {
   private aborted = false;
   private activeHandles = new Map<string, StageHandle>();
   private stageSessionIds = new Map<string, string>();
+  private joinSettlements = new Map<string, Map<string, TransitionOutcome>>();
   private baseStageCount = 0;
   constructor(
     group: RegisteredGroup,
@@ -540,6 +556,112 @@ export class PipelineRunner {
 
   getRunId(): string {
     return this.runId;
+  }
+
+  private serializeJoinSettlements(): Record<
+    string,
+    Record<string, TransitionOutcome>
+  > {
+    return Object.fromEntries(
+      [...this.joinSettlements.entries()].map(([joinStage, settlements]) => [
+        joinStage,
+        Object.fromEntries(settlements),
+      ]),
+    );
+  }
+
+  private restoreJoinSettlements(
+    raw: Record<string, Record<string, TransitionOutcome>> | undefined,
+  ): void {
+    this.joinSettlements = new Map(
+      Object.entries(raw ?? {}).map(([joinStage, settlements]) => [
+        joinStage,
+        new Map(Object.entries(settlements)),
+      ]),
+    );
+  }
+
+  private saveRunnerState(
+    state: Omit<
+      PipelineState,
+      'version' | 'insertedStages' | 'joinSettlements'
+    >,
+  ): void {
+    savePipelineState(
+      this.groupDir,
+      {
+        ...state,
+        insertedStages: this.config.stages.slice(this.baseStageCount),
+        joinSettlements: this.serializeJoinSettlements(),
+      },
+      this.pipelineTag,
+      this.scopeId,
+    );
+  }
+
+  private copyIndexForJoinArrival(
+    joinStage: PipelineStage,
+    finishedStage: string,
+  ): number | null {
+    const prefixes = joinStage.join?.copyPrefixes ?? [];
+    const index = prefixes.findIndex((prefix) =>
+      finishedStage.startsWith(prefix),
+    );
+    return index >= 0 ? index : null;
+  }
+
+  private recordJoinSettlement(
+    joinStageName: string,
+    finishedStage: string,
+    outcome: TransitionOutcome | null,
+  ): void {
+    if (!outcome) return;
+    const joinStage = this.config.stages.find((s) => s.name === joinStageName);
+    if (!joinStage?.join) return;
+
+    const copyIndex = this.copyIndexForJoinArrival(joinStage, finishedStage);
+    if (copyIndex === null) {
+      logger.warn(
+        { joinStage: joinStageName, finishedStage },
+        'Join arrival did not match any copy prefix',
+      );
+      return;
+    }
+
+    let settlements = this.joinSettlements.get(joinStageName);
+    if (!settlements) {
+      settlements = new Map<string, TransitionOutcome>();
+      this.joinSettlements.set(joinStageName, settlements);
+    }
+
+    const key = String(copyIndex);
+    if (settlements.has(key)) return;
+    settlements.set(key, outcome);
+  }
+
+  private isJoinReady(stageName: string): boolean {
+    const stage = this.config.stages.find((s) => s.name === stageName);
+    if (!stage?.join) return true;
+    const settled = this.joinSettlements.get(stageName);
+    return (settled?.size ?? 0) >= stage.join.expectedCopies;
+  }
+
+  private evaluateJoinOutcome(stage: PipelineStage): TransitionOutcome {
+    const join = stage.join;
+    if (!join) return 'success';
+
+    const settlements = this.joinSettlements.get(stage.name);
+    const values = [...(settlements?.values() ?? [])];
+    const successCount = values.filter((value) => value === 'success').length;
+
+    switch (join.policy) {
+      case 'all_success':
+        return successCount === join.expectedCopies ? 'success' : 'error';
+      case 'any_success':
+        return successCount > 0 ? 'success' : 'error';
+      case 'all_settled':
+        return 'success';
+    }
   }
 
   async abort(): Promise<void> {
@@ -1383,6 +1505,8 @@ PAYLOAD FORMATS:
     stageConfig: PipelineStage,
     transitionIdx: number,
     templateName: string,
+    downstreamNext: string | null,
+    joinPolicy: JoinPolicy,
     directive: StitchDirective,
   ): {
     insertedStages: PipelineStage[];
@@ -1400,6 +1524,8 @@ PAYLOAD FORMATS:
         originStage: stageConfig.name,
         originTransitionIdx: transitionIdx,
         template,
+        downstreamNext,
+        joinPolicy,
         count: directive.count,
         perCopySubstitutions: directive.perCopySubs,
       });
@@ -1421,6 +1547,8 @@ PAYLOAD FORMATS:
       originStage: stageConfig.name,
       originTransitionIdx: transitionIdx,
       template,
+      downstreamNext,
+      joinPolicy,
       substitutions: directive.subs,
     });
     this.config = r.updatedConfig;
@@ -1531,6 +1659,7 @@ PAYLOAD FORMATS:
       const completions = new Map(
         Object.entries(existingState.completions ?? {}),
       );
+      this.restoreJoinSettlements(existingState.joinSettlements);
       // Restore dynamically-inserted stages (from earlier stitch operations)
       if (
         existingState.insertedStages &&
@@ -1545,6 +1674,7 @@ PAYLOAD FORMATS:
       return { initialStages, completedStages, activations, completions };
     }
 
+    this.restoreJoinSettlements(undefined);
     return {
       initialStages: [resolveEntry()],
       completedStages: [],
@@ -1577,6 +1707,7 @@ PAYLOAD FORMATS:
     nextStageName: string | string[] | null;
     nextInitialPrompt: string | null;
     nextEphemeralSystemPrompt?: string | null;
+    stageOutcome: TransitionOutcome | null;
     lastResult: 'success' | 'error' | null;
   }> {
     const { matched, payload } = result;
@@ -1602,6 +1733,7 @@ PAYLOAD FORMATS:
           stageResolved: false,
           nextStageName: null,
           nextInitialPrompt: null,
+          stageOutcome: null,
           lastResult: null,
         };
       }
@@ -1620,6 +1752,7 @@ PAYLOAD FORMATS:
         stageResolved: false,
         nextStageName: null,
         nextInitialPrompt: null,
+        stageOutcome: null,
         lastResult: null,
       };
     }
@@ -1638,6 +1771,7 @@ PAYLOAD FORMATS:
           stageResolved: true,
           nextStageName: null,
           nextInitialPrompt: null,
+          stageOutcome: 'error',
           lastResult: 'error',
         };
       }
@@ -1648,24 +1782,34 @@ PAYLOAD FORMATS:
         stageResolved: true,
         nextStageName: currentStageName,
         nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}${planContent}`,
+        stageOutcome: null,
         lastResult: null,
       };
     }
 
     // Regular transition — move to next stage or end pipeline. When
     // `template` is set, stitch the template into the graph in place and
-    // route to its entry/barrier. Otherwise `next` is either a scope-local
+    // route to its entry/join flow. Otherwise `next` is either a scope-local
     // stage name, null (pipeline end), or a runtime-injected string[] from
-    // a parallel-stitch barrier fan-out.
+    // stitch fan-out.
     let targetName: string | string[] | null = matched.next ?? null;
     if (matched.template) {
       try {
         const directive = resolveStitchInputs(matched, payload);
         const transitionIdx = stageConfig.transitions.indexOf(matched);
+        const downstreamNext = Array.isArray(matched.next)
+          ? (() => {
+              throw new Error(
+                'Template transitions cannot carry authored multi-target "next" arrays',
+              );
+            })()
+          : (matched.next ?? null);
         const stitched = this.performStitch(
           stageConfig,
           transitionIdx,
           matched.template,
+          downstreamNext,
+          matched.joinPolicy ?? 'all_success',
           directive,
         );
         for (const s of stitched.insertedStages) {
@@ -1687,6 +1831,7 @@ PAYLOAD FORMATS:
           stageResolved: true,
           nextStageName: null,
           nextInitialPrompt: null,
+          stageOutcome: 'error',
           lastResult: 'error',
         };
       }
@@ -1695,7 +1840,8 @@ PAYLOAD FORMATS:
     const targetDisplay = Array.isArray(targetName)
       ? targetName.join(', ')
       : targetName;
-    const isErrorTransition = matched.marker.includes('ERROR');
+    const stageOutcome = transitionOutcome(matched);
+    const isErrorTransition = stageOutcome === 'error';
     if (isErrorTransition) {
       await this.notifyBanner(
         targetDisplay
@@ -1718,17 +1864,14 @@ PAYLOAD FORMATS:
       duration: Date.now() - stageStartTime,
     });
     writeRunManifest(this.groupDir, this.manifest);
-    savePipelineState(
-      this.groupDir,
-      {
-        currentStage: targetName,
-        completedStages,
-        lastUpdated: new Date().toISOString(),
-        status: 'running',
-      },
-      this.pipelineTag,
-      this.scopeId,
-    );
+    this.saveRunnerState({
+      currentStage: targetName,
+      completedStages,
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+      activations: undefined,
+      completions: undefined,
+    });
 
     // Close the container first, then retrieve session ID
     await this.closeAndWait(handle);
@@ -1766,11 +1909,11 @@ PAYLOAD FORMATS:
       nextStageName: targetName,
       nextInitialPrompt,
       nextEphemeralSystemPrompt,
+      stageOutcome,
       // Terminal transition: an ERROR marker ends the pipeline with 'error',
       // any other marker ends it with 'success'. Non-terminal transitions
       // leave the result undetermined until a later stage decides.
-      lastResult:
-        targets.length === 0 ? (isErrorTransition ? 'error' : 'success') : null,
+      lastResult: targets.length === 0 ? stageOutcome : null,
     };
   }
 
@@ -1782,17 +1925,14 @@ PAYLOAD FORMATS:
     lastResult: 'success' | 'error',
     pipelineLogStream: fs.WriteStream,
   ): Promise<void> {
-    savePipelineState(
-      this.groupDir,
-      {
-        currentStage: null,
-        completedStages,
-        lastUpdated: new Date().toISOString(),
-        status: lastResult,
-      },
-      this.pipelineTag,
-      this.scopeId,
-    );
+    this.saveRunnerState({
+      currentStage: null,
+      completedStages,
+      lastUpdated: new Date().toISOString(),
+      status: lastResult,
+      activations: undefined,
+      completions: undefined,
+    });
 
     this.manifest.endTime = new Date().toISOString();
     this.manifest.status = lastResult;
@@ -1808,6 +1948,66 @@ PAYLOAD FORMATS:
         ? '🏁 Pipeline completed!'
         : '❌ Pipeline terminated with errors.',
     );
+  }
+
+  private async runJoinStage(
+    stageConfig: PipelineStage,
+    completedStages: string[],
+  ): Promise<{
+    nextStages: string | string[] | null;
+    nextInitialPrompt: string | null;
+    nextEphemeralSystemPrompt: string | null;
+    stageOutcome: TransitionOutcome;
+    result: 'success' | 'error' | null;
+  }> {
+    if (!stageConfig.join) {
+      throw new Error(`Stage "${stageConfig.name}" is not a join stage`);
+    }
+
+    const stageStartTime = Date.now();
+    const stageOutcome = this.evaluateJoinOutcome(stageConfig);
+    const nextStages =
+      stageOutcome === 'success'
+        ? (stageConfig.transitions[0]?.next ?? null)
+        : null;
+    const targetDisplay = Array.isArray(nextStages)
+      ? nextStages.join(', ')
+      : nextStages;
+
+    await this.notifyBanner(
+      stageOutcome === 'success'
+        ? targetDisplay
+          ? `✅ ${stageConfig.name} → ${targetDisplay} (join:${stageConfig.join.policy})`
+          : `✅ ${stageConfig.name} completed! (join:${stageConfig.join.policy})`
+        : `❌ ${stageConfig.name} blocked downstream transition (join:${stageConfig.join.policy})`,
+    );
+
+    completedStages.push(stageConfig.name);
+    this.manifest.stages.push({
+      name: stageConfig.name,
+      status: stageOutcome,
+      duration: Date.now() - stageStartTime,
+    });
+    writeRunManifest(this.groupDir, this.manifest);
+    this.saveRunnerState({
+      currentStage: nextStages,
+      completedStages,
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+      activations: undefined,
+      completions: undefined,
+    });
+
+    return {
+      nextStages,
+      nextInitialPrompt: null,
+      nextEphemeralSystemPrompt: null,
+      stageOutcome,
+      result:
+        PipelineRunner.nextTargets(nextStages).length === 0
+          ? stageOutcome
+          : null,
+    };
   }
 
   /**
@@ -1827,6 +2027,7 @@ PAYLOAD FORMATS:
     nextStages: string | string[] | null;
     nextInitialPrompt: string | null;
     nextEphemeralSystemPrompt: string | null;
+    stageOutcome: TransitionOutcome | null;
     result: 'success' | 'error' | null;
   }> {
     const stageConfig = stagesByName.get(stageName);
@@ -1837,7 +2038,16 @@ PAYLOAD FORMATS:
         nextStages: null,
         nextInitialPrompt: null,
         nextEphemeralSystemPrompt: null,
+        stageOutcome: 'error',
         result: 'error',
+      };
+    }
+
+    if (stageConfig.join) {
+      const joined = await this.runJoinStage(stageConfig, completedStages);
+      return {
+        stageName,
+        ...joined,
       };
     }
 
@@ -1860,6 +2070,7 @@ PAYLOAD FORMATS:
     }
 
     let nextStages: string | string[] | null = null;
+    let stageOutcome: TransitionOutcome | null = null;
     let stageResult: 'success' | 'error' | null = null;
     let outNextInitialPrompt: string | null = null;
     let outNextEphemeralSystemPrompt: string | null = null;
@@ -1878,6 +2089,7 @@ PAYLOAD FORMATS:
 
       while (currentStage === stageName) {
         if (this.aborted) {
+          stageOutcome = 'error';
           stageResult = 'error';
           break;
         }
@@ -1971,6 +2183,7 @@ PAYLOAD FORMATS:
               outNextInitialPrompt = outcome.nextInitialPrompt;
               outNextEphemeralSystemPrompt =
                 outcome.nextEphemeralSystemPrompt ?? null;
+              stageOutcome = outcome.stageOutcome;
               currentStage = null; // exit outer while
               if (outcome.lastResult) {
                 stageResult = outcome.lastResult;
@@ -1995,6 +2208,7 @@ PAYLOAD FORMATS:
       nextStages,
       nextInitialPrompt: outNextInitialPrompt,
       nextEphemeralSystemPrompt: outNextEphemeralSystemPrompt,
+      stageOutcome,
       result: stageResult,
     };
   }
@@ -2017,25 +2231,19 @@ PAYLOAD FORMATS:
       activations.set(name, (activations.get(name) ?? 0) + 1);
     }
 
-    savePipelineState(
-      this.groupDir,
-      {
-        currentStage:
-          initialStages.length === 1 ? initialStages[0] : initialStages,
-        completedStages,
-        lastUpdated: new Date().toISOString(),
-        status: 'running',
-        activations: Object.fromEntries(activations),
-        completions: Object.fromEntries(completions),
-        insertedStages: this.config.stages.slice(this.baseStageCount),
-      },
-      this.pipelineTag,
-      this.scopeId,
-    );
+    this.saveRunnerState({
+      currentStage:
+        initialStages.length === 1 ? initialStages[0] : initialStages,
+      completedStages,
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+      activations: Object.fromEntries(activations),
+      completions: Object.fromEntries(completions),
+    });
 
     // `predecessors` is recomputed per-call below — stitch may add stages at
-    // runtime, so a snapshot taken at run-start would miss barriers and
-    // lane-tails from parallel stitches that fire later.
+    // runtime, so a snapshot taken at run-start would miss join-adjacent
+    // stage edges from later stitches.
     // Each entry: { name, initialPrompt, ephemeralSystemPrompt }
     // — set when payload forwarding applies (initialPrompt for fresh entries,
     //   ephemeralSystemPrompt for re-entry into a resumed stage).
@@ -2047,7 +2255,7 @@ PAYLOAD FORMATS:
     const waitingForFanIn = new Set<string>();
     let lastResult: 'success' | 'error' = 'success';
 
-    // --- Completion notification queue (replaces Promise.all barrier) ---
+    // --- Completion notification queue (replaces Promise.all gating) ---
     type StageResult = Awaited<ReturnType<PipelineRunner['runSingleStage']>>;
     const resultQueue: StageResult[] = [];
     let notifyResolve: (() => void) | null = null;
@@ -2097,6 +2305,7 @@ PAYLOAD FORMATS:
             nextStages: null,
             nextInitialPrompt: null,
             nextEphemeralSystemPrompt: null,
+            stageOutcome: 'error',
             result: 'error',
           });
           running.delete(p);
@@ -2106,10 +2315,14 @@ PAYLOAD FORMATS:
       running.add(p);
     };
 
-    // Helper: check fan-in readiness for a stage. Rebuild predecessors on
-    // demand so stitch-inserted stages (especially parallel barriers) see
-    // their lane-tails as predecessors.
-    const isFanInReady = (stageName: string): boolean => {
+    // Helper: check readiness for a gated stage. Runtime-generated join stages
+    // use persisted settlement accounting; authored fan_in stages still use
+    // predecessor-based gating.
+    const isStageReady = (stageName: string): boolean => {
+      const stage = stagesByName.get(stageName);
+      if (stage?.join) {
+        return this.isJoinReady(stageName);
+      }
       const predecessors = this.buildPredecessorMap();
       return PipelineRunner.fanInReady(
         stageName,
@@ -2173,20 +2386,14 @@ PAYLOAD FORMATS:
 
       // Save current active stages
       const activeNames = [...runningNames];
-      savePipelineState(
-        this.groupDir,
-        {
-          currentStage: activeNames.length === 1 ? activeNames[0] : activeNames,
-          completedStages,
-          lastUpdated: new Date().toISOString(),
-          status: 'running',
-          activations: Object.fromEntries(activations),
-          completions: Object.fromEntries(completions),
-          insertedStages: this.config.stages.slice(this.baseStageCount),
-        },
-        this.pipelineTag,
-        this.scopeId,
-      );
+      this.saveRunnerState({
+        currentStage: activeNames.length === 1 ? activeNames[0] : activeNames,
+        completedStages,
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+        activations: Object.fromEntries(activations),
+        completions: Object.fromEntries(completions),
+      });
 
       // Wait for at least one stage to complete
       await waitForResult();
@@ -2198,6 +2405,7 @@ PAYLOAD FORMATS:
           nextStages,
           nextInitialPrompt,
           nextEphemeralSystemPrompt,
+          stageOutcome,
           result,
         } = resultQueue.shift()!;
 
@@ -2211,6 +2419,10 @@ PAYLOAD FORMATS:
 
         const targets = PipelineRunner.nextTargets(nextStages);
         for (const target of targets) {
+          const targetConfig = stagesByName.get(target);
+          if (targetConfig?.join) {
+            this.recordJoinSettlement(target, finishedStage, stageOutcome);
+          }
           // Skip if already running, queued, or waiting for fan-in
           if (
             runningNames.has(target) ||
@@ -2222,7 +2434,7 @@ PAYLOAD FORMATS:
           // Track activation for dynamic fan-in (only when actually queued, not deduped)
           activations.set(target, (activations.get(target) ?? 0) + 1);
 
-          if (isFanInReady(target)) {
+          if (isStageReady(target)) {
             tryLaunch({
               name: target,
               initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
@@ -2237,7 +2449,7 @@ PAYLOAD FORMATS:
 
       // Re-check fan-in gates — a newly completed stage may have unblocked waiters
       for (const w of [...waitingForFanIn]) {
-        if (isFanInReady(w)) {
+        if (isStageReady(w)) {
           waitingForFanIn.delete(w);
           tryLaunch({ name: w });
         }
@@ -2384,6 +2596,14 @@ export function loadPipelineConfig(
         return null;
       }
 
+      if (stage.join !== undefined) {
+        logger.error(
+          { groupFolder, stage: stage.name },
+          'Runtime "join" metadata cannot be authored in PIPELINE.json',
+        );
+        return null;
+      }
+
       for (const t of stage.transitions) {
         const tAny = t as unknown as Record<string, unknown>;
         if (tAny.retry !== undefined) {
@@ -2407,15 +2627,22 @@ export function loadPipelineConfig(
           );
           return null;
         }
-        const hasNextString = typeof t.next === 'string';
-        const hasTemplate = t.template !== undefined;
-        if (hasNextString && hasTemplate) {
+        if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
           logger.error(
             { groupFolder, stage: stage.name, marker: t.marker },
-            'Transition must have either "next" or "template", not both',
+            'Transition "next" is required (use null to end the current scope)',
           );
           return null;
         }
+        if (t.next !== null && typeof t.next !== 'string') {
+          logger.error(
+            { groupFolder, stage: stage.name, marker: t.marker, next: t.next },
+            'Transition "next" must be a string or null',
+          );
+          return null;
+        }
+        const hasNextString = typeof t.next === 'string';
+        const hasTemplate = t.template !== undefined;
         if (hasTemplate) {
           if (typeof t.template !== 'string' || t.template.length === 0) {
             logger.error(
@@ -2480,10 +2707,51 @@ export function loadPipelineConfig(
             return null;
           }
         }
+        if (t.joinPolicy !== undefined) {
+          if (
+            t.joinPolicy !== 'all_success' &&
+            t.joinPolicy !== 'any_success' &&
+            t.joinPolicy !== 'all_settled'
+          ) {
+            logger.error(
+              {
+                groupFolder,
+                stage: stage.name,
+                marker: t.marker,
+                joinPolicy: t.joinPolicy,
+              },
+              'Transition "joinPolicy" must be one of "all_success", "any_success", or "all_settled"',
+            );
+            return null;
+          }
+          if (!hasTemplate) {
+            logger.error(
+              { groupFolder, stage: stage.name, marker: t.marker },
+              'Transition "joinPolicy" requires "template"',
+            );
+            return null;
+          }
+        }
+        if (
+          t.outcome !== undefined &&
+          t.outcome !== 'success' &&
+          t.outcome !== 'error'
+        ) {
+          logger.error(
+            {
+              groupFolder,
+              stage: stage.name,
+              marker: t.marker,
+              outcome: t.outcome,
+            },
+            'Transition "outcome" must be "success" or "error"',
+          );
+          return null;
+        }
         if (hasNextString && !stageNames.has(t.next as string)) {
           logger.error(
             { groupFolder, stage: stage.name, target: t.next },
-            'Transition "next" must reference an existing stage in this pipeline (use "template" for templates)',
+            'Transition "next" must reference an existing stage in this pipeline',
           );
           return null;
         }

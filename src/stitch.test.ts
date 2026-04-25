@@ -12,15 +12,13 @@ vi.mock('./logger.js', () => ({
 import {
   assertConfigAcyclic,
   assertNoNameCollision,
-  barrierNameFor,
+  joinNameFor,
   renamedStage,
   stitchParallel,
   stitchSingle,
 } from './stitch.js';
 import type { PipelineTemplate } from './pipeline-template.js';
-import type { PipelineConfig, PipelineStage } from './pipeline-runner.js';
-
-/* Helpers */
+import type { PipelineConfig } from './pipeline-runner.js';
 
 function baseConfig(): PipelineConfig {
   return {
@@ -34,8 +32,8 @@ function baseConfig(): PipelineConfig {
         name: 'review',
         mounts: {},
         transitions: [
-          { marker: 'STAGE_KEEP', template: 'continue-tpl' },
-          { marker: 'STAGE_RESET', template: 'revert-tpl' },
+          { marker: 'STAGE_KEEP', template: 'continue-tpl', next: 'finalize' },
+          { marker: 'STAGE_RESET', template: 'revert-tpl', next: 'finalize' },
         ],
       },
       {
@@ -83,71 +81,113 @@ function substTemplate(): PipelineTemplate {
   };
 }
 
+function stitchSingleDefaults(
+  template: PipelineTemplate,
+  overrides: Partial<Parameters<typeof stitchSingle>[0]> = {},
+) {
+  return stitchSingle({
+    config: baseConfig(),
+    originStage: 'review',
+    originTransitionIdx: 1,
+    template,
+    downstreamNext: 'finalize',
+    joinPolicy: 'all_success',
+    ...overrides,
+  });
+}
+
+function stitchParallelDefaults(
+  template: PipelineTemplate,
+  overrides: Partial<Parameters<typeof stitchParallel>[0]> = {},
+) {
+  return stitchParallel({
+    config: baseConfig(),
+    originStage: 'review',
+    originTransitionIdx: 1,
+    template,
+    downstreamNext: 'finalize',
+    joinPolicy: 'all_success',
+    count: 2,
+    ...overrides,
+  });
+}
+
 describe('stitchSingle', () => {
   it('inserts a template and rewires the host transition', () => {
-    const config = baseConfig();
-    const tpl = revertTemplate();
-    const result = stitchSingle({
-      config,
-      originStage: 'review',
-      originTransitionIdx: 1, // STAGE_RESET
-      template: tpl,
-    });
+    const result = stitchSingleDefaults(revertTemplate());
 
     expect(result.entryName).toBe('review__revert-tpl0__checkout');
+    expect(result.joinName).toBe(joinNameFor('review', 'revert-tpl'));
 
     const review = result.updatedConfig.stages.find(
-      (s) => s.name === 'review',
+      (stage) => stage.name === 'review',
     )!;
     expect(review.transitions[1].next).toBe('review__revert-tpl0__checkout');
-    // Host transition's `template` is cleared after stitching (consumed).
     expect(review.transitions[1].template).toBeUndefined();
-    // untouched transitions preserved
     expect(review.transitions[0].template).toBe('continue-tpl');
 
-    // inserted stages appended
-    const stageNames = result.updatedConfig.stages.map((s) => s.name);
+    const stageNames = result.updatedConfig.stages.map((stage) => stage.name);
     expect(stageNames).toContain('review__revert-tpl0__checkout');
     expect(stageNames).toContain('review__revert-tpl0__rebuild');
+    expect(stageNames).toContain(result.joinName);
   });
 
-  it('rewrites template-internal transitions to renamed names', () => {
-    const config = baseConfig();
-    const tpl = revertTemplate();
-    const result = stitchSingle({
-      config,
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: tpl,
-    });
+  it('rewires template terminal edges to the synthetic join', () => {
+    const result = stitchSingleDefaults(revertTemplate());
 
     const checkout = result.updatedConfig.stages.find(
-      (s) => s.name === 'review__revert-tpl0__checkout',
+      (stage) => stage.name === 'review__revert-tpl0__checkout',
     )!;
     expect(checkout.transitions[0].next).toBe('review__revert-tpl0__rebuild');
 
     const rebuild = result.updatedConfig.stages.find(
-      (s) => s.name === 'review__revert-tpl0__rebuild',
+      (stage) => stage.name === 'review__revert-tpl0__rebuild',
     )!;
-    // null-next stays null in single stitch (Option 1: template terminates)
-    expect(rebuild.transitions[0].next).toBeNull();
+    expect(rebuild.transitions[0].next).toBe(result.joinName);
+
+    const join = result.updatedConfig.stages.find(
+      (stage) => stage.name === result.joinName,
+    )!;
+    expect(join.join).toEqual({
+      policy: 'all_success',
+      expectedCopies: 1,
+      copyPrefixes: ['review__revert-tpl0__'],
+    });
+    expect(join.transitions[0].next).toBe('finalize');
+  });
+
+  it('keeps nested template handoffs and rewires their downstream next', () => {
+    const tpl: PipelineTemplate = {
+      name: 'nesting-tpl',
+      entry: 'a',
+      stages: [
+        {
+          name: 'a',
+          mounts: {},
+          transitions: [{ marker: 'OK', template: 'child', next: null }],
+        },
+      ],
+    };
+
+    const result = stitchSingleDefaults(tpl);
+    const stage = result.updatedConfig.stages.find(
+      (value) => value.name === 'review__nesting-tpl0__a',
+    )!;
+    expect(stage.transitions[0].template).toBe('child');
+    expect(stage.transitions[0].next).toBe(result.joinName);
   });
 
   it('applies substitutions to allowed fields', () => {
-    const tpl = substTemplate();
-    const result = stitchSingle({
-      config: baseConfig(),
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: tpl,
+    const result = stitchSingleDefaults(substTemplate(), {
       substitutions: { custom: 'hi' },
     });
-    const s = result.updatedConfig.stages.find(
-      (st) => st.name === 'review__subst-tpl0__s',
+
+    const stage = result.updatedConfig.stages.find(
+      (value) => value.name === 'review__subst-tpl0__s',
     )!;
-    expect(s.prompt).toBe('hello review__subst-tpl0 idx=0');
-    expect(s.env).toEqual({ SCOPE: 'review__subst-tpl0', IDX: '0' });
-    expect(s.mounts).toHaveProperty('scope-review__subst-tpl0', 'rw');
+    expect(stage.prompt).toBe('hello review__subst-tpl0 idx=0');
+    expect(stage.env).toEqual({ SCOPE: 'review__subst-tpl0', IDX: '0' });
+    expect(stage.mounts).toHaveProperty('scope-review__subst-tpl0', 'rw');
   });
 
   it('applies substitutions inside transition fields', () => {
@@ -168,45 +208,53 @@ describe('stitchSingle', () => {
         },
       ],
     };
-    const result = stitchSingle({
-      config: baseConfig(),
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: tpl,
+
+    const result = stitchSingleDefaults(tpl, {
       substitutions: { id: 'foo', kind: 'stimulus' },
     });
-    const a = result.updatedConfig.stages.find(
-      (s) => s.name === 'review__trans-subst0__a',
+    const stage = result.updatedConfig.stages.find(
+      (value) => value.name === 'review__trans-subst0__a',
     )!;
-    expect(a.transitions[0].prompt).toBe('done for foo (stimulus)');
+    expect(stage.transitions[0].prompt).toBe('done for foo (stimulus)');
   });
 
-  it('drops count field from the host transition', () => {
+  it('drops template-specific control fields from the host transition', () => {
     const config = baseConfig();
-    (
-      config.stages[1].transitions[1] as unknown as Record<string, unknown>
-    ).count = 3;
+    Object.assign(config.stages[1].transitions[1], {
+      count: 3,
+      countFrom: 'payload',
+      substitutionsFrom: 'payload',
+      joinPolicy: 'any_success',
+    });
+
     const result = stitchSingle({
       config,
       originStage: 'review',
       originTransitionIdx: 1,
       template: revertTemplate(),
+      downstreamNext: 'finalize',
+      joinPolicy: 'all_success',
     });
+
     const review = result.updatedConfig.stages.find(
-      (s) => s.name === 'review',
+      (stage) => stage.name === 'review',
     )!;
-    expect(
-      (review.transitions[1] as unknown as Record<string, unknown>).count,
-    ).toBeUndefined();
+    expect(review.transitions[1].count).toBeUndefined();
+    expect(review.transitions[1].countFrom).toBeUndefined();
+    expect(review.transitions[1].substitutionsFrom).toBeUndefined();
+    expect(review.transitions[1].joinPolicy).toBeUndefined();
+    expect(review.transitions[1].template).toBeUndefined();
   });
 
   it('throws on unknown origin stage', () => {
     expect(() =>
       stitchSingle({
         config: baseConfig(),
-        originStage: 'does-not-exist',
+        originStage: 'missing',
         originTransitionIdx: 0,
         template: revertTemplate(),
+        downstreamNext: 'finalize',
+        joinPolicy: 'all_success',
       }),
     ).toThrow(/not found/);
   });
@@ -218,99 +266,85 @@ describe('stitchSingle', () => {
         originStage: 'review',
         originTransitionIdx: 99,
         template: revertTemplate(),
+        downstreamNext: 'finalize',
+        joinPolicy: 'all_success',
       }),
     ).toThrow(/out of range/);
   });
 
   it('rejects name collisions', () => {
     const config = baseConfig();
-    // Pre-insert a stage with the exact name stitch would generate
     config.stages.push({
       name: 'review__revert-tpl0__checkout',
       mounts: {},
       transitions: [{ marker: 'OK', next: null }],
     });
+
     expect(() =>
       stitchSingle({
         config,
         originStage: 'review',
         originTransitionIdx: 1,
         template: revertTemplate(),
+        downstreamNext: 'finalize',
+        joinPolicy: 'all_success',
       }),
     ).toThrow(/Duplicate/);
   });
 });
 
 describe('stitchParallel', () => {
-  it('clones the template N times and synthesizes a barrier', () => {
-    const config = baseConfig();
-    const tpl = revertTemplate();
-    const result = stitchParallel({
-      config,
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: tpl,
-      count: 3,
-    });
+  it('clones the template N times and synthesizes a join', () => {
+    const result = stitchParallelDefaults(revertTemplate(), { count: 3 });
 
     expect(result.entryNames).toEqual([
       'review__revert-tpl0__checkout',
       'review__revert-tpl1__checkout',
       'review__revert-tpl2__checkout',
     ]);
-    expect(result.barrierName).toBe(barrierNameFor('review', 'revert-tpl'));
+    expect(result.joinName).toBe(joinNameFor('review', 'revert-tpl'));
 
-    const barrier = result.updatedConfig.stages.find(
-      (s) => s.name === result.barrierName,
+    const join = result.updatedConfig.stages.find(
+      (stage) => stage.name === result.joinName,
     )!;
-    expect(barrier.fan_in).toBe('all');
-    expect(barrier.transitions[0].next).toBeNull();
-    expect(barrier.kind).toBe('command');
-    expect(barrier.command).toContain('[STAGE_COMPLETE]');
-    expect(barrier.successMarker).toBe('[STAGE_COMPLETE]');
+    expect(join.join).toEqual({
+      policy: 'all_success',
+      expectedCopies: 3,
+      copyPrefixes: [
+        'review__revert-tpl0__',
+        'review__revert-tpl1__',
+        'review__revert-tpl2__',
+      ],
+    });
+    expect(join.transitions[0].next).toBe('finalize');
 
-    // Host transition becomes multi-target
     const review = result.updatedConfig.stages.find(
-      (s) => s.name === 'review',
+      (stage) => stage.name === 'review',
     )!;
     expect(review.transitions[1].next).toEqual(result.entryNames);
   });
 
-  it('rewires lane tail (null-next) to barrier', () => {
-    const config = baseConfig();
-    const tpl = revertTemplate();
-    const result = stitchParallel({
-      config,
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: tpl,
-      count: 2,
-    });
+  it('rewires each lane tail to the shared join', () => {
+    const result = stitchParallelDefaults(revertTemplate(), { count: 2 });
 
     for (let i = 0; i < 2; i++) {
       const lastStage = result.updatedConfig.stages.find(
-        (s) => s.name === `review__revert-tpl${i}__rebuild`,
+        (stage) => stage.name === `review__revert-tpl${i}__rebuild`,
       )!;
-      expect(lastStage.transitions[0].next).toBe(result.barrierName);
+      expect(lastStage.transitions[0].next).toBe(result.joinName);
     }
   });
 
   it('applies per-copy substitutions', () => {
-    const tpl = substTemplate();
-    const result = stitchParallel({
-      config: baseConfig(),
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: tpl,
-      count: 2,
+    const result = stitchParallelDefaults(substTemplate(), {
       perCopySubstitutions: [{ label: 'A' }, { label: 'B' }],
     });
 
     const s0 = result.updatedConfig.stages.find(
-      (st) => st.name === 'review__subst-tpl0__s',
+      (stage) => stage.name === 'review__subst-tpl0__s',
     )!;
     const s1 = result.updatedConfig.stages.find(
-      (st) => st.name === 'review__subst-tpl1__s',
+      (stage) => stage.name === 'review__subst-tpl1__s',
     )!;
     expect(s0.prompt).toContain('idx=0');
     expect(s1.prompt).toContain('idx=1');
@@ -320,27 +354,17 @@ describe('stitchParallel', () => {
 
   it('rejects count=0', () => {
     expect(() =>
-      stitchParallel({
-        config: baseConfig(),
-        originStage: 'review',
-        originTransitionIdx: 1,
-        template: revertTemplate(),
-        count: 0,
-      }),
+      stitchParallelDefaults(revertTemplate(), { count: 0 }),
     ).toThrow(/positive integer/);
   });
 
-  it('accepts count=1 (single via parallel path)', () => {
-    const result = stitchParallel({
-      config: baseConfig(),
-      originStage: 'review',
-      originTransitionIdx: 1,
-      template: revertTemplate(),
-      count: 1,
-    });
+  it('accepts count=1 and still produces a join stage', () => {
+    const result = stitchParallelDefaults(revertTemplate(), { count: 1 });
     expect(result.entryNames).toEqual(['review__revert-tpl0__checkout']);
     expect(
-      result.updatedConfig.stages.find((s) => s.name === result.barrierName),
+      result.updatedConfig.stages.find(
+        (stage) => stage.name === result.joinName,
+      ),
     ).toBeTruthy();
   });
 });
@@ -349,6 +373,7 @@ describe('assertConfigAcyclic', () => {
   it('accepts a DAG', () => {
     expect(() => assertConfigAcyclic(baseConfig())).not.toThrow();
   });
+
   it('detects a cycle', () => {
     const cfg: PipelineConfig = {
       stages: [
@@ -358,7 +383,8 @@ describe('assertConfigAcyclic', () => {
     };
     expect(() => assertConfigAcyclic(cfg)).toThrow(/Cycle/);
   });
-  it('detects self-loop', () => {
+
+  it('detects a self-loop', () => {
     const cfg: PipelineConfig = {
       stages: [
         { name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] },
@@ -372,6 +398,7 @@ describe('assertNoNameCollision', () => {
   it('accepts unique names', () => {
     expect(() => assertNoNameCollision(baseConfig())).not.toThrow();
   });
+
   it('flags duplicates', () => {
     const cfg: PipelineConfig = {
       stages: [
@@ -399,20 +426,15 @@ describe('unresolved placeholder detection', () => {
       stages: [
         {
           name: 'a',
-          prompt: 'handle {{id}} of {{tpye}}', // "tpye" typo — not provided
+          prompt: 'handle {{id}} of {{tpye}}',
           mounts: {},
           transitions: [{ marker: 'OK', next: null }],
         },
       ],
     };
+
     expect(() =>
-      stitchSingle({
-        config: baseConfig(),
-        originStage: 'review',
-        originTransitionIdx: 1,
-        template: tpl,
-        substitutions: { id: 'alpha' },
-      }),
+      stitchSingleDefaults(tpl, { substitutions: { id: 'alpha' } }),
     ).toThrow(/Unresolved placeholder.*\{\{tpye\}\}.*field "prompt"/);
   });
 
@@ -428,14 +450,10 @@ describe('unresolved placeholder detection', () => {
         },
       ],
     };
-    expect(() =>
-      stitchSingle({
-        config: baseConfig(),
-        originStage: 'review',
-        originTransitionIdx: 1,
-        template: tpl,
-      }),
-    ).toThrow(/Unresolved placeholder.*\{\{missing\}\}.*field "mounts"/);
+
+    expect(() => stitchSingleDefaults(tpl)).toThrow(
+      /Unresolved placeholder.*\{\{missing\}\}.*field "mounts"/,
+    );
   });
 
   it('throws when a placeholder is in a transition prompt', () => {
@@ -447,27 +465,18 @@ describe('unresolved placeholder detection', () => {
           name: 'a',
           mounts: {},
           transitions: [
-            {
-              marker: 'OK',
-              next: null,
-              prompt: 'done for {{kind}}',
-            },
+            { marker: 'OK', next: null, prompt: 'done for {{kind}}' },
           ],
         },
       ],
     };
+
     expect(() =>
-      stitchSingle({
-        config: baseConfig(),
-        originStage: 'review',
-        originTransitionIdx: 1,
-        template: tpl,
-        substitutions: { id: 'alpha' }, // kind missing
-      }),
+      stitchSingleDefaults(tpl, { substitutions: { id: 'alpha' } }),
     ).toThrow(/Unresolved placeholder.*\{\{kind\}\}.*field "transitions"/);
   });
 
-  it('throws at stitchParallel time too (lane with missing key)', () => {
+  it('throws at stitchParallel time too', () => {
     const tpl: PipelineTemplate = {
       name: 'par-tpl',
       entry: 'a',
@@ -480,17 +489,10 @@ describe('unresolved placeholder detection', () => {
         },
       ],
     };
+
     expect(() =>
-      stitchParallel({
-        config: baseConfig(),
-        originStage: 'review',
-        originTransitionIdx: 1,
-        template: tpl,
-        count: 2,
-        perCopySubstitutions: [
-          { id: 'alpha', kind: 'fast' },
-          { id: 'beta' }, // missing kind
-        ],
+      stitchParallelDefaults(tpl, {
+        perCopySubstitutions: [{ id: 'alpha', kind: 'fast' }, { id: 'beta' }],
       }),
     ).toThrow(/Unresolved placeholder.*\{\{kind\}\}/);
   });
@@ -508,14 +510,9 @@ describe('unresolved placeholder detection', () => {
         },
       ],
     };
+
     expect(() =>
-      stitchSingle({
-        config: baseConfig(),
-        originStage: 'review',
-        originTransitionIdx: 1,
-        template: tpl,
-        substitutions: { id: 'alpha' },
-      }),
+      stitchSingleDefaults(tpl, { substitutions: { id: 'alpha' } }),
     ).not.toThrow();
   });
 });

@@ -7,9 +7,13 @@ export interface PipelineTransition {
     count?: number;
     countFrom?: 'payload';
     substitutionsFrom?: 'payload';
+    joinPolicy?: JoinPolicy;
+    outcome?: TransitionOutcome;
     prompt?: string;
 }
 export type StageKind = 'agent' | 'command';
+export type TransitionOutcome = 'success' | 'error';
+export type JoinPolicy = 'all_success' | 'any_success' | 'all_settled';
 export interface PipelineStage {
     name: string;
     kind?: StageKind;
@@ -33,6 +37,11 @@ export interface PipelineStage {
     mcpAccess?: string[];
     resumeSession?: boolean;
     fan_in?: 'all';
+    join?: {
+        policy: JoinPolicy;
+        expectedCopies: number;
+        copyPrefixes: string[];
+    };
     transitions: PipelineTransition[];
 }
 /**
@@ -63,7 +72,7 @@ export type StitchDirective = {
  */
 export declare function resolveStitchInputs(t: PipelineTransition, payload: string | null): StitchDirective;
 export interface PipelineState {
-    version?: 2;
+    version?: 3;
     currentStage: string | string[] | null;
     completedStages: string[];
     lastUpdated: string;
@@ -71,6 +80,7 @@ export interface PipelineState {
     activations?: Record<string, number>;
     completions?: Record<string, number>;
     insertedStages?: PipelineStage[];
+    joinSettlements?: Record<string, Record<string, 'success' | 'error'>>;
 }
 export declare function assertValidScopeId(scopeId: string): void;
 /**
@@ -121,6 +131,7 @@ export declare class PipelineRunner {
     private aborted;
     private activeHandles;
     private stageSessionIds;
+    private joinSettlements;
     private baseStageCount;
     constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string, scopeId?: string);
     /**
@@ -135,6 +146,13 @@ export declare class PipelineRunner {
      */
     private isValidSubPath;
     getRunId(): string;
+    private serializeJoinSettlements;
+    private restoreJoinSettlements;
+    private saveRunnerState;
+    private copyIndexForJoinArrival;
+    private recordJoinSettlement;
+    private isJoinReady;
+    private evaluateJoinOutcome;
     abort(): Promise<void>;
     /** Send a visually prominent banner to TUI for stage transitions */
     private notifyBanner;
@@ -200,6 +218,7 @@ export declare class PipelineRunner {
      * Save final pipeline state, close manifest and log stream.
      */
     private finalizeRun;
+    private runJoinStage;
     /**
      * Run a single stage to completion (spawn → turn loop → close).
      * Self-contained: handles retries and container respawns internally.
