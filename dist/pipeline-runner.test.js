@@ -150,12 +150,31 @@ function createFakeProcess() {
     proc.pid = 12345;
     return proc;
 }
-let fakeProc;
+let fakeProc = null;
 vi.mock('child_process', async () => {
     const actual = await vi.importActual('child_process');
     return {
         ...actual,
-        spawn: vi.fn(() => fakeProc),
+        spawn: vi.fn((_bin, args) => {
+            // Group C tests set fakeProc manually and drive stdout/close themselves.
+            if (fakeProc)
+                return fakeProc;
+            // Otherwise auto-complete: simulate `sh -c '<cmd>'` for trivial echo
+            // commands (used by the parallel-stitch barrier).
+            const proc = createFakeProcess();
+            const argList = args ?? [];
+            const cmdIdx = argList.indexOf('-c');
+            const cmd = cmdIdx >= 0 ? (argList[cmdIdx + 1] ?? '') : '';
+            const echoMatch = cmd.match(/^echo\s+'([^']*)'$/);
+            setImmediate(() => {
+                if (echoMatch) {
+                    proc.stdout.push(echoMatch[1] + '\n');
+                }
+                proc.stdout.push(null);
+                proc.emit('close', 0);
+            });
+            return proc;
+        }),
     };
 });
 import { parseStageMarkers, loadPipelineConfig, savePipelineState, loadPipelineState, PipelineRunner, resolveStitchInputs, } from './pipeline-runner.js';
@@ -503,6 +522,7 @@ describe('PipelineRunner FSM', () => {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-fsm-'));
         group = makeTestGroup();
         stageOutputQueues.clear();
+        fakeProc = null;
         vi.clearAllMocks();
         // Create required directories
         const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
@@ -811,7 +831,7 @@ describe('Stitch integration', () => {
         for (let i = 0; i < 3; i++) {
             enqueueStageOutput(laneTask(i), [{ result: '[DONE]' }]);
         }
-        enqueueStageOutput(barrier, [{ result: '[STAGE_COMPLETE]' }]);
+        // Barrier is a command-mode stage — auto-completed by the spawn mock.
         const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
         const result = await runner.run();
         expect(result).toBe('success');
@@ -884,9 +904,7 @@ describe('Stitch integration', () => {
                 { result: '[DONE]' },
             ]);
         }
-        enqueueStageOutput('planner__per_id__barrier', [
-            { result: '[STAGE_COMPLETE]' },
-        ]);
+        // Barrier is a command-mode stage — auto-completed by the spawn mock.
         const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
         const result = await runner.run();
         expect(result).toBe('success');

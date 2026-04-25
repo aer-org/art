@@ -195,14 +195,32 @@ function createFakeProcess() {
   return proc;
 }
 
-let fakeProc: ReturnType<typeof createFakeProcess>;
+let fakeProc: ReturnType<typeof createFakeProcess> | null = null;
 
 vi.mock('child_process', async () => {
   const actual =
     await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
-    spawn: vi.fn(() => fakeProc),
+    spawn: vi.fn((_bin: string, args?: readonly string[]) => {
+      // Group C tests set fakeProc manually and drive stdout/close themselves.
+      if (fakeProc) return fakeProc;
+      // Otherwise auto-complete: simulate `sh -c '<cmd>'` for trivial echo
+      // commands (used by the parallel-stitch barrier).
+      const proc = createFakeProcess();
+      const argList = args ?? [];
+      const cmdIdx = argList.indexOf('-c');
+      const cmd = cmdIdx >= 0 ? (argList[cmdIdx + 1] ?? '') : '';
+      const echoMatch = cmd.match(/^echo\s+'([^']*)'$/);
+      setImmediate(() => {
+        if (echoMatch) {
+          proc.stdout.push(echoMatch[1] + '\n');
+        }
+        proc.stdout.push(null);
+        proc.emit('close', 0);
+      });
+      return proc;
+    }),
   };
 });
 
@@ -698,6 +716,7 @@ describe('PipelineRunner FSM', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-fsm-'));
     group = makeTestGroup();
     stageOutputQueues.clear();
+    fakeProc = null;
     vi.clearAllMocks();
 
     // Create required directories
@@ -1166,7 +1185,7 @@ describe('Stitch integration', () => {
     for (let i = 0; i < 3; i++) {
       enqueueStageOutput(laneTask(i), [{ result: '[DONE]' }]);
     }
-    enqueueStageOutput(barrier, [{ result: '[STAGE_COMPLETE]' }]);
+    // Barrier is a command-mode stage — auto-completed by the spawn mock.
 
     const runner = new PipelineRunner(
       group,
@@ -1263,9 +1282,7 @@ describe('Stitch integration', () => {
         { result: '[DONE]' },
       ]);
     }
-    enqueueStageOutput('planner__per_id__barrier', [
-      { result: '[STAGE_COMPLETE]' },
-    ]);
+    // Barrier is a command-mode stage — auto-completed by the spawn mock.
 
     const runner = new PipelineRunner(
       group,
@@ -1366,9 +1383,9 @@ describe('Command mode stage', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     // Exit 0 without successMarker → STAGE_COMPLETE
-    fakeProc.stdout.push('Compiling... done\n');
-    fakeProc.stdout.push(null);
-    fakeProc.emit('close', 0);
+    fakeProc!.stdout.push('Compiling... done\n');
+    fakeProc!.stdout.push(null);
+    fakeProc!.emit('close', 0);
 
     const result = await runPromise;
     expect(result).toBe('success');
@@ -1415,9 +1432,9 @@ describe('Command mode stage', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     // successMarker found in stdout → STAGE_COMPLETE
-    fakeProc.stdout.push('Running tests... [TEST] passed\n');
-    fakeProc.stdout.push(null);
-    fakeProc.emit('close', 0);
+    fakeProc!.stdout.push('Running tests... [TEST] passed\n');
+    fakeProc!.stdout.push(null);
+    fakeProc!.emit('close', 0);
 
     const result = await runPromise;
     expect(result).toBe('success');

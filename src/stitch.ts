@@ -41,7 +41,7 @@ export const RESERVED_SUBSTITUTION_KEYS = ['index', 'insertId'] as const;
 const SUBSTITUTION_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
 const BARRIER_MARKER = 'STAGE_COMPLETE';
-const BARRIER_PROMPT = `You are a parallel-stitch barrier stage. All predecessor lanes have completed. Emit exactly [${BARRIER_MARKER}] and nothing else.`;
+const BARRIER_COMMAND = `echo '[${BARRIER_MARKER}]'`;
 
 export type SubstitutionValue = string | number | boolean;
 export type SubstitutionMap = Record<string, SubstitutionValue>;
@@ -435,12 +435,15 @@ function substituteString(text: string, subs: SubstitutionMap): string {
 }
 
 function buildBarrierStage(name: string): PipelineStage {
-  // Synthetic barrier runs as a trivial agent stage — it waits on fan_in: "all"
-  // and its only job is to emit STAGE_COMPLETE once every lane has reported.
-  // Using agent-mode avoids requiring any particular image to be pulled.
+  // Synthetic barrier runs as a trivial command stage — fan_in: "all" gates it
+  // on every lane completing, then a shell `echo` emits the completion marker.
+  // Uses the default agent image (already pulled by the surrounding pipeline)
+  // to avoid requiring an LLM turn or an extra image pull.
   return {
     name,
-    prompt: BARRIER_PROMPT,
+    kind: 'command',
+    command: BARRIER_COMMAND,
+    successMarker: `[${BARRIER_MARKER}]`,
     mounts: {},
     fan_in: 'all',
     transitions: [{ marker: BARRIER_MARKER, next: null }],

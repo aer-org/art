@@ -265,7 +265,9 @@ describe('stitchParallel', () => {
     )!;
     expect(barrier.fan_in).toBe('all');
     expect(barrier.transitions[0].next).toBeNull();
-    expect(typeof barrier.prompt).toBe('string');
+    expect(barrier.kind).toBe('command');
+    expect(barrier.command).toContain('[STAGE_COMPLETE]');
+    expect(barrier.successMarker).toBe('[STAGE_COMPLETE]');
 
     // Host transition becomes multi-target
     const review = result.updatedConfig.stages.find(
