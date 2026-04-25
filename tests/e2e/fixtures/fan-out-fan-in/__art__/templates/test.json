@@ -1,0 +1,17 @@
+{
+  "name": "test",
+  "entry": "run",
+  "stages": [
+    {
+      "name": "run",
+      "command": "echo '[TEST_DONE]'",
+      "image": "node:22-slim",
+      "successMarker": "TEST_DONE",
+      "mounts": {},
+      "transitions": [
+        { "marker": "STAGE_COMPLETE", "next": null },
+        { "marker": "STAGE_ERROR", "next": null }
+      ]
+    }
+  ]
+}
