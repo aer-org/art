@@ -362,7 +362,9 @@ describe('stitchParallel', () => {
     const result = stitchParallelDefaults(revertTemplate(), { count: 1 });
     expect(result.entryNames).toEqual(['review__revert-tpl0__checkout']);
     expect(
-      result.updatedConfig.stages.find((stage) => stage.name === result.joinName),
+      result.updatedConfig.stages.find(
+        (stage) => stage.name === result.joinName,
+      ),
     ).toBeTruthy();
   });
 });
@@ -384,7 +386,9 @@ describe('assertConfigAcyclic', () => {
 
   it('detects a self-loop', () => {
     const cfg: PipelineConfig = {
-      stages: [{ name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] }],
+      stages: [
+        { name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] },
+      ],
     };
     expect(() => assertConfigAcyclic(cfg)).toThrow(/Cycle/);
   });
@@ -460,7 +464,9 @@ describe('unresolved placeholder detection', () => {
         {
           name: 'a',
           mounts: {},
-          transitions: [{ marker: 'OK', next: null, prompt: 'done for {{kind}}' }],
+          transitions: [
+            { marker: 'OK', next: null, prompt: 'done for {{kind}}' },
+          ],
         },
       ],
     };
@@ -486,10 +492,7 @@ describe('unresolved placeholder detection', () => {
 
     expect(() =>
       stitchParallelDefaults(tpl, {
-        perCopySubstitutions: [
-          { id: 'alpha', kind: 'fast' },
-          { id: 'beta' },
-        ],
+        perCopySubstitutions: [{ id: 'alpha', kind: 'fast' }, { id: 'beta' }],
       }),
     ).toThrow(/Unresolved placeholder.*\{\{kind\}\}/);
   });

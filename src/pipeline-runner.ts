@@ -108,9 +108,7 @@ export function resolveStageKind(stage: PipelineStage): StageKind {
   return stage.command ? 'command' : 'agent';
 }
 
-function transitionOutcome(
-  transition: PipelineTransition,
-): TransitionOutcome {
+function transitionOutcome(transition: PipelineTransition): TransitionOutcome {
   if (transition.outcome) return transition.outcome;
   return transition.marker.includes('ERROR') ? 'error' : 'success';
 }
@@ -584,7 +582,10 @@ export class PipelineRunner {
   }
 
   private saveRunnerState(
-    state: Omit<PipelineState, 'version' | 'insertedStages' | 'joinSettlements'>,
+    state: Omit<
+      PipelineState,
+      'version' | 'insertedStages' | 'joinSettlements'
+    >,
   ): void {
     savePipelineState(
       this.groupDir,
@@ -603,7 +604,9 @@ export class PipelineRunner {
     finishedStage: string,
   ): number | null {
     const prefixes = joinStage.join?.copyPrefixes ?? [];
-    const index = prefixes.findIndex((prefix) => finishedStage.startsWith(prefix));
+    const index = prefixes.findIndex((prefix) =>
+      finishedStage.startsWith(prefix),
+    );
     return index >= 0 ? index : null;
   }
 
@@ -2001,7 +2004,9 @@ PAYLOAD FORMATS:
       nextEphemeralSystemPrompt: null,
       stageOutcome,
       result:
-        PipelineRunner.nextTargets(nextStages).length === 0 ? stageOutcome : null,
+        PipelineRunner.nextTargets(nextStages).length === 0
+          ? stageOutcome
+          : null,
     };
   }
 

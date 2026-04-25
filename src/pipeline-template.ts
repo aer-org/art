@@ -288,7 +288,11 @@ function validateTransitionShape(
       );
     }
   }
-  if (t.outcome !== undefined && t.outcome !== 'success' && t.outcome !== 'error') {
+  if (
+    t.outcome !== undefined &&
+    t.outcome !== 'success' &&
+    t.outcome !== 'error'
+  ) {
     throw new Error(
       `Template "${templateName}": stage "${stageName}" transition "${t.marker}" — "outcome" must be "success" or "error"`,
     );

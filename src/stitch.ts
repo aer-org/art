@@ -218,13 +218,7 @@ export function stitchParallel(
       index: i,
       ...copySubs,
     };
-    const cloned = cloneTemplateCopy(
-      template,
-      originStage,
-      i,
-      subs,
-      joinName,
-    );
+    const cloned = cloneTemplateCopy(template, originStage, i, subs, joinName);
     allStages.push(...cloned);
     copyPrefixes.push(copyPrefixFor(originStage, template.name, i));
     entryNames.push(
