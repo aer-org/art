@@ -180,23 +180,26 @@ describe.skipIf(!hasDocker)('Fan-out/fan-in command pipeline', () => {
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
 
-    // build (origin) → 2 stitched test lanes → synthesized join
+    // build (origin) → 2 stitched test lanes → synthesized join → deploy
     const completed = state!.completedStages as string[];
     expect(completed).toContain('build');
     expect(completed).toContain('build__test0__run');
     expect(completed).toContain('build__test1__run');
     expect(completed).toContain('build__test__join');
-    expect(completed).toHaveLength(4);
+    expect(completed).toContain('deploy');
+    expect(completed).toHaveLength(5);
 
-    // build runs first; join runs only after both lanes finish
+    // build runs first; join waits for both lanes; deploy runs after join
     const buildIdx = completed.indexOf('build');
     const lane0Idx = completed.indexOf('build__test0__run');
     const lane1Idx = completed.indexOf('build__test1__run');
     const joinIdx = completed.indexOf('build__test__join');
+    const deployIdx = completed.indexOf('deploy');
     expect(buildIdx).toBeLessThan(lane0Idx);
     expect(buildIdx).toBeLessThan(lane1Idx);
     expect(joinIdx).toBeGreaterThan(lane0Idx);
     expect(joinIdx).toBeGreaterThan(lane1Idx);
+    expect(deployIdx).toBeGreaterThan(joinIdx);
   });
 });
 
