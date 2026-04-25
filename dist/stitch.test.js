@@ -292,7 +292,9 @@ describe('assertConfigAcyclic', () => {
     });
     it('detects a self-loop', () => {
         const cfg = {
-            stages: [{ name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] }],
+            stages: [
+                { name: 'a', mounts: {}, transitions: [{ marker: 'x', next: 'a' }] },
+            ],
         };
         expect(() => assertConfigAcyclic(cfg)).toThrow(/Cycle/);
     });
@@ -354,7 +356,9 @@ describe('unresolved placeholder detection', () => {
                 {
                     name: 'a',
                     mounts: {},
-                    transitions: [{ marker: 'OK', next: null, prompt: 'done for {{kind}}' }],
+                    transitions: [
+                        { marker: 'OK', next: null, prompt: 'done for {{kind}}' },
+                    ],
                 },
             ],
         };
@@ -374,10 +378,7 @@ describe('unresolved placeholder detection', () => {
             ],
         };
         expect(() => stitchParallelDefaults(tpl, {
-            perCopySubstitutions: [
-                { id: 'alpha', kind: 'fast' },
-                { id: 'beta' },
-            ],
+            perCopySubstitutions: [{ id: 'alpha', kind: 'fast' }, { id: 'beta' }],
         })).toThrow(/Unresolved placeholder.*\{\{kind\}\}/);
     });
     it('does not throw when every placeholder is satisfied', () => {

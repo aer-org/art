@@ -465,6 +465,83 @@ describe('validatePipelineTemplate', () => {
     ).not.toThrow();
   });
 
+  it('accepts command-stage timeout with afterTimeout transition', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 'lint',
+              command: 'npm run lint',
+              timeout: 30_000,
+              mounts: {},
+              transitions: [
+                { marker: 'STAGE_COMPLETE', next: null },
+                { afterTimeout: true, next: null },
+              ],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects timeout on non-command template stages', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 'review',
+              timeout: 1_000,
+              mounts: {},
+              transitions: [{ marker: 'OK', next: null }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/timeout/);
+  });
+
+  it('rejects afterTimeout on non-command template stages', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 'review',
+              mounts: {},
+              transitions: [{ afterTimeout: true, next: null }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/afterTimeout/);
+  });
+
+  it('rejects afterTimeout transitions that also declare a marker', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 'lint',
+              command: 'npm run lint',
+              mounts: {},
+              transitions: [
+                { marker: 'STAGE_ERROR', afterTimeout: true, next: null },
+              ],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/afterTimeout.*marker/);
+  });
+
   it('detects internal cycles', () => {
     expect(() =>
       validatePipelineTemplate(

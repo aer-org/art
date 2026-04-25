@@ -1443,6 +1443,74 @@ describe('Command mode stage', () => {
     expect(result).toBe('success');
     expect(spawn).toHaveBeenCalled();
   }, 15000);
+
+  it('command mode stage follows afterTimeout transition when stage timeout elapses', async () => {
+    const { runContainerAgent } = await import('./container-runner.js');
+    group.containerConfig = { timeout: 60_000 };
+    fakeProc!.kill.mockImplementation((signal?: string) => {
+      if (signal === 'SIGTERM') {
+        setImmediate(() => {
+          fakeProc!.stdout.push(null);
+          fakeProc!.emit('close', 124);
+        });
+      }
+      return true;
+    });
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'build',
+          prompt: 'Build project',
+          command: 'sleep 300',
+          timeout: 20,
+          mounts: {},
+          transitions: [
+            { marker: 'STAGE_COMPLETE', next: null },
+            { marker: 'STAGE_ERROR', next: null },
+            { afterTimeout: true, next: 'recovery' },
+          ],
+        },
+        {
+          name: 'recovery',
+          prompt: 'Recover from timeout',
+          mounts: {},
+          transitions: [{ marker: 'RECOVERED', next: null }],
+        },
+      ],
+    };
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    for (const stageName of ['build', 'recovery']) {
+      const ipcDir = path.join(
+        TEST_IPC_BASE,
+        `${group.folder}__pipeline_${stageName}`,
+        'input',
+      );
+      fs.mkdirSync(ipcDir, { recursive: true });
+    }
+    enqueueStageOutput('recovery', [{ result: '[RECOVERED]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    expect(fakeProc!.kill).toHaveBeenCalledWith('SIGTERM');
+
+    const recoveryCalls = vi
+      .mocked(runContainerAgent)
+      .mock.calls.filter(
+        (c) => (c[0] as { name: string }).name === 'pipeline-recovery',
+      );
+    expect(recoveryCalls).toHaveLength(1);
+  }, 15000);
 });
 
 describe('ExclusiveLock serialization', () => {
@@ -1878,6 +1946,89 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
       JSON.stringify(config),
     );
     expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
+  });
+
+  it('accepts command-stage timeout with afterTimeout transition', () => {
+    const config = {
+      stages: [
+        {
+          name: 'lint',
+          prompt: 'Lint',
+          command: 'npm run lint',
+          timeout: 30_000,
+          mounts: {},
+          transitions: [
+            { marker: 'STAGE_COMPLETE', next: null },
+            { afterTimeout: true, next: null },
+          ],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
+  });
+
+  it('rejects timeout on agent stages', () => {
+    const config = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          timeout: 1_000,
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects afterTimeout on agent stages', () => {
+    const config = {
+      stages: [
+        {
+          name: 'review',
+          prompt: 'Review',
+          mounts: {},
+          transitions: [{ afterTimeout: true, next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+  });
+
+  it('rejects afterTimeout transitions that also declare a marker', () => {
+    const config = {
+      stages: [
+        {
+          name: 'lint',
+          prompt: 'Lint',
+          command: 'npm run lint',
+          timeout: 30_000,
+          mounts: {},
+          transitions: [
+            { marker: 'STAGE_COMPLETE', next: null },
+            { marker: 'STAGE_ERROR', next: null, afterTimeout: true },
+          ],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, 'PIPELINE.json'),
+      JSON.stringify(config),
+    );
+    expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
   it('accepts prompt DB ids for agent stages', () => {

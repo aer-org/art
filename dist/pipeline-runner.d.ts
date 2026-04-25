@@ -1,7 +1,7 @@
 import { type SubstitutionMap } from './stitch.js';
 import { AdditionalMount, RegisteredGroup } from './types.js';
 export interface PipelineTransition {
-    marker: string;
+    marker?: string;
     next?: string | string[] | null;
     template?: string;
     count?: number;
@@ -9,6 +9,7 @@ export interface PipelineTransition {
     substitutionsFrom?: 'payload';
     joinPolicy?: JoinPolicy;
     outcome?: TransitionOutcome;
+    afterTimeout?: boolean;
     prompt?: string;
 }
 export type StageKind = 'agent' | 'command';
@@ -25,6 +26,7 @@ export interface PipelineStage {
     command?: string;
     successMarker?: string;
     errorMarker?: string;
+    timeout?: number;
     chat?: boolean;
     mounts: Record<string, 'ro' | 'rw' | null | undefined>;
     devices?: string[];
