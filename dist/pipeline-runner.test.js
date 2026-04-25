@@ -160,7 +160,7 @@ vi.mock('child_process', async () => {
             if (fakeProc)
                 return fakeProc;
             // Otherwise auto-complete: simulate `sh -c '<cmd>'` for trivial echo
-            // commands (used by the parallel-stitch barrier).
+            // commands (used by synthesized command-mode stages in tests).
             const proc = createFakeProcess();
             const argList = args ?? [];
             const cmdIdx = argList.indexOf('-c');
@@ -422,7 +422,7 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
         };
         savePipelineState(tmpDir, state);
         const loaded = loadPipelineState(tmpDir);
-        expect(loaded).toEqual({ ...state, version: 2 });
+        expect(loaded).toEqual({ ...state, version: 3 });
     });
     it('returns null when no state file exists', () => {
         const loaded = loadPipelineState(tmpDir);
@@ -445,11 +445,11 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
         savePipelineState(tmpDir, stateB, undefined, 'scopeB');
         expect(loadPipelineState(tmpDir, undefined, 'scopeA')).toEqual({
             ...stateA,
-            version: 2,
+            version: 3,
         });
         expect(loadPipelineState(tmpDir, undefined, 'scopeB')).toEqual({
             ...stateB,
-            version: 2,
+            version: 3,
         });
         // Top-level state is untouched
         expect(loadPipelineState(tmpDir)).toBeNull();
@@ -470,7 +470,7 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
         expect(fs.existsSync(path.join(tmpDir, 'PIPELINE_STATE.scope1.my-tag.json'))).toBe(true);
         expect(loadPipelineState(tmpDir, 'my-tag', 'scope1')).toEqual({
             ...state,
-            version: 2,
+            version: 3,
         });
     });
     it('rejects invalid scopeId via PipelineRunner constructor', () => {
@@ -729,7 +729,7 @@ describe('Stitch integration', () => {
                     name: 'start',
                     prompt: 'kick off',
                     mounts: {},
-                    transitions: [{ marker: 'GO', template: templateName }],
+                    transitions: [{ marker: 'GO', template: templateName, next: null }],
                 },
             ],
         };
@@ -747,10 +747,10 @@ describe('Stitch integration', () => {
             `pipeline-start__${templateName}0__do`);
         expect(stitchedCalls.length).toBe(1);
     }, 15000);
-    it('nested stitch + parallel barrier — three levels deep then fan-out of 3 lanes', async () => {
+    it('nested stitch + parallel join — three levels deep then fan-out of 3 lanes', async () => {
         // Host-level templates:
         //   start → "demo" (single) → intro → "deep1" (single) → work → "deep2" (single)
-        //     → work → "lane" × 3 (parallel) → barrier → null
+        //     → work → "lane" × 3 (parallel) → join → null
         fs.writeFileSync(path.join(groupDir, 'templates', 'demo.json'), JSON.stringify({
             entry: 'intro',
             stages: [
@@ -758,7 +758,7 @@ describe('Stitch integration', () => {
                     name: 'intro',
                     prompt: 'go deeper',
                     mounts: {},
-                    transitions: [{ marker: 'DEEPER', template: 'deep1' }],
+                    transitions: [{ marker: 'DEEPER', template: 'deep1', next: null }],
                 },
             ],
         }));
@@ -769,7 +769,7 @@ describe('Stitch integration', () => {
                     name: 'work',
                     prompt: 'go deeper',
                     mounts: {},
-                    transitions: [{ marker: 'DEEPER', template: 'deep2' }],
+                    transitions: [{ marker: 'DEEPER', template: 'deep2', next: null }],
                 },
             ],
         }));
@@ -780,7 +780,9 @@ describe('Stitch integration', () => {
                     name: 'work',
                     prompt: 'fan out',
                     mounts: {},
-                    transitions: [{ marker: 'PARALLEL', template: 'lane', count: 3 }],
+                    transitions: [
+                        { marker: 'PARALLEL', template: 'lane', next: null, count: 3 },
+                    ],
                 },
             ],
         }));
@@ -801,7 +803,7 @@ describe('Stitch integration', () => {
                     name: 'start',
                     prompt: 'kick off',
                     mounts: {},
-                    transitions: [{ marker: 'GO', template: 'demo' }],
+                    transitions: [{ marker: 'GO', template: 'demo', next: null }],
                 },
             ],
         };
@@ -810,7 +812,7 @@ describe('Stitch integration', () => {
         const deep1Work = `${intro}__deep10__work`;
         const deep2Work = `${deep1Work}__deep20__work`;
         const laneTask = (i) => `${deep2Work}__lane${i}__task`;
-        const barrier = `${deep2Work}__lane__barrier`;
+        const join = `${deep2Work}__lane__join`;
         const allNames = [
             'start',
             intro,
@@ -819,7 +821,7 @@ describe('Stitch integration', () => {
             laneTask(0),
             laneTask(1),
             laneTask(2),
-            barrier,
+            join,
         ];
         for (const n of allNames) {
             fs.mkdirSync(path.join(TEST_IPC_BASE, `${group.folder}__pipeline_${n}`, 'input'), { recursive: true });
@@ -831,7 +833,7 @@ describe('Stitch integration', () => {
         for (let i = 0; i < 3; i++) {
             enqueueStageOutput(laneTask(i), [{ result: '[DONE]' }]);
         }
-        // Barrier is a command-mode stage — auto-completed by the spawn mock.
+        // Join stages are virtual — no spawn/output queue required.
         const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
         const result = await runner.run();
         expect(result).toBe('success');
@@ -873,6 +875,7 @@ describe('Stitch integration', () => {
                         {
                             marker: 'PLAN_READY',
                             template: 'per_id',
+                            next: null,
                             countFrom: 'payload',
                             substitutionsFrom: 'payload',
                         },
@@ -886,7 +889,7 @@ describe('Stitch integration', () => {
             'planner__per_id0__author',
             'planner__per_id1__author',
             'planner__per_id2__author',
-            'planner__per_id__barrier',
+            'planner__per_id__join',
         ];
         for (const n of allNames) {
             fs.mkdirSync(path.join(TEST_IPC_BASE, `${group.folder}__pipeline_${n}`, 'input'), { recursive: true });
@@ -904,7 +907,7 @@ describe('Stitch integration', () => {
                 { result: '[DONE]' },
             ]);
         }
-        // Barrier is a command-mode stage — auto-completed by the spawn mock.
+        // Join stages are virtual — no spawn/output queue required.
         const runner = new PipelineRunner(group, 'test@g.us', config, async () => { }, () => { }, groupDir);
         const result = await runner.run();
         expect(result).toBe('success');
@@ -923,7 +926,7 @@ describe('Stitch integration', () => {
         expect(prompts[2]).toContain('author gamma of kind probe');
         // Transition prompt substitution is applied too (transitions whitelist).
         // Hard to inspect directly without exposing runtime internals — the fact
-        // that the barrier fired proves all three lanes reached null, meaning
+        // that the join fired proves all three lanes reached null, meaning
         // their transitions were wired correctly.
         void laneName;
     }, 30000);
@@ -1175,7 +1178,9 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
                     name: 'a',
                     prompt: 'A',
                     mounts: {},
-                    transitions: [{ marker: 'OK', template: 'my-tpl', count: 0 }],
+                    transitions: [
+                        { marker: 'OK', template: 'my-tpl', next: null, count: 0 },
+                    ],
                 },
             ],
         };
@@ -1196,19 +1201,25 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
         fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
         expect(loadPipelineConfig('test', tmpDir)).toBeNull();
     });
-    it('rejects both next (string) and template present', () => {
+    it('accepts next + template (spawn then continue downstream)', () => {
         const config = {
             stages: [
                 {
                     name: 'a',
                     prompt: 'A',
                     mounts: {},
-                    transitions: [{ marker: 'OK', next: 'a', template: 'my-tpl' }],
+                    transitions: [{ marker: 'OK', next: 'b', template: 'my-tpl' }],
+                },
+                {
+                    name: 'b',
+                    prompt: 'B',
+                    mounts: {},
+                    transitions: [{ marker: 'DONE', next: null }],
                 },
             ],
         };
         fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
-        expect(loadPipelineConfig('test', tmpDir)).toBeNull();
+        expect(loadPipelineConfig('test', tmpDir)).not.toBeNull();
     });
     it('rejects non-string template', () => {
         const config = {
@@ -1224,14 +1235,14 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
         fs.writeFileSync(path.join(tmpDir, 'PIPELINE.json'), JSON.stringify(config));
         expect(loadPipelineConfig('test', tmpDir)).toBeNull();
     });
-    it('accepts a transition with template (single stitch, no count)', () => {
+    it('accepts a transition with template (single stitch)', () => {
         const config = {
             stages: [
                 {
                     name: 'a',
                     prompt: 'A',
                     mounts: {},
-                    transitions: [{ marker: 'OK', template: 'my-tpl' }],
+                    transitions: [{ marker: 'OK', template: 'my-tpl', next: null }],
                 },
             ],
         };
@@ -1245,7 +1256,9 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
                     name: 'a',
                     prompt: 'A',
                     mounts: {},
-                    transitions: [{ marker: 'OK', template: 'my-tpl', count: 3 }],
+                    transitions: [
+                        { marker: 'OK', template: 'my-tpl', next: null, count: 3 },
+                    ],
                 },
             ],
         };
@@ -1274,7 +1287,12 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
                     prompt: 'A',
                     mounts: {},
                     transitions: [
-                        { marker: 'OK', template: 'my-tpl', countFrom: 'stdin' },
+                        {
+                            marker: 'OK',
+                            template: 'my-tpl',
+                            next: null,
+                            countFrom: 'stdin',
+                        },
                     ],
                 },
             ],
@@ -1293,6 +1311,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
                         {
                             marker: 'OK',
                             template: 'my-tpl',
+                            next: null,
                             count: 3,
                             countFrom: 'payload',
                         },
@@ -1314,6 +1333,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
                         {
                             marker: 'OK',
                             template: 'my-tpl',
+                            next: null,
                             substitutionsFrom: 'payload',
                         },
                     ],
@@ -1334,6 +1354,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
                         {
                             marker: 'OK',
                             template: 'my-tpl',
+                            next: null,
                             countFrom: 'payload',
                             substitutionsFrom: 'payload',
                         },
@@ -1467,7 +1488,7 @@ describe('savePipelineState with activations/completions', () => {
         };
         savePipelineState(tmpDir, state);
         const loaded = loadPipelineState(tmpDir);
-        expect(loaded).toEqual({ ...state, version: 2 });
+        expect(loaded).toEqual({ ...state, version: 3 });
         expect(loaded.activations).toEqual({
             'edit-arbiter': 2,
             'test-arbiter': 2,

@@ -35,7 +35,7 @@
         {
           "marker": "DONE",
           "next": null,
-          "prompt": "Done {{id}} — converge on barrier"
+          "prompt": "Done {{id}} — converge on join"
         }
       ]
     }

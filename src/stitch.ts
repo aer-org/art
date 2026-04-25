@@ -3,16 +3,21 @@
  * PipelineConfig's stage graph. Pure graph-in / graph-out functions — no I/O.
  *
  * Insertion modes:
- *   stitchSingle   — clone template once, rewire host transition to entry
- *   stitchParallel — clone template N times, converge lanes on a synthesized
- *                    fan-in barrier, rewire host transition to N entries
+ *   stitchSingle   — clone template once, synthesize a join stage, and rewire
+ *                    the host transition to the template entry
+ *   stitchParallel — clone template N times, synthesize a shared join stage,
+ *                    and rewire the host transition to the N entries
  *
- * Semantics (Option 1 — template owns downstream):
- *   Single: template stages with `next: null` terminate the pipeline.
- *   Parallel: template stages with `next: null` converge to the barrier,
- *             whose `next` is null (parallel block is terminal by default).
+ * Semantics:
+ *   - Inside a stitched template, authored `next: null` means "this template
+ *     invocation ends here". Stitch rewires those terminal edges to the
+ *     synthetic join stage for this invocation.
+ *   - The synthetic join evaluates the configured join policy and either
+ *     continues to the authored downstream `next` or ends the pipeline with
+ *     an error.
  */
 import type {
+  JoinPolicy,
   PipelineConfig,
   PipelineStage,
   PipelineTransition,
@@ -40,8 +45,7 @@ export const RESERVED_SUBSTITUTION_KEYS = ['index', 'insertId'] as const;
 
 const SUBSTITUTION_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
-const BARRIER_MARKER = 'STAGE_COMPLETE';
-const BARRIER_COMMAND = `echo '[${BARRIER_MARKER}]'`;
+const JOIN_MARKER = 'STAGE_COMPLETE';
 
 export type SubstitutionValue = string | number | boolean;
 export type SubstitutionMap = Record<string, SubstitutionValue>;
@@ -51,6 +55,8 @@ export interface StitchSingleInput {
   originStage: string;
   originTransitionIdx: number;
   template: PipelineTemplate;
+  downstreamNext: string | null;
+  joinPolicy: JoinPolicy;
   substitutions?: SubstitutionMap;
 }
 
@@ -58,6 +64,7 @@ export interface StitchSingleResult {
   updatedConfig: PipelineConfig;
   insertedStages: PipelineStage[];
   entryName: string;
+  joinName: string;
   insertId: string;
 }
 
@@ -66,6 +73,8 @@ export interface StitchParallelInput {
   originStage: string;
   originTransitionIdx: number;
   template: PipelineTemplate;
+  downstreamNext: string | null;
+  joinPolicy: JoinPolicy;
   count: number;
   perCopySubstitutions?: SubstitutionMap[];
 }
@@ -74,7 +83,7 @@ export interface StitchParallelResult {
   updatedConfig: PipelineConfig;
   insertedStages: PipelineStage[];
   entryNames: string[];
-  barrierName: string;
+  joinName: string;
   insertId: string;
 }
 
@@ -89,8 +98,16 @@ export function renamedStage(
   return `${origin}__${templateName}${copyIndex}__${stageName}`;
 }
 
-export function barrierNameFor(origin: string, templateName: string): string {
-  return `${origin}__${templateName}__barrier`;
+export function joinNameFor(origin: string, templateName: string): string {
+  return `${origin}__${templateName}__join`;
+}
+
+export function copyPrefixFor(
+  origin: string,
+  templateName: string,
+  copyIndex: number,
+): string {
+  return `${origin}__${templateName}${copyIndex}__`;
 }
 
 function insertIdFor(
@@ -106,12 +123,20 @@ function insertIdFor(
 /* ----- Public API ----- */
 
 export function stitchSingle(input: StitchSingleInput): StitchSingleResult {
-  const { config, originStage, originTransitionIdx, template } = input;
+  const {
+    config,
+    originStage,
+    originTransitionIdx,
+    template,
+    downstreamNext,
+    joinPolicy,
+  } = input;
 
   assertOriginValid(config, originStage, originTransitionIdx);
 
   const copyIndex = 0;
   const insertId = insertIdFor(originStage, template.name, copyIndex);
+  const joinName = joinNameFor(originStage, template.name);
   const subs: SubstitutionMap = {
     insertId,
     index: copyIndex,
@@ -123,7 +148,14 @@ export function stitchSingle(input: StitchSingleInput): StitchSingleResult {
     originStage,
     copyIndex,
     subs,
+    joinName,
   );
+  const insertedStages = [
+    ...clonedStages,
+    buildJoinStage(joinName, downstreamNext, joinPolicy, [
+      copyPrefixFor(originStage, template.name, copyIndex),
+    ]),
+  ];
   const entryName = renamedStage(
     originStage,
     template.name,
@@ -135,14 +167,20 @@ export function stitchSingle(input: StitchSingleInput): StitchSingleResult {
     config,
     originStage,
     originTransitionIdx,
-    clonedStages,
+    insertedStages,
     entryName,
   );
 
   assertNoNameCollision(updatedConfig);
   assertConfigAcyclic(updatedConfig);
 
-  return { updatedConfig, insertedStages: clonedStages, entryName, insertId };
+  return {
+    updatedConfig,
+    insertedStages,
+    entryName,
+    joinName,
+    insertId,
+  };
 }
 
 export function stitchParallel(
@@ -153,6 +191,8 @@ export function stitchParallel(
     originStage,
     originTransitionIdx,
     template,
+    downstreamNext,
+    joinPolicy,
     count,
     perCopySubstitutions,
   } = input;
@@ -165,11 +205,12 @@ export function stitchParallel(
 
   assertOriginValid(config, originStage, originTransitionIdx);
 
-  const barrier = barrierNameFor(originStage, template.name);
+  const joinName = joinNameFor(originStage, template.name);
   const aggregateInsertId = insertIdFor(originStage, template.name);
 
   const allStages: PipelineStage[] = [];
   const entryNames: string[] = [];
+  const copyPrefixes: string[] = [];
   for (let i = 0; i < count; i++) {
     const copySubs = perCopySubstitutions?.[i] ?? {};
     const subs: SubstitutionMap = {
@@ -177,14 +218,23 @@ export function stitchParallel(
       index: i,
       ...copySubs,
     };
-    const cloned = cloneTemplateCopy(template, originStage, i, subs, barrier);
+    const cloned = cloneTemplateCopy(
+      template,
+      originStage,
+      i,
+      subs,
+      joinName,
+    );
     allStages.push(...cloned);
+    copyPrefixes.push(copyPrefixFor(originStage, template.name, i));
     entryNames.push(
       renamedStage(originStage, template.name, i, template.entry),
     );
   }
 
-  allStages.push(buildBarrierStage(barrier));
+  allStages.push(
+    buildJoinStage(joinName, downstreamNext, joinPolicy, copyPrefixes),
+  );
 
   const updatedConfig = applyStitchToConfig(
     config,
@@ -201,7 +251,7 @@ export function stitchParallel(
     updatedConfig,
     insertedStages: allStages,
     entryNames,
-    barrierName: barrier,
+    joinName,
     insertId: aggregateInsertId,
   };
 }
@@ -289,7 +339,7 @@ function cloneTemplateCopy(
   origin: string,
   copyIndex: number,
   subs: SubstitutionMap,
-  convergenceTarget?: string,
+  joinTarget: string,
 ): PipelineStage[] {
   const rename = (n: string): string =>
     renamedStage(origin, template.name, copyIndex, n);
@@ -299,7 +349,7 @@ function cloneTemplateCopy(
       ...stage,
       name: rename(stage.name),
       transitions: stage.transitions.map((t) =>
-        rewireTransition(t, rename, convergenceTarget),
+        rewireTransition(t, rename, joinTarget),
       ),
     };
     const substituted = applySubstitutionsToStage(renamed, subs);
@@ -361,21 +411,22 @@ function walkPlaceholders(value: unknown, acc: Set<string>): void {
 function rewireTransition(
   t: PipelineTransition,
   rename: (n: string) => string,
-  convergenceTarget: string | undefined,
+  joinTarget: string,
 ): PipelineTransition {
   // Only called while cloning template stages. Templates reject authored
-  // array `next` at load, and barrier fan-out arrays are injected by
+  // array `next` at load, and runtime fan-out arrays are injected by
   // applyStitchToConfig — neither ever reaches this function. The template
   // validator also guarantees any string `next` is template-internal.
   const out: PipelineTransition = { ...t };
   if (typeof t.next === 'string') {
     out.next = rename(t.next);
   } else {
-    // t.next is null/undefined — convergence target (parallel) or terminal
-    out.next = convergenceTarget ?? null;
+    // Authored `next: null` means "this template invocation ends here". Stitch
+    // rewires that terminal edge to the synthetic join for this invocation.
+    out.next = joinTarget;
   }
   // `template` passes through unchanged — resolved at runtime when the
-  // stitched stage fires its transition.
+  // stitched stage fires its transition, then returns to the rewritten `next`.
   return out;
 }
 
@@ -392,7 +443,10 @@ function applyStitchToConfig(
       if (idx !== originTransitionIdx) return t;
       const copy: PipelineTransition = { ...t, next: newHostNext };
       delete copy.count; // count is consumed by the stitch
-      delete copy.template; // template has been stitched — next now points at entry/barrier stages
+      delete copy.countFrom;
+      delete copy.substitutionsFrom;
+      delete copy.joinPolicy;
+      delete copy.template; // template has been stitched — next now points at entry/join stages
       return copy;
     });
     return { ...s, transitions };
@@ -434,18 +488,21 @@ function substituteString(text: string, subs: SubstitutionMap): string {
   });
 }
 
-function buildBarrierStage(name: string): PipelineStage {
-  // Synthetic barrier runs as a trivial command stage — fan_in: "all" gates it
-  // on every lane completing, then a shell `echo` emits the completion marker.
-  // Uses the default agent image (already pulled by the surrounding pipeline)
-  // to avoid requiring an LLM turn or an extra image pull.
+function buildJoinStage(
+  name: string,
+  downstreamNext: string | null,
+  joinPolicy: JoinPolicy,
+  copyPrefixes: string[],
+): PipelineStage {
   return {
     name,
     kind: 'command',
-    command: BARRIER_COMMAND,
-    successMarker: `[${BARRIER_MARKER}]`,
     mounts: {},
-    fan_in: 'all',
-    transitions: [{ marker: BARRIER_MARKER, next: null }],
+    join: {
+      policy: joinPolicy,
+      expectedCopies: copyPrefixes.length,
+      copyPrefixes,
+    },
+    transitions: [{ marker: JOIN_MARKER, next: downstreamNext }],
   };
 }

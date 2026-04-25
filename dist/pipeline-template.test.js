@@ -185,7 +185,9 @@ describe('validatePipelineTemplate', () => {
                 {
                     name: 's1',
                     mounts: {},
-                    transitions: [{ marker: 'OK', template: 'tpl2', count: 0 }],
+                    transitions: [
+                        { marker: 'OK', template: 'tpl2', next: null, count: 0 },
+                    ],
                 },
             ],
         }, 'tpl')).toThrow(/positive integer/);
@@ -201,7 +203,7 @@ describe('validatePipelineTemplate', () => {
             ],
         }, 'tpl')).toThrow(/count.*requires.*template/);
     });
-    it('rejects both next (string) and template', () => {
+    it('accepts template + next (spawn then return downstream)', () => {
         expect(() => validatePipelineTemplate({
             stages: [
                 {
@@ -215,7 +217,7 @@ describe('validatePipelineTemplate', () => {
                     transitions: [{ marker: 'OK', next: 's1', template: 'tpl2' }],
                 },
             ],
-        }, 'tpl')).toThrow(/either "next" or "template"/);
+        }, 'tpl')).not.toThrow();
     });
     it('accepts template + count (parallel stitch)', () => {
         expect(() => validatePipelineTemplate({
@@ -223,7 +225,9 @@ describe('validatePipelineTemplate', () => {
                 {
                     name: 's1',
                     mounts: {},
-                    transitions: [{ marker: 'OK', template: 'tpl2', count: 3 }],
+                    transitions: [
+                        { marker: 'OK', template: 'tpl2', next: null, count: 3 },
+                    ],
                 },
             ],
         }, 'tpl')).not.toThrow();
@@ -234,7 +238,7 @@ describe('validatePipelineTemplate', () => {
                 {
                     name: 's1',
                     mounts: {},
-                    transitions: [{ marker: 'OK', template: 'tpl2' }],
+                    transitions: [{ marker: 'OK', template: 'tpl2', next: null }],
                 },
             ],
         }, 'tpl')).not.toThrow();
@@ -257,7 +261,12 @@ describe('validatePipelineTemplate', () => {
                     name: 's1',
                     mounts: {},
                     transitions: [
-                        { marker: 'OK', template: 'tpl2', countFrom: 'stdin' },
+                        {
+                            marker: 'OK',
+                            template: 'tpl2',
+                            next: null,
+                            countFrom: 'stdin',
+                        },
                     ],
                 },
             ],
@@ -273,6 +282,7 @@ describe('validatePipelineTemplate', () => {
                         {
                             marker: 'OK',
                             template: 'tpl2',
+                            next: null,
                             count: 3,
                             countFrom: 'payload',
                         },
@@ -291,6 +301,7 @@ describe('validatePipelineTemplate', () => {
                         {
                             marker: 'OK',
                             template: 'tpl2',
+                            next: null,
                             substitutionsFrom: 'payload',
                         },
                     ],
@@ -308,6 +319,7 @@ describe('validatePipelineTemplate', () => {
                         {
                             marker: 'OK',
                             template: 'tpl2',
+                            next: null,
                             countFrom: 'payload',
                             substitutionsFrom: 'payload',
                         },

@@ -8,6 +8,7 @@
         {
           "marker": "GO",
           "template": "demo",
+          "next": null,
           "prompt": "Begin — stitches the top-level demo template"
         }
       ]

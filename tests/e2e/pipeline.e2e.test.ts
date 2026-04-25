@@ -167,7 +167,7 @@ describe.skipIf(!hasDocker)('Fan-out/fan-in command pipeline', () => {
     cleanupFixture(fixtureDir);
   });
 
-  it('runs parallel stages and waits for fan-in barrier', () => {
+  it('runs parallel stages and waits for the synthesized join', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
     if (result.code !== 0) {
@@ -180,23 +180,23 @@ describe.skipIf(!hasDocker)('Fan-out/fan-in command pipeline', () => {
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
 
-    // build (origin) → 2 stitched test lanes → synthesized fan-in barrier
+    // build (origin) → 2 stitched test lanes → synthesized join
     const completed = state!.completedStages as string[];
     expect(completed).toContain('build');
     expect(completed).toContain('build__test0__run');
     expect(completed).toContain('build__test1__run');
-    expect(completed).toContain('build__test__barrier');
+    expect(completed).toContain('build__test__join');
     expect(completed).toHaveLength(4);
 
-    // build runs first; barrier runs only after both lanes finish
+    // build runs first; join runs only after both lanes finish
     const buildIdx = completed.indexOf('build');
     const lane0Idx = completed.indexOf('build__test0__run');
     const lane1Idx = completed.indexOf('build__test1__run');
-    const barrierIdx = completed.indexOf('build__test__barrier');
+    const joinIdx = completed.indexOf('build__test__join');
     expect(buildIdx).toBeLessThan(lane0Idx);
     expect(buildIdx).toBeLessThan(lane1Idx);
-    expect(barrierIdx).toBeGreaterThan(lane0Idx);
-    expect(barrierIdx).toBeGreaterThan(lane1Idx);
+    expect(joinIdx).toBeGreaterThan(lane0Idx);
+    expect(joinIdx).toBeGreaterThan(lane1Idx);
   });
 });
 

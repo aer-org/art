@@ -33,6 +33,7 @@
         {
           "marker": "PLAN_READY",
           "template": "worker",
+          "next": null,
           "countFrom": "payload",
           "substitutionsFrom": "payload",
           "prompt": "Payload-driven parallel fanout — one worker lane per payload element"

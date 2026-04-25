@@ -3,16 +3,20 @@
  * PipelineConfig's stage graph. Pure graph-in / graph-out functions — no I/O.
  *
  * Insertion modes:
- *   stitchSingle   — clone template once, rewire host transition to entry
- *   stitchParallel — clone template N times, converge lanes on a synthesized
- *                    fan-in barrier, rewire host transition to N entries
+ *   stitchSingle   — clone template once, synthesize a join stage, and rewire
+ *                    the host transition to the template entry
+ *   stitchParallel — clone template N times, synthesize a shared join stage,
+ *                    and rewire the host transition to the N entries
  *
- * Semantics (Option 1 — template owns downstream):
- *   Single: template stages with `next: null` terminate the pipeline.
- *   Parallel: template stages with `next: null` converge to the barrier,
- *             whose `next` is null (parallel block is terminal by default).
+ * Semantics:
+ *   - Inside a stitched template, authored `next: null` means "this template
+ *     invocation ends here". Stitch rewires those terminal edges to the
+ *     synthetic join stage for this invocation.
+ *   - The synthetic join evaluates the configured join policy and either
+ *     continues to the authored downstream `next` or ends the pipeline with
+ *     an error.
  */
-import type { PipelineConfig, PipelineStage } from './pipeline-runner.js';
+import type { JoinPolicy, PipelineConfig, PipelineStage } from './pipeline-runner.js';
 import type { PipelineTemplate } from './pipeline-template.js';
 export declare const STITCH_SUBSTITUTION_FIELDS: readonly string[];
 export declare const RESERVED_SUBSTITUTION_KEYS: readonly ["index", "insertId"];
@@ -23,12 +27,15 @@ export interface StitchSingleInput {
     originStage: string;
     originTransitionIdx: number;
     template: PipelineTemplate;
+    downstreamNext: string | null;
+    joinPolicy: JoinPolicy;
     substitutions?: SubstitutionMap;
 }
 export interface StitchSingleResult {
     updatedConfig: PipelineConfig;
     insertedStages: PipelineStage[];
     entryName: string;
+    joinName: string;
     insertId: string;
 }
 export interface StitchParallelInput {
@@ -36,6 +43,8 @@ export interface StitchParallelInput {
     originStage: string;
     originTransitionIdx: number;
     template: PipelineTemplate;
+    downstreamNext: string | null;
+    joinPolicy: JoinPolicy;
     count: number;
     perCopySubstitutions?: SubstitutionMap[];
 }
@@ -43,11 +52,12 @@ export interface StitchParallelResult {
     updatedConfig: PipelineConfig;
     insertedStages: PipelineStage[];
     entryNames: string[];
-    barrierName: string;
+    joinName: string;
     insertId: string;
 }
 export declare function renamedStage(origin: string, templateName: string, copyIndex: number, stageName: string): string;
-export declare function barrierNameFor(origin: string, templateName: string): string;
+export declare function joinNameFor(origin: string, templateName: string): string;
+export declare function copyPrefixFor(origin: string, templateName: string, copyIndex: number): string;
 export declare function stitchSingle(input: StitchSingleInput): StitchSingleResult;
 export declare function stitchParallel(input: StitchParallelInput): StitchParallelResult;
 export declare function assertConfigAcyclic(config: PipelineConfig): void;
