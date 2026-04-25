@@ -1,0 +1,20 @@
+{
+  "entry": "git-reset",
+  "stages": [
+    {
+      "name": "git-reset",
+      "prompt": "",
+      "command": "git config --global --add safe.directory /workspace/project && cd /workspace/project && git reset --hard HEAD~1 && echo '[STAGE_COMPLETE]'",
+      "image": "alpine/git",
+      "mounts": {
+        "project": "rw"
+      },
+      "transitions": [
+        {
+          "marker": "STAGE_COMPLETE",
+          "template": "experiment"
+        }
+      ]
+    }
+  ]
+}

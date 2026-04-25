@@ -1,0 +1,18 @@
+{
+  "entry": "work",
+  "stages": [
+    {
+      "name": "work",
+      "prompt": "You are at nesting level 3 (inside deep2). Emit exactly [PARALLEL] to parallel-stitch 3 lanes of the lane template.",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "PARALLEL",
+          "template": "lane",
+          "count": 3,
+          "prompt": "Parallel-stitch 3 lanes of the lane template; a synthesized barrier waits for all"
+        }
+      ]
+    }
+  ]
+}

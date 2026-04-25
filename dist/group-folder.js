@@ -1,6 +1,9 @@
 import path from 'path';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
-const GROUP_FOLDER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+// Up to 200 chars total. Stitched stage names compound per nesting level
+// (e.g. `origin__template0__stage`), so the cap needs headroom for several
+// levels beyond the base `<group>__pipeline_<stage>` prefix.
+const GROUP_FOLDER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/;
 const RESERVED_FOLDERS = new Set(['global']);
 // External folder overrides — allows groups to live outside GROUPS_DIR (e.g., __art__/)
 const externalFolders = new Map();

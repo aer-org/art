@@ -2,51 +2,15 @@
   "stages": [
     {
       "name": "build",
-      "prompt": "",
       "command": "echo '[BUILD_OK]'",
       "image": "node:22-slim",
       "successMarker": "BUILD_OK",
       "mounts": {},
       "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": ["test-unit", "test-e2e"] },
-        { "marker": "STAGE_ERROR", "next": null }
-      ]
-    },
-    {
-      "name": "test-unit",
-      "prompt": "",
-      "command": "echo '[TEST_DONE]'",
-      "image": "node:22-slim",
-      "successMarker": "TEST_DONE",
-      "mounts": {},
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": "deploy" },
-        { "marker": "STAGE_ERROR", "next": null }
-      ]
-    },
-    {
-      "name": "test-e2e",
-      "prompt": "",
-      "command": "echo '[TEST_DONE]'",
-      "image": "node:22-slim",
-      "successMarker": "TEST_DONE",
-      "mounts": {},
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": "deploy" },
-        { "marker": "STAGE_ERROR", "next": null }
-      ]
-    },
-    {
-      "name": "deploy",
-      "prompt": "",
-      "command": "echo '[DEPLOYED]'",
-      "image": "node:22-slim",
-      "successMarker": "DEPLOYED",
-      "mounts": {},
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": null },
+        { "marker": "STAGE_COMPLETE", "template": "test", "count": 2 },
         { "marker": "STAGE_ERROR", "next": null }
       ]
     }
-  ]
+  ],
+  "entryStage": "build"
 }

@@ -4,8 +4,9 @@
  * to run pipelines in containers.
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
-import { ChildProcess } from 'child_process';
+import { ChildProcess, execSync, spawnSync } from 'child_process';
 
 import { setCodexAuthProxyPort, setCredentialProxyPort } from './config.js';
 import { startCodexAuthProxy } from './codex-auth-proxy.js';
@@ -105,6 +106,90 @@ export async function runPipeline(opts: {
     console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
     proxyServer?.close();
     process.exit(1);
+  }
+
+  // Resolve registry agent refs (stage.agent = "name:tag") → populate prompt,
+  // mcp, and — if the agent points at a dockerfile — build a locally-canonical
+  // image tag so independent machines converge on the same image name.
+  const stagesWithRefs = pipelineConfig.stages.filter((s) => s.agent);
+  if (stagesWithRefs.length > 0) {
+    const { RegistryClient, loadCredentials, canonicalImageTag } =
+      await import('./registry-client.js');
+    const creds = loadCredentials();
+    if (!creds) {
+      console.error(
+        "Pipeline references registry agents but no credentials found. Run 'art login'.",
+      );
+      proxyServer?.close();
+      codexAuthProxyServer?.close();
+      process.exit(1);
+    }
+    const client = new RegistryClient(creds);
+    const runtimeBin = (await import('./container-runtime.js')).getRuntime()
+      .bin;
+    const buildRoot = path.join(os.homedir(), '.cache', 'aer-art', 'builds');
+
+    for (const stage of stagesWithRefs) {
+      const ref = stage.agent!;
+      try {
+        const { hash, version } = await client.resolveAndFetchAgent(ref);
+        if (!stage.prompt) stage.prompt = version.system_prompt;
+        if (!stage.mcpAccess && version.mcp_tools.length > 0) {
+          stage.mcpAccess = version.mcp_tools;
+        }
+
+        if (version.dockerfile_hash && version.dockerfile_image_name) {
+          const df = await client.fetchDockerfileVersion(
+            version.dockerfile_hash,
+          );
+          const imageTag = canonicalImageTag(df.image_name, df.content_hash);
+
+          const inspect = spawnSync(
+            runtimeBin,
+            ['image', 'inspect', imageTag],
+            {
+              stdio: 'pipe',
+            },
+          );
+          if (inspect.status !== 0) {
+            const shortHash = df.content_hash
+              .replace('sha256:', '')
+              .slice(0, 12);
+            const buildDir = path.join(buildRoot, shortHash);
+            fs.mkdirSync(buildDir, { recursive: true });
+            fs.writeFileSync(path.join(buildDir, 'Dockerfile'), df.content);
+            console.log(`Building ${imageTag}…`);
+            execSync(`${runtimeBin} build -t ${imageTag} ${buildDir}`, {
+              stdio: 'inherit',
+            });
+          }
+          if (!stage.image) stage.image = imageTag;
+        }
+
+        logger.info(
+          {
+            stage: stage.name,
+            ref,
+            hash,
+            dockerfile_hash: version.dockerfile_hash,
+            image: stage.image,
+          },
+          'Resolved registry agent',
+        );
+        console.log(
+          `Resolved ${stage.name}: ${ref} → ${hash.slice(0, 19)}…${
+            stage.image ? ` (image: ${stage.image})` : ''
+          }`,
+        );
+      } catch (e) {
+        console.error(
+          `Failed to resolve '${ref}' for stage '${stage.name}': ${(e as Error).message}`,
+        );
+        proxyServer?.close();
+        codexAuthProxyServer?.close();
+        process.exit(1);
+      }
+    }
   }
 
   // --stage: run a single stage in isolation

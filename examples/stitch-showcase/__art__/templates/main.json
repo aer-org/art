@@ -1,0 +1,43 @@
+{
+  "entry": "init",
+  "stages": [
+    {
+      "name": "init",
+      "prompt": "Main template — init stage (1/3). Return exactly this text and nothing else:\n\n[OK]",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "OK",
+          "next": "gather",
+          "prompt": "Move to gather (template-internal node transition)"
+        }
+      ]
+    },
+    {
+      "name": "gather",
+      "prompt": "Main template — gather stage (2/3). Return exactly this text and nothing else:\n\n[OK]",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "OK",
+          "next": "dispatch",
+          "prompt": "Move to dispatch (template-internal node transition)"
+        }
+      ]
+    },
+    {
+      "name": "dispatch",
+      "prompt": "You are the dispatch stage (3/3). Your job is to emit a payload that drives parallel fanout. Return exactly this text and nothing else:\n\n[PLAN_READY]\n---PAYLOAD_START---\n[{\"id\":\"alpha\",\"kind\":\"fast\"},{\"id\":\"beta\",\"kind\":\"slow\"},{\"id\":\"gamma\",\"kind\":\"medium\"}]\n---PAYLOAD_END---",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "PLAN_READY",
+          "template": "worker",
+          "countFrom": "payload",
+          "substitutionsFrom": "payload",
+          "prompt": "Payload-driven parallel fanout — one worker lane per payload element"
+        }
+      ]
+    }
+  ]
+}

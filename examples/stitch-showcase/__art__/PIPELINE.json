@@ -1,0 +1,41 @@
+{
+  "stages": [
+    {
+      "name": "kickoff",
+      "prompt": "You are the kickoff stage of the stitch-showcase demo. Return exactly this text and nothing else:\n\n[OK]",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "OK",
+          "next": "prepare",
+          "prompt": "Move to prepare (base pipeline node transition)"
+        }
+      ]
+    },
+    {
+      "name": "prepare",
+      "prompt": "You are the prepare stage. Return exactly this text and nothing else:\n\n[OK]",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "OK",
+          "next": "launch",
+          "prompt": "Move to launch (base pipeline node transition)"
+        }
+      ]
+    },
+    {
+      "name": "launch",
+      "prompt": "You are the launch stage — about to stitch the 3-stage 'main' template. Return exactly this text and nothing else:\n\n[GO]",
+      "mounts": {},
+      "transitions": [
+        {
+          "marker": "GO",
+          "template": "main",
+          "prompt": "Single-stitch the main template (3 stages inside)"
+        }
+      ]
+    }
+  ],
+  "entryStage": "kickoff"
+}
