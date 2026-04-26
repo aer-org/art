@@ -103,9 +103,7 @@ describeRuntime('docker', () => {
   it('hostGatewayArgs on Linux includes --add-host', () => {
     const args = hostGatewayArgs();
     if (os.platform() === 'linux') {
-      expect(args).toContain(
-        '--add-host=host.docker.internal:host-gateway',
-      );
+      expect(args).toContain('--add-host=host.docker.internal:host-gateway');
     }
   });
 
@@ -148,9 +146,7 @@ describeRuntime('docker', () => {
   });
 
   it('ensureImage throws for nonexistent image', () => {
-    expect(() =>
-      ensureImage('nonexistent-image-abc123:latest'),
-    ).toThrow();
+    expect(() => ensureImage('nonexistent-image-abc123:latest')).toThrow();
   });
 
   it('SELinux detection matches system state', () => {
@@ -305,9 +301,7 @@ describeRuntime('podman', () => {
   });
 
   it('ensureImage throws for nonexistent image', () => {
-    expect(() =>
-      ensureImage('nonexistent-image-abc123:latest'),
-    ).toThrow();
+    expect(() => ensureImage('nonexistent-image-abc123:latest')).toThrow();
   });
 });
 

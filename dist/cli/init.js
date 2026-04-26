@@ -1,28 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { ART_DIR_NAME } from '../config.js';
-import { STAGE_TEMPLATES } from '../stage-templates.js';
-const DEFAULT_TEMPLATE_NAMES = ['build', 'test', 'review', 'history'];
-function buildStages() {
-    const stages = DEFAULT_TEMPLATE_NAMES.map((name) => {
-        const t = STAGE_TEMPLATES[name];
-        return {
-            name: t.name,
-            prompt: t.prompt,
-            mounts: { ...t.mounts },
-            transitions: [...t.transitions],
-        };
-    });
-    // Wire up transitions: each stage completes to the next
-    for (let i = 0; i < stages.length; i++) {
-        const nextName = i < stages.length - 1 ? stages[i + 1].name : null;
-        const completeTransition = stages[i].transitions.find((t) => t.marker === '[STAGE_COMPLETE]');
-        if (completeTransition && nextName) {
-            completeTransition.next = nextName;
-        }
-    }
-    return stages;
-}
+import { buildDefaultInitStages } from './default-stage-presets.js';
 /** Create __art__/ directory structure, pipeline config, and .gitignore */
 export function scaffoldArtDir(projectDir) {
     const artDir = path.join(projectDir, ART_DIR_NAME);
@@ -43,7 +22,7 @@ export function scaffoldArtDir(projectDir) {
     fs.mkdirSync(path.join(artDir, 'outputs'), { recursive: true });
     fs.mkdirSync(path.join(artDir, 'tests'), { recursive: true });
     // Pipeline
-    const stages = buildStages();
+    const stages = buildDefaultInitStages();
     const pipeline = {
         stages,
         entryStage: stages[0]?.name,

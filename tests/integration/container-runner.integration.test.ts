@@ -66,12 +66,7 @@ for (const { kind, bin } of FULL_RUNTIMES) {
       });
 
       it('captures exit code 0', () => {
-        const result = runContainer(bin, [
-          'run',
-          '--rm',
-          ALPINE_IMAGE,
-          'true',
-        ]);
+        const result = runContainer(bin, ['run', '--rm', ALPINE_IMAGE, 'true']);
         expect(result.code).toBe(0);
       });
 
@@ -242,13 +237,18 @@ for (const { kind, bin } of FULL_RUNTIMES) {
 
           // Verify ownership matches the UID the container ran as
           const stat = fs.statSync(containerFile);
-          if (userArgs.includes('--userns=keep-id') || userArgs.includes(`${uid}:${gid}`)) {
+          if (
+            userArgs.includes('--userns=keep-id') ||
+            userArgs.includes(`${uid}:${gid}`)
+          ) {
             // Container ran as host uid → file should be owned by host uid
             expect(stat.uid).toBe(uid);
           } else {
             // Container ran as default user (root=0 or node=1000)
             // Just verify file was created successfully
-            expect(fs.readFileSync(containerFile, 'utf-8').trim()).toBe('container-wrote');
+            expect(fs.readFileSync(containerFile, 'utf-8').trim()).toBe(
+              'container-wrote',
+            );
           }
         } finally {
           cleanupTempDir(rwDir);
@@ -324,10 +324,10 @@ for (const { kind, bin } of FULL_RUNTIMES) {
     describe('timeout and stop', () => {
       it('container can be stopped by name', () => {
         const name = `art-integration-${kind}-stop-${Date.now()}`;
-        execSync(
-          `${bin} run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
-          { stdio: 'pipe', timeout: 10_000 },
-        );
+        execSync(`${bin} run -d --name ${name} ${ALPINE_IMAGE} sleep 300`, {
+          stdio: 'pipe',
+          timeout: 10_000,
+        });
 
         try {
           const cmd = stopContainer(name);
@@ -370,10 +370,10 @@ for (const { kind, bin } of FULL_RUNTIMES) {
     describe('orphan cleanup', () => {
       it('cleanupOrphans stops aer-art-* containers', () => {
         const name = `aer-art-integration-${kind}-orphan-${Date.now()}`;
-        execSync(
-          `${bin} run -d --name ${name} ${ALPINE_IMAGE} sleep 300`,
-          { stdio: 'pipe', timeout: 10_000 },
-        );
+        execSync(`${bin} run -d --name ${name} ${ALPINE_IMAGE} sleep 300`, {
+          stdio: 'pipe',
+          timeout: 10_000,
+        });
 
         try {
           cleanupOrphans();

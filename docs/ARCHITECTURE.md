@@ -19,12 +19,14 @@ A single Node.js process handles container spawning, output streaming, marker pa
 ## 1. CLI Commands
 
 ### `art init [dir]`
+
 - Creates `__art__/` directory structure (plan, src, logs, metrics, insights, memory, outputs, tests)
 - Generates default `PIPELINE.json`: build → test → review → history (4 stages)
 - Creates `.gitignore`
 - Does not start agents or open a browser
 
 ### `art run [dir]`
+
 - Validates `__art__/` and `PIPELINE.json` exist
 - Detects existing running pipeline → prompts to stop/restart
 - Generates unique run ID, executes stages sequentially in containers
@@ -32,6 +34,7 @@ A single Node.js process handles container spawning, output streaming, marker pa
 - Cleans up manifests and containers on SIGINT/SIGTERM
 
 ### Authentication (`src/cli/auth.ts`)
+
 - Token resolution order: env vars → `.env` file → saved token → Claude CLI credentials
 - Validates token with a live Anthropic API call (`/v1/messages`, max_tokens=1) before starting
 
@@ -54,11 +57,11 @@ Load PIPELINE.json → determine entry stage
 
 Agents embed markers in their output to trigger stage transitions:
 
-| Marker | Meaning |
-|--------|---------|
-| `[STAGE_COMPLETE]` | Current stage completed successfully |
-| `[STAGE_ERROR: description]` | Error occurred |
-| `[STAGE_ERROR_CODE: code]` | Failed with error code |
+| Marker                       | Meaning                              |
+| ---------------------------- | ------------------------------------ |
+| `[STAGE_COMPLETE]`           | Current stage completed successfully |
+| `[STAGE_ERROR: description]` | Error occurred                       |
+| `[STAGE_ERROR_CODE: code]`   | Failed with error code               |
 
 Each stage's `transitions` array defines marker → target stage mappings.
 Transitions with `retry: true` stay in the same stage; others advance to the next.
@@ -81,6 +84,7 @@ Stages declaring an `exclusive` key get serialized access to that resource
 ### Run Manifest
 
 Each execution records a manifest JSON in the `runs/` directory:
+
 - `_current.json`: PID, runId, and start time of the currently running pipeline
 - `run-{id}.json`: full record per run (per-stage status, duration, log file path)
 
@@ -88,11 +92,12 @@ Stale PIDs are detected and orphan cleanup runs automatically.
 
 ---
 
-## 3. Stage Templates (`src/stage-templates.ts`)
+## 3. Default Scaffold Stages (`src/cli/default-stage-presets.ts`)
 
-Pre-defined stage types: **plan**, **build**, **test**, **review**, **history**, **deploy**
+`art init` seeds a default 4-stage scaffold: **build**, **test**, **review**, **history**
 
-Each template provides:
+Each preset provides:
+
 - SOUL-based system prompt (role, behavior rules, output format)
 - Mount policy (which directories are rw/ro/null)
 - Default transition markers
@@ -100,6 +105,7 @@ Each template provides:
 Overridable per-project via `PIPELINE.json`.
 
 Default 4-stage pipeline:
+
 1. **build** — reads PLAN.md, writes code to src/
 2. **test** — runs adversarial tests against src/
 3. **review** — examines outputs, writes REPORT.md
@@ -115,15 +121,16 @@ Runtime abstraction layer that auto-detects and normalizes Docker, Podman, and u
 
 Priority: `CONTAINER_RUNTIME` env var → saved choice (`~/.config/aer-art/runtime.json`) → auto-detect + confirm
 
-| Runtime | Characteristics |
-|---------|----------------|
-| Docker | Full capabilities, default choice |
-| Podman | Docker-compatible, auto-detects SELinux `:z` suffix |
+| Runtime | Characteristics                                               |
+| ------- | ------------------------------------------------------------- |
+| Docker  | Full capabilities, default choice                             |
+| Podman  | Docker-compatible, auto-detects SELinux `:z` suffix           |
 | udocker | No daemon required, Fakechroot (F1) mode, cannot build images |
 
 ### Runtime Capabilities
 
 Each runtime declares supported features via a capabilities struct:
+
 - `supportsAutoRemove` (`--rm`)
 - `supportsNaming` (`--name`)
 - `supportsDevicePassthrough` (`--device`)
@@ -140,11 +147,11 @@ Code branches on `rt.capabilities.X` — no per-runtime hardcoding.
 
 ### Host Gateway
 
-| Runtime | Host access address |
-|---------|-------------------|
-| Docker | `host.docker.internal` |
-| Podman | `host.containers.internal` |
-| udocker | `localhost` |
+| Runtime | Host access address        |
+| ------- | -------------------------- |
+| Docker  | `host.docker.internal`     |
+| Podman  | `host.containers.internal` |
+| udocker | `localhost`                |
 
 ---
 
@@ -154,15 +161,15 @@ Spawns containers and configures mounts, security, and IPC.
 
 ### Mount Architecture
 
-| Mount | Permission | Purpose |
-|-------|-----------|---------|
-| Project root | ro | Prevent code modification (sandbox bypass protection) |
-| `__art__/` subdirectories | per-stage | rw/ro/null per stage template or PIPELINE.json |
-| `.env` → `/dev/null` | shadow | Prevent secret exposure |
-| `.claude/` | rw | Isolated Claude Code session |
-| Skill files | sync | `container/skills/` → `.claude/skills/` |
-| Pipeline internal mounts | direct | Bypasses security validation (pipeline is trusted) |
-| Additional mounts | validated | Checked against allowlist |
+| Mount                     | Permission | Purpose                                                    |
+| ------------------------- | ---------- | ---------------------------------------------------------- |
+| Project root              | ro         | Prevent code modification (sandbox bypass protection)      |
+| `__art__/` subdirectories | per-stage  | rw/ro/null per scaffold preset or authored `PIPELINE.json` |
+| `.env` → `/dev/null`      | shadow     | Prevent secret exposure                                    |
+| `.claude/`                | rw         | Isolated Claude Code session                               |
+| Skill files               | sync       | `container/skills/` → `.claude/skills/`                    |
+| Pipeline internal mounts  | direct     | Bypasses security validation (pipeline is trusted)         |
+| Additional mounts         | validated  | Checked against allowlist                                  |
 
 ### Credential Proxy (`src/credential-proxy.ts`)
 
@@ -195,7 +202,11 @@ Stores image key → spec mappings in `~/.config/aer-art/images.json`.
 ```json
 {
   "default": { "image": "aer-art-agent:latest", "hasAgent": true },
-  "vivado": { "image": "vivado-agent:latest", "hasAgent": true, "baseImage": "xilinx/vivado:2024.1" }
+  "vivado": {
+    "image": "vivado-agent:latest",
+    "hasAgent": true,
+    "baseImage": "xilinx/vivado:2024.1"
+  }
 }
 ```
 
@@ -207,25 +218,25 @@ Stores image key → spec mappings in `~/.config/aer-art/images.json`.
 
 ## File Map
 
-| File | Role |
-|------|------|
-| `src/run-engine.ts` | Minimal pipeline execution engine for `art run` |
-| `src/pipeline-runner.ts` | Pipeline FSM, run manifest, stage execution |
-| `src/container-runner.ts` | Container spawning, mount/security configuration |
-| `src/container-runtime.ts` | Runtime abstraction (Docker/Podman/udocker) |
-| `src/credential-proxy.ts` | API credential proxy |
-| `src/image-registry.ts` | Image registry CRUD |
-| `src/stage-templates.ts` | Stage prompt templates |
-| `src/mount-security.ts` | Mount allowlist and blocked-pattern enforcement |
-| `src/mount-validation.ts` | Mount path validation utilities |
-| `src/group-folder.ts` | Workspace path resolution and traversal defense |
-| `src/config.ts` | Paths, intervals, image registry path |
-| `src/env.ts` | Environment variable handling |
-| `src/logger.ts` | Logging utilities |
-| `src/types.ts` | Shared TypeScript types |
-| `src/cli/index.ts` | CLI entry point and command registration |
-| `src/cli/init.ts` | `art init` command |
-| `src/cli/run.ts` | `art run` pipeline execution |
-| `src/cli/auth.ts` | Auth token management |
-| `container/build.sh` | Agent container image build |
-| `install.sh` | One-line CLI installation script |
+| File                               | Role                                             |
+| ---------------------------------- | ------------------------------------------------ |
+| `src/run-engine.ts`                | Minimal pipeline execution engine for `art run`  |
+| `src/pipeline-runner.ts`           | Pipeline FSM, run manifest, stage execution      |
+| `src/container-runner.ts`          | Container spawning, mount/security configuration |
+| `src/container-runtime.ts`         | Runtime abstraction (Docker/Podman/udocker)      |
+| `src/credential-proxy.ts`          | API credential proxy                             |
+| `src/image-registry.ts`            | Image registry CRUD                              |
+| `src/cli/default-stage-presets.ts` | Default `art init` scaffold stage presets        |
+| `src/mount-security.ts`            | Mount allowlist and blocked-pattern enforcement  |
+| `src/mount-validation.ts`          | Mount path validation utilities                  |
+| `src/group-folder.ts`              | Workspace path resolution and traversal defense  |
+| `src/config.ts`                    | Paths, intervals, image registry path            |
+| `src/env.ts`                       | Environment variable handling                    |
+| `src/logger.ts`                    | Logging utilities                                |
+| `src/types.ts`                     | Shared TypeScript types                          |
+| `src/cli/index.ts`                 | CLI entry point and command registration         |
+| `src/cli/init.ts`                  | `art init` command                               |
+| `src/cli/run.ts`                   | `art run` pipeline execution                     |
+| `src/cli/auth.ts`                  | Auth token management                            |
+| `container/build.sh`               | Agent container image build                      |
+| `install.sh`                       | One-line CLI installation script                 |

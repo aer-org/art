@@ -803,6 +803,7 @@ export class PipelineRunner {
             let stderr = '';
             let cmdLogRemainder = '';
             let cmdLogStderrRemainder = '';
+            let cmdNotifyRemainder = '';
             // Streaming marker detection: resolve pendingResult as soon as a marker
             // is found in stdout, without waiting for process exit.
             let markerResolved = false;
@@ -848,9 +849,11 @@ export class PipelineRunner {
                 }
                 // Stream output to TUI
                 if (process.env.ART_TUI_MODE) {
-                    const trimmed = chunk.trim();
+                    const { prefixed, remainder } = prefixLogLines(chunk, stageConfig.name, cmdNotifyRemainder);
+                    cmdNotifyRemainder = remainder;
+                    const trimmed = prefixed.trimEnd();
                     if (trimmed) {
-                        this.notify(`[${stageConfig.name}] ${trimmed}`).catch(() => { });
+                        this.notify(trimmed).catch(() => { });
                     }
                 }
                 // Streaming marker detection
@@ -890,6 +893,9 @@ export class PipelineRunner {
                     if (cmdLogStderrRemainder)
                         logStream.write(`[${stageConfig.name}:stderr] ${cmdLogStderrRemainder}\n`);
                     logStream.write(`\n=== Command Stage ${stageConfig.name} exited: code=${code} ===\n`);
+                }
+                if (process.env.ART_TUI_MODE && cmdNotifyRemainder) {
+                    this.notify(`[${stageConfig.name}] ${cmdNotifyRemainder}`).catch(() => { });
                 }
                 // If marker already resolved during streaming, just finalize the container promise
                 if (markerResolved) {
