@@ -142,12 +142,7 @@ describe.skipIf(!hasDocker)('Mount: project ro + sub-path rw', () => {
     expect(result.stdout).not.toMatch(/\] ART_VISIBLE/);
 
     // Verify written file persisted on host
-    const outputFile = path.join(
-      fixtureDir,
-      'src',
-      'generated',
-      'output.txt',
-    );
+    const outputFile = path.join(fixtureDir, 'src', 'generated', 'output.txt');
     expect(fs.existsSync(outputFile)).toBe(true);
   });
 });
@@ -184,7 +179,11 @@ describe.skipIf(!hasDocker)('Mount: host path (hostMounts)', () => {
     // Ensure allowlist permits /tmp (where fixtures are copied)
     const allowlist = {
       allowedRoots: [
-        { path: '/tmp', allowReadWrite: true, description: 'E2E test fixtures' },
+        {
+          path: '/tmp',
+          allowReadWrite: true,
+          description: 'E2E test fixtures',
+        },
       ],
       blockedPatterns: [],
       nonMainReadOnly: false,

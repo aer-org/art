@@ -27,7 +27,11 @@ beforeAll(() => {
 }, 120_000);
 afterAll(() => {
   uninstallGlobal();
-  try { fs.unlinkSync(tgzPath); } catch { /* ok */ }
+  try {
+    fs.unlinkSync(tgzPath);
+  } catch {
+    /* ok */
+  }
 });
 
 // ─── Package contents (regression for #13: agent-runner src excluded) ─────────

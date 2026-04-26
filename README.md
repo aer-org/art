@@ -164,7 +164,6 @@ art run <path>                  # Execute pipeline (default provider: Claude)
 art run --codex <path>          # Execute pipeline with Codex
 art run --claude <path>         # Execute pipeline with Claude Code
 art run --skip-preflight <path> # Skip local CLI/auth preflight (command-mode only)
-art prompts ...                 # Inspect prompt DB entries and pipeline prompt ids
 ```
 
 ---

@@ -52,11 +52,6 @@ async function main(): Promise<void> {
       });
       break;
     }
-    case 'prompts': {
-      const { promptsCli } = await import('./prompts.js');
-      await promptsCli(args);
-      break;
-    }
     case 'login': {
       const { login } = await import('./login.js');
       await login(args);
@@ -73,7 +68,6 @@ async function main(): Promise<void> {
 Usage:
   art init [dir]      Create __art__/ scaffold and PIPELINE.json
   art run [dir]       Start the agent pipeline engine
-  art prompts ...     Inspect prompt DB entries and pipeline prompt ids
   art login           Save registry credentials (~/.config/aer-art/credentials.json)
   art logout          Remove stored registry credentials
 `);
