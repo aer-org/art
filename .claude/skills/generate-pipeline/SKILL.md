@@ -415,6 +415,78 @@ At runtime this expands to `plan → [plan__probe-variant0__probe, plan__probe-v
 
 ---
 
+## Registry & Bundle Format
+
+Pipelines can be stored in a remote registry and managed with `art pull`/`art push`. A **bundle directory** is the local working copy of a registry-managed pipeline.
+
+### Bundle directory structure
+
+```
+my-pipeline/
+  pipeline.json              # Orchestration (stages, transitions, mounts) — prompts stripped
+  agents/
+    scope_analysis.md        # Agent prompt for the "scope_analysis" stage
+    implementation.md        # Agent prompt for the "implementation" stage
+    review.md                # ...
+  templates/
+    experiment.json          # Pipeline template (prompts stripped, same as pipeline.json)
+  dockerfiles/
+    custom-build.Dockerfile  # Custom Dockerfile definitions
+  .art-bundle.json           # Metadata: remote, pipeline name, tag, per-file hashes
+```
+
+**Key rule**: In a bundle directory, `pipeline.json` (and templates) contain **no inline prompts**. Agent prompts live exclusively in `agents/<stage-name>.md`. This separation lets you edit prompts in markdown files without touching the pipeline JSON.
+
+### How prompt extraction works
+
+- **`art pull`**: Downloads the full pipeline from the registry (where prompts are inline in stage objects). Extracts each non-command stage's `prompt` field into `agents/<stage-name>.md`. Writes `pipeline.json` with prompts stripped out.
+- **`art push`**: Reads `pipeline.json` + `agents/*.md`. For each stage, if `agents/<stage-name>.md` exists, its content is assembled back into the stage's `prompt` field before uploading. Only changed files are pushed; if any agent file changes, pipeline and templates are re-assembled and re-pushed automatically.
+- **`art diff`**: Compares local file hashes against `.art-bundle.json` to show what changed since last pull/push.
+
+### Registry workflow
+
+```bash
+# Configure a remote
+art remote add origin https://art.example.com
+art login --remote origin
+
+# Pull an existing pipeline
+art pull my-pipeline --remote origin --project myproject
+
+# Edit locally: modify agents/*.md, pipeline.json, templates, dockerfiles
+# Check what changed
+art diff my-pipeline
+
+# Push changes back
+art push my-pipeline --remote origin
+
+# Initial push (no prior pull)
+art push ./my-pipeline --name my-pipeline --remote origin --project myproject
+```
+
+### Local vs bundle format
+
+| | Local (`__art__/PIPELINE.json`) | Bundle (`<name>/pipeline.json`) |
+|---|---|---|
+| Prompts | Inline in stage objects | Separate `agents/*.md` files |
+| Templates | `__art__/templates/*.json` | `templates/*.json` |
+| Used by | `art run`, `art compose` | `art pull`, `art push`, `art diff` |
+| Metadata | None | `.art-bundle.json` (hashes, remote, tag) |
+
+When generating a pipeline, ask the user whether it's for **local execution** (`__art__/PIPELINE.json` with inline prompts) or **registry push** (bundle directory with separate agent files). Default to local unless the user mentions pull/push/registry/remote.
+
+### Generating for bundle format
+
+When generating a bundle directory instead of a single `PIPELINE.json`:
+
+1. Write `pipeline.json` with `prompt: ""` for all agent stages (or omit the field entirely)
+2. Write each agent stage's prompt to `agents/<stage-name>.md`
+3. Write templates to `templates/<name>.json` (also with prompts stripped)
+4. Write agent prompts from templates to `agents/<stage-name>.md` as well
+5. Create the directory structure: `mkdir -p <name>/agents <name>/templates`
+
+---
+
 ## Prompt Writing Guidelines
 
 Agent stage prompts must be **self-contained** — the agent has no memory of previous stages.
@@ -437,20 +509,24 @@ When this skill is invoked:
 
 1. **Read the input.** If the user provides a file path (e.g., plan.md), read it. Otherwise use the conversation context.
 
-2. **Identify stages.** List each discrete step. For each, determine:
+2. **Determine output format.** Ask or infer whether the pipeline is for:
+   - **Local execution** → `__art__/PIPELINE.json` with inline prompts (default)
+   - **Registry bundle** → bundle directory with separate `agents/*.md` files (if the user mentions pull/push/registry/remote, or an existing bundle directory is present)
+
+3. **Identify stages.** List each discrete step. For each, determine:
    - Name (kebab-case, descriptive)
    - Type (agent if judgment needed, command if deterministic)
    - What it reads and writes
 
-3. **Design mounts.** Apply least privilege. Use `project:` sub-path overrides where needed (e.g., `project:.git: rw` for git operations).
+4. **Design mounts.** Apply least privilege. Use `project:` sub-path overrides where needed (e.g., `project:.git: rw` for git operations).
 
-4. **Decide external MCP access.** If the workflow needs host-side tools or databases:
+5. **Decide external MCP access.** If the workflow needs host-side tools or databases:
    - Add `mcpAccess` only to the stages that need it
    - Use registry refs from `~/.config/aer-art/mcp-registry.json`
    - Prefer separate refs/endpoints per stage capability when strong isolation matters
    - Do not put raw MCP server URLs or transport details in `PIPELINE.json`
 
-5. **Wire transitions.** Map the flow between stages. Ensure:
+6. **Wire transitions.** Map the flow between stages. Ensure:
    - At least one path reaches `next: null` (pipeline termination)
    - Loops have clear exit conditions
    - Error handling where appropriate
@@ -458,19 +534,21 @@ When this skill is invoked:
    - For template fanout, choose `joinPolicy` deliberately instead of relying on defaults when behavior matters
    - **Every transition has a `prompt`** describing the condition under which the agent should emit that marker (e.g., "All tests pass and code is ready for review", "Recoverable error — retry with different approach"). Write these as conditions: "when X", "if Y", or declarative descriptions of the trigger scenario.
 
-6. **Choose images** for command stages. Common choices:
+7. **Choose images** for command stages. Common choices:
    - `alpine/git` — git operations
    - `node:22-slim` — Node.js tasks
    - `python:3.12-slim` — Python tasks
    - `nvidia/cuda:12.4.1-devel-ubuntu22.04` — GPU workloads
 
-7. **Write prompts** for agent stages following the guidelines above.
+8. **Write prompts** for agent stages following the guidelines above.
 
-8. **Run the checklist** (below).
+9. **Run the checklist** (below).
 
-9. **Write** `__art__/PIPELINE.json` with 2-space indentation. If the file already exists, ask before overwriting.
+10. **Write output files.**
+    - **Local format**: Write `__art__/PIPELINE.json` with 2-space indentation (inline prompts). If the file already exists, ask before overwriting.
+    - **Bundle format**: Create the bundle directory structure, write `pipeline.json` (prompts stripped), write each agent prompt to `agents/<stage-name>.md`, write templates to `templates/<name>.json` (prompts stripped), and write template agent prompts to `agents/` as well.
 
-10. **Create mount directories** under `__art__/` for any art-managed keys referenced in mounts (e.g., `mkdir -p __art__/results`).
+11. **Create mount directories** under `__art__/` (local) or the bundle dir (bundle) for any art-managed keys referenced in mounts (e.g., `mkdir -p __art__/results`).
 
 ---
 
@@ -506,5 +584,13 @@ Before writing the JSON, verify ALL of the following:
 - [ ] `joinPolicy` is used only with `template` and is one of `all_success`, `any_success`, or `all_settled`
 - [ ] `outcome` (if present) is only `success` or `error`
 - [ ] For payload-driven fanout, the preceding agent emits a fenced `---PAYLOAD_START--- ... ---PAYLOAD_END---` JSON array of flat objects; payload elements never use reserved keys `index` / `insertId`
-- [ ] Templates live at `__art__/templates/<name>.json` with `{ entry?, stages }` shape; internal transitions are acyclic; `next` inside a template stays scope-local and `template` handoffs return to that transition's `next`
+- [ ] Templates live at `__art__/templates/<name>.json` (local) or `templates/<name>.json` (bundle) with `{ entry?, stages }` shape; internal transitions are acyclic; `next` inside a template stays scope-local and `template` handoffs return to that transition's `next`
 - [ ] The JSON is valid and parseable
+
+### Bundle format additional checks (when generating for registry)
+
+- [ ] `pipeline.json` has no inline `prompt` values for agent stages (prompts live in `agents/*.md`)
+- [ ] Every agent stage has a corresponding `agents/<stage-name>.md` file
+- [ ] Template JSON files also have prompts stripped; their agent prompts are in `agents/` too
+- [ ] Agent `.md` filenames match stage `name` fields exactly (kebab-case)
+- [ ] No `.art-bundle.json` is generated (it's created by `art pull`/`art push`, not by this skill)
