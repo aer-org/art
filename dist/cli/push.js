@@ -75,9 +75,17 @@ export async function push(args) {
     });
     // Pass 2: push changed resources
     // If any agent changed, force re-push pipeline+templates (prompts are assembled into them)
-    const counts = { agents: 0, pipelines: 0, dockerfiles: 0, templates: 0, unchanged: 0 };
+    const counts = {
+        agents: 0,
+        pipelines: 0,
+        dockerfiles: 0,
+        templates: 0,
+        unchanged: 0,
+    };
     for (const { file, kind, name, changed } of classified) {
-        const forcePush = !changed && anyAgentChanged && (kind === 'pipeline' || kind === 'template');
+        const forcePush = !changed &&
+            anyAgentChanged &&
+            (kind === 'pipeline' || kind === 'template');
         if (!changed && !forcePush) {
             console.log(`  ${file.relPath}  unchanged → skip`);
             counts.unchanged++;
@@ -91,9 +99,13 @@ export async function push(args) {
                 : 'changed';
         switch (kind) {
             case 'agent':
-                // Inline agents are assembled into pipeline/template content on push.
-                // No separate /v1/agents call needed — the agent file is a local editing surface only.
-                console.log(`  ${file.relPath}  ${label} (assembled into pipeline)`);
+                await api.pushAgent({
+                    name,
+                    system_prompt: file.content,
+                    dockerfile: { name: 'art-agent' },
+                    project: meta.project,
+                });
+                console.log(`  ${file.relPath}  ${label} → pushed`);
                 counts.agents++;
                 newHashes[file.relPath] = file.hash;
                 break;
