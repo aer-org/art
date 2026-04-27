@@ -17,6 +17,23 @@ export interface BundleFile {
     hash: string;
 }
 export declare function readBundleFiles(dir: string): BundleFile[];
+export interface PipelineStageMinimal {
+    name: string;
+    kind?: string;
+    command?: string;
+    prompt?: string;
+    agent?: string;
+    [key: string]: unknown;
+}
+export interface PipelineContentMinimal {
+    stages?: PipelineStageMinimal[];
+    [key: string]: unknown;
+}
+export declare function extractAgentPrompts(pipelineContent: PipelineContentMinimal): {
+    stripped: PipelineContentMinimal;
+    agents: Map<string, string>;
+};
+export declare function assembleAgentPrompts(pipelineContent: PipelineContentMinimal, agentsDir: string): PipelineContentMinimal;
 export declare function classifyFile(relPath: string): {
     kind: 'agent' | 'pipeline' | 'template' | 'dockerfile' | 'unknown';
     name: string;

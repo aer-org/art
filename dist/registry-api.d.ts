@@ -1,33 +1,23 @@
 export interface BundleResponse {
     pipeline: {
         name: string;
-        project?: string;
-        config: Record<string, unknown>;
         content_hash: string;
+        content: Record<string, unknown>;
     };
-    agents: Array<{
-        name: string;
+    agents: Record<string, {
+        content_hash: string;
         system_prompt: string;
-        content_hash: string;
         mcp_tools: string[];
-        scope: 'shared' | 'user';
     }>;
-    dockerfiles: Array<{
-        image_name: string;
+    dockerfiles: Record<string, {
+        content_hash: string;
         content: string;
-        content_hash: string;
+        description: string | null;
     }>;
-    templates: Array<{
-        name: string;
-        config: Record<string, unknown>;
+    templates: Record<string, {
         content_hash: string;
+        content: Record<string, unknown>;
     }>;
-}
-export interface PushResult {
-    agents_updated: number;
-    pipelines_updated: number;
-    dockerfiles_updated: number;
-    templates_updated: number;
 }
 export declare class RegistryApi {
     private baseUrl;
@@ -44,29 +34,36 @@ export declare class RegistryApi {
     pushAgent(data: {
         name: string;
         system_prompt: string;
+        dockerfile?: {
+            name: string;
+            tag?: string;
+        } | {
+            hash: string;
+        };
         mcp_tools?: string[];
         project?: string;
+        owner?: string;
+        tags?: string[];
     }): Promise<{
         content_hash: string;
     }>;
     pushPipeline(data: {
         name: string;
-        config: Record<string, unknown>;
+        content: Record<string, unknown>;
+        kind?: 'pipeline' | 'template';
+        substitutions?: string[];
         project?: string;
+        owner?: string;
+        tags?: string[];
     }): Promise<{
         content_hash: string;
     }>;
     pushDockerfile(data: {
-        image_name: string;
-        content: string;
-    }): Promise<{
-        content_hash: string;
-    }>;
-    pushTemplate(data: {
         name: string;
-        config: Record<string, unknown>;
-        pipeline_name?: string;
+        content: string;
+        image_name?: string;
         project?: string;
+        tags?: string[];
     }): Promise<{
         content_hash: string;
     }>;

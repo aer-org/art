@@ -3,7 +3,13 @@ import path from 'path';
 
 import { resolveRemoteWithAuth } from '../remote-config.js';
 import { RegistryApi } from '../registry-api.js';
-import { contentHash, saveBundleMeta, type BundleMetadata } from '../bundle.js';
+import {
+  contentHash,
+  saveBundleMeta,
+  extractAgentPrompts,
+  type BundleMetadata,
+  type PipelineContentMinimal,
+} from '../bundle.js';
 
 function parseArgs(args: string[]): {
   pipeline: string;
@@ -29,7 +35,9 @@ function parseArgs(args: string[]): {
   }
 
   if (!pipeline) {
-    console.error('Usage: art pull <pipeline> [--tag <tag>] [--remote <name>] [--project <project>]');
+    console.error(
+      'Usage: art pull <pipeline> [--tag <tag>] [--remote <name>] [--project <project>]',
+    );
     process.exit(1);
   }
   return { pipeline, tag, remote, project };
@@ -48,37 +56,65 @@ export async function pull(args: string[]): Promise<void> {
 
   fs.mkdirSync(outDir, { recursive: true });
 
-  // pipeline.json
-  const pipelineContent = JSON.stringify(bundle.pipeline.config, null, 2);
+  // Extract inline agent prompts from pipeline content
+  const { stripped, agents: inlineAgents } = extractAgentPrompts(
+    bundle.pipeline.content as PipelineContentMinimal,
+  );
+
+  // pipeline.json (with prompts stripped out)
+  const pipelineContent = JSON.stringify(stripped, null, 2);
   fs.writeFileSync(path.join(outDir, 'pipeline.json'), pipelineContent);
   hashes['pipeline.json'] = contentHash(pipelineContent);
 
-  // agents/
-  if (bundle.agents.length > 0) {
+  // agents/ — registry agents + inline agents extracted from pipeline
+  const allAgents = new Map<string, string>();
+  for (const [name, agent] of Object.entries(bundle.agents)) {
+    allAgents.set(name, agent.system_prompt);
+  }
+  for (const [name, prompt] of inlineAgents) {
+    allAgents.set(name, prompt);
+  }
+
+  if (allAgents.size > 0) {
     fs.mkdirSync(path.join(outDir, 'agents'), { recursive: true });
-    for (const agent of bundle.agents) {
-      const relPath = `agents/${agent.name}.md`;
-      fs.writeFileSync(path.join(outDir, relPath), agent.system_prompt);
-      hashes[relPath] = contentHash(agent.system_prompt);
+    for (const [name, prompt] of allAgents) {
+      const relPath = `agents/${name}.md`;
+      fs.writeFileSync(path.join(outDir, relPath), prompt);
+      hashes[relPath] = contentHash(prompt);
     }
   }
 
-  // templates/
-  if (bundle.templates.length > 0) {
+  // templates/ (dict: { [name]: { content, ... } })
+  const templateNames = Object.keys(bundle.templates);
+  if (templateNames.length > 0) {
     fs.mkdirSync(path.join(outDir, 'templates'), { recursive: true });
-    for (const tpl of bundle.templates) {
-      const content = JSON.stringify(tpl.config, null, 2);
-      const relPath = `templates/${tpl.name}.json`;
-      fs.writeFileSync(path.join(outDir, relPath), content);
-      hashes[relPath] = contentHash(content);
+    for (const [name, tpl] of Object.entries(bundle.templates)) {
+      // Extract inline prompts from templates too
+      const { stripped: tplStripped, agents: tplAgents } = extractAgentPrompts(
+        tpl.content as PipelineContentMinimal,
+      );
+      for (const [aName, aPrompt] of tplAgents) {
+        if (!allAgents.has(aName)) {
+          const relPath = `agents/${aName}.md`;
+          fs.mkdirSync(path.join(outDir, 'agents'), { recursive: true });
+          fs.writeFileSync(path.join(outDir, relPath), aPrompt);
+          hashes[relPath] = contentHash(aPrompt);
+          allAgents.set(aName, aPrompt);
+        }
+      }
+      const tplContent = JSON.stringify(tplStripped, null, 2);
+      const relPath = `templates/${name}.json`;
+      fs.writeFileSync(path.join(outDir, relPath), tplContent);
+      hashes[relPath] = contentHash(tplContent);
     }
   }
 
-  // dockerfiles/
-  if (bundle.dockerfiles.length > 0) {
+  // dockerfiles/ (dict: { [name]: { content, ... } })
+  const dockerfileNames = Object.keys(bundle.dockerfiles);
+  if (dockerfileNames.length > 0) {
     fs.mkdirSync(path.join(outDir, 'dockerfiles'), { recursive: true });
-    for (const df of bundle.dockerfiles) {
-      const relPath = `dockerfiles/${df.image_name}.Dockerfile`;
+    for (const [name, df] of Object.entries(bundle.dockerfiles)) {
+      const relPath = `dockerfiles/${name}.Dockerfile`;
       fs.writeFileSync(path.join(outDir, relPath), df.content);
       hashes[relPath] = contentHash(df.content);
     }
@@ -97,10 +133,16 @@ export async function pull(args: string[]): Promise<void> {
 
   console.log(`\nPulled to ./${pipeline}/`);
   console.log(`  pipeline.json`);
-  if (bundle.agents.length > 0)
-    console.log(`  agents/ (${bundle.agents.length} agent${bundle.agents.length > 1 ? 's' : ''})`);
-  if (bundle.templates.length > 0)
-    console.log(`  templates/ (${bundle.templates.length} template${bundle.templates.length > 1 ? 's' : ''})`);
-  if (bundle.dockerfiles.length > 0)
-    console.log(`  dockerfiles/ (${bundle.dockerfiles.length} dockerfile${bundle.dockerfiles.length > 1 ? 's' : ''})`);
+  if (allAgents.size > 0)
+    console.log(
+      `  agents/ (${allAgents.size} agent${allAgents.size > 1 ? 's' : ''})`,
+    );
+  if (templateNames.length > 0)
+    console.log(
+      `  templates/ (${templateNames.length} template${templateNames.length > 1 ? 's' : ''})`,
+    );
+  if (dockerfileNames.length > 0)
+    console.log(
+      `  dockerfiles/ (${dockerfileNames.length} dockerfile${dockerfileNames.length > 1 ? 's' : ''})`,
+    );
 }

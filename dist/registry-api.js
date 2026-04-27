@@ -50,9 +50,6 @@ export class RegistryApi {
     async pushDockerfile(data) {
         return this.request('/v1/dockerfiles', { method: 'POST', body: data });
     }
-    async pushTemplate(data) {
-        return this.request('/v1/templates', { method: 'POST', body: data });
-    }
     async forkAgent(agentName, project) {
         return this.request('/v1/agents/fork', {
             method: 'POST',

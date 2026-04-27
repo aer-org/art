@@ -21,7 +21,9 @@ function parseArgs(args: string[]): {
   }
 
   if (!agent) {
-    console.error('Usage: art fork <agent> [--project <project>] [--remote <name>]');
+    console.error(
+      'Usage: art fork <agent> [--project <project>] [--remote <name>]',
+    );
     process.exit(1);
   }
   return { agent, remote, project };
@@ -33,7 +35,9 @@ export async function fork(args: string[]): Promise<void> {
   const api = new RegistryApi(url, token);
 
   const result = await api.forkAgent(agent, project);
-  console.log(`Forked "${agent}" → user scope (hash: ${result.content_hash.slice(0, 19)}…)`);
+  console.log(
+    `Forked "${agent}" → user scope (hash: ${result.content_hash.slice(0, 19)}…)`,
+  );
 }
 
 export async function promote(args: string[]): Promise<void> {
@@ -42,5 +46,7 @@ export async function promote(args: string[]): Promise<void> {
   const api = new RegistryApi(url, token);
 
   const result = await api.promoteAgent(agent, project);
-  console.log(`Promoted "${agent}" → shared scope (hash: ${result.content_hash.slice(0, 19)}…)`);
+  console.log(
+    `Promoted "${agent}" → shared scope (hash: ${result.content_hash.slice(0, 19)}…)`,
+  );
 }

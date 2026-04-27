@@ -68,7 +68,9 @@ export async function remote(args: string[]): Promise<void> {
       const config = loadRemotes();
       const entries = Object.entries(config.remotes);
       if (entries.length === 0) {
-        console.log('No remotes configured. Run "art remote add <name> <url>" to add one.');
+        console.log(
+          'No remotes configured. Run "art remote add <name> <url>" to add one.',
+        );
         return;
       }
       for (const [name, r] of entries) {

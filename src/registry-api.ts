@@ -3,34 +3,32 @@ import { RegistryError } from './registry-client.js';
 export interface BundleResponse {
   pipeline: {
     name: string;
-    project?: string;
-    config: Record<string, unknown>;
     content_hash: string;
+    content: Record<string, unknown>;
   };
-  agents: Array<{
-    name: string;
-    system_prompt: string;
-    content_hash: string;
-    mcp_tools: string[];
-    scope: 'shared' | 'user';
-  }>;
-  dockerfiles: Array<{
-    image_name: string;
-    content: string;
-    content_hash: string;
-  }>;
-  templates: Array<{
-    name: string;
-    config: Record<string, unknown>;
-    content_hash: string;
-  }>;
-}
-
-export interface PushResult {
-  agents_updated: number;
-  pipelines_updated: number;
-  dockerfiles_updated: number;
-  templates_updated: number;
+  agents: Record<
+    string,
+    {
+      content_hash: string;
+      system_prompt: string;
+      mcp_tools: string[];
+    }
+  >;
+  dockerfiles: Record<
+    string,
+    {
+      content_hash: string;
+      content: string;
+      description: string | null;
+    }
+  >;
+  templates: Record<
+    string,
+    {
+      content_hash: string;
+      content: Record<string, unknown>;
+    }
+  >;
 }
 
 export class RegistryApi {
@@ -91,34 +89,35 @@ export class RegistryApi {
   async pushAgent(data: {
     name: string;
     system_prompt: string;
+    dockerfile?: { name: string; tag?: string } | { hash: string };
     mcp_tools?: string[];
     project?: string;
+    owner?: string;
+    tags?: string[];
   }): Promise<{ content_hash: string }> {
     return this.request('/v1/agents', { method: 'POST', body: data });
   }
 
   async pushPipeline(data: {
     name: string;
-    config: Record<string, unknown>;
+    content: Record<string, unknown>;
+    kind?: 'pipeline' | 'template';
+    substitutions?: string[];
     project?: string;
+    owner?: string;
+    tags?: string[];
   }): Promise<{ content_hash: string }> {
     return this.request('/v1/pipelines', { method: 'POST', body: data });
   }
 
   async pushDockerfile(data: {
-    image_name: string;
+    name: string;
     content: string;
+    image_name?: string;
+    project?: string;
+    tags?: string[];
   }): Promise<{ content_hash: string }> {
     return this.request('/v1/dockerfiles', { method: 'POST', body: data });
-  }
-
-  async pushTemplate(data: {
-    name: string;
-    config: Record<string, unknown>;
-    pipeline_name?: string;
-    project?: string;
-  }): Promise<{ content_hash: string }> {
-    return this.request('/v1/templates', { method: 'POST', body: data });
   }
 
   async forkAgent(

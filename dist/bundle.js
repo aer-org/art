@@ -46,6 +46,35 @@ export function readBundleFiles(dir) {
     walk(dir);
     return files;
 }
+export function extractAgentPrompts(pipelineContent) {
+    const agents = new Map();
+    if (!pipelineContent.stages)
+        return { stripped: pipelineContent, agents };
+    const strippedStages = pipelineContent.stages.map((stage) => {
+        const isCommand = stage.kind === 'command' || typeof stage.command === 'string';
+        if (isCommand || !stage.prompt || stage.agent)
+            return stage;
+        agents.set(stage.name, stage.prompt);
+        const { prompt: _, ...rest } = stage;
+        return rest;
+    });
+    return {
+        stripped: { ...pipelineContent, stages: strippedStages },
+        agents,
+    };
+}
+export function assembleAgentPrompts(pipelineContent, agentsDir) {
+    if (!pipelineContent.stages || !fs.existsSync(agentsDir))
+        return pipelineContent;
+    const assembledStages = pipelineContent.stages.map((stage) => {
+        const agentFile = path.join(agentsDir, `${stage.name}.md`);
+        if (!fs.existsSync(agentFile))
+            return stage;
+        const prompt = fs.readFileSync(agentFile, 'utf8');
+        return { ...stage, prompt };
+    });
+    return { ...pipelineContent, stages: assembledStages };
+}
 export function classifyFile(relPath) {
     if (relPath.startsWith('agents/') && relPath.endsWith('.md')) {
         return { kind: 'agent', name: path.basename(relPath, '.md') };

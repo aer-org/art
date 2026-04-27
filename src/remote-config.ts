@@ -52,13 +52,16 @@ export function getRemote(name: string): Remote | null {
   return config.remotes[name] ?? null;
 }
 
-export function resolveRemote(
-  remoteName?: string,
-): { name: string; remote: Remote } {
+export function resolveRemote(remoteName?: string): {
+  name: string;
+  remote: Remote;
+} {
   if (remoteName) {
     const remote = getRemote(remoteName);
     if (!remote) {
-      console.error(`Remote "${remoteName}" not found. Run "art remote list" to see configured remotes.`);
+      console.error(
+        `Remote "${remoteName}" not found. Run "art remote list" to see configured remotes.`,
+      );
       process.exit(1);
     }
     return { name: remoteName, remote };
@@ -66,7 +69,9 @@ export function resolveRemote(
 
   const def = getDefaultRemote();
   if (!def) {
-    console.error('No remote configured — run "art remote add <name> <url>" first.');
+    console.error(
+      'No remote configured — run "art remote add <name> <url>" first.',
+    );
     process.exit(1);
   }
   return def;

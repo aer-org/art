@@ -16,7 +16,10 @@ function parseArgs(args: string[]): { dir: string; verbose: boolean } {
   return { dir, verbose };
 }
 
-function lineDiff(original: string, current: string): { added: number; removed: number } {
+function lineDiff(
+  original: string,
+  current: string,
+): { added: number; removed: number } {
   const origLines = original.split('\n');
   const currLines = current.split('\n');
   const origSet = new Set(origLines);
@@ -82,6 +85,8 @@ export async function diff(args: string[]): Promise<void> {
   if (!hasChanges) {
     console.log('\nNo changes detected.');
   } else {
-    console.log(`\nRemote: ${meta.remote} | Pipeline: ${meta.pipeline_name}:${meta.tag}`);
+    console.log(
+      `\nRemote: ${meta.remote} | Pipeline: ${meta.pipeline_name}:${meta.tag}`,
+    );
   }
 }

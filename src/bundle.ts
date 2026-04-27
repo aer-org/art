@@ -28,10 +28,7 @@ export function loadBundleMeta(dir: string): BundleMetadata | null {
 }
 
 export function saveBundleMeta(dir: string, meta: BundleMetadata): void {
-  fs.writeFileSync(
-    path.join(dir, BUNDLE_META),
-    JSON.stringify(meta, null, 2),
-  );
+  fs.writeFileSync(path.join(dir, BUNDLE_META), JSON.stringify(meta, null, 2));
 }
 
 export function relativeBundlePath(dir: string, filePath: string): string {
@@ -69,6 +66,59 @@ export function readBundleFiles(dir: string): BundleFile[] {
 
   walk(dir);
   return files;
+}
+
+export interface PipelineStageMinimal {
+  name: string;
+  kind?: string;
+  command?: string;
+  prompt?: string;
+  agent?: string;
+  [key: string]: unknown;
+}
+
+export interface PipelineContentMinimal {
+  stages?: PipelineStageMinimal[];
+  [key: string]: unknown;
+}
+
+export function extractAgentPrompts(
+  pipelineContent: PipelineContentMinimal,
+): { stripped: PipelineContentMinimal; agents: Map<string, string> } {
+  const agents = new Map<string, string>();
+  if (!pipelineContent.stages) return { stripped: pipelineContent, agents };
+
+  const strippedStages = pipelineContent.stages.map((stage) => {
+    const isCommand = stage.kind === 'command' || typeof stage.command === 'string';
+    if (isCommand || !stage.prompt || stage.agent) return stage;
+
+    agents.set(stage.name, stage.prompt);
+    const { prompt: _, ...rest } = stage;
+    return rest;
+  });
+
+  return {
+    stripped: { ...pipelineContent, stages: strippedStages },
+    agents,
+  };
+}
+
+export function assembleAgentPrompts(
+  pipelineContent: PipelineContentMinimal,
+  agentsDir: string,
+): PipelineContentMinimal {
+  if (!pipelineContent.stages || !fs.existsSync(agentsDir))
+    return pipelineContent;
+
+  const assembledStages = pipelineContent.stages.map((stage) => {
+    const agentFile = path.join(agentsDir, `${stage.name}.md`);
+    if (!fs.existsSync(agentFile)) return stage;
+
+    const prompt = fs.readFileSync(agentFile, 'utf8');
+    return { ...stage, prompt };
+  });
+
+  return { ...pipelineContent, stages: assembledStages };
 }
 
 export function classifyFile(relPath: string): {
