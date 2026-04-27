@@ -1,48 +1,64 @@
 ---
 name: generate-pipeline
-description: Generate a valid __art__/PIPELINE.json from a plan, description, or stage list. Use when the user wants to create or rebuild a pipeline configuration, describes workflow stages, or asks to set up an agent pipeline.
+description: Generate a pipeline bundle (pipeline.json + agents/*.md + templates/) from a plan, description, or stage list. Use when the user wants to create or rebuild a pipeline configuration, describes workflow stages, or asks to set up an agent pipeline.
 ---
 
 # Generate Pipeline
 
-Convert a user's plan (free-form text, plan.md, or verbal description) into a valid `__art__/PIPELINE.json` that the AerArt pipeline runner can execute.
+Convert a user's plan (free-form text, plan.md, or verbal description) into a **pipeline bundle** — a directory of files that `art push` can publish to a registry and `art run` can execute locally.
+
+## Bundle Directory Structure
+
+```
+<pipeline-name>/
+  pipeline.json              # Orchestration (stages, transitions, mounts) — NO inline prompts
+  agents/
+    scope-analysis.md        # Agent prompt for the "scope-analysis" stage
+    implementation.md        # Agent prompt for the "implementation" stage
+    review.md                # ...
+  templates/
+    experiment.json          # Reusable sub-graph (prompts also stripped)
+  dockerfiles/
+    custom-build.Dockerfile  # Custom Dockerfile definitions (optional)
+```
+
+**Key rule**: `pipeline.json` and template JSON files contain **no inline prompts** for agent stages. Prompts live exclusively in `agents/<stage-name>.md`. This separation keeps orchestration (JSON) and instructions (markdown) cleanly decoupled.
+
+### How it works with the registry
+
+- **`art push`**: Reads `pipeline.json` + `agents/*.md`, assembles prompts back into stage objects, uploads to registry. Only changed files are pushed; agent changes trigger automatic re-assembly of pipeline and templates.
+- **`art pull`**: Downloads from registry, extracts inline prompts to `agents/*.md`, writes stripped `pipeline.json`.
+- **`art diff`**: Shows what changed locally since last pull/push.
+- **`art run`**: Runs a pipeline locally (assembles prompts at runtime from `agents/` directory).
 
 ---
 
 ## Schema Reference
 
-> **Breaking schema (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are **gone**. Pipelines must be **DAGs** (no cycles). Dynamic expansion happens via **stitch**: a transition with `template: "<name>"` clones a **pipeline template** (file at `__art__/templates/<name>.json`) into the live graph at runtime. `next` is now always required and is the downstream node in the current scope; if `template` is present, the spawned template returns to `next`. See [Templates & Stitch](#templates--stitch).
-
 ```typescript
 interface PipelineTransition {
   marker: string;                     // Bare name, e.g. "STAGE_COMPLETE" (agents emit as [STAGE_COMPLETE])
-  next: string | null;                // Scope-local stage name, or null to end the current scope.
-  template?: string;                  // Template name (file at __art__/templates/<name>.json) to stitch before continuing to `next`.
-  count?: number;                     // Valid only with `template`. Parallel stitch N lanes + synthesized join.
-  countFrom?: "payload";              // Derive lane count from the marker payload array length. Requires `template`.
-  substitutionsFrom?: "payload";      // Per-lane subs come from payload[i] fields. Requires `countFrom: "payload"`.
-  joinPolicy?: "all_success" | "any_success" | "all_settled"; // Valid only with `template`. Defaults to all_success.
-  outcome?: "success" | "error";      // Optional explicit transition outcome classification.
+  next: string | null;                // Scope-local stage name, or null to end the current scope
+  template?: string;                  // Template name (templates/<name>.json) to stitch before continuing to `next`
+  count?: number;                     // Parallel stitch N lanes + synthesized join. Requires `template`
+  countFrom?: "payload";              // Derive lane count from marker payload array length. Requires `template`
+  substitutionsFrom?: "payload";      // Per-lane subs from payload[i] fields. Requires `countFrom: "payload"`
+  joinPolicy?: "all_success" | "any_success" | "all_settled"; // Requires `template`. Defaults to all_success
+  outcome?: "success" | "error";      // Optional explicit transition outcome classification
   prompt?: string;                    // **Required in practice** — describes when the agent should emit this marker
-}
-
-interface AdditionalMount {
-  hostPath: string;
-  containerPath?: string;
-  readonly?: boolean;
 }
 
 interface PipelineStage {
   name: string;
   kind?: "agent" | "command";
-  prompt: string;
+  prompt?: string;                    // In bundle JSON: omitted for agents (lives in agents/*.md). Required "" for commands.
   command?: string;
   successMarker?: string;
   errorMarker?: string;
   chat?: boolean;
   image?: string;
   mounts: Record<string, "ro" | "rw" | null>;
-  hostMounts?: AdditionalMount[];
+  hostMounts?: { hostPath: string; containerPath?: string; readonly?: boolean }[];
   gpu?: boolean;
   runAsRoot?: boolean;
   privileged?: boolean;
@@ -51,7 +67,7 @@ interface PipelineStage {
   exclusive?: string;
   mcpAccess?: string[];
   resumeSession?: boolean;
-  fan_in?: "all";       // Only "all" is supported.
+  fan_in?: "all";
   transitions: PipelineTransition[];
 }
 
@@ -60,7 +76,7 @@ interface PipelineConfig {
   entryStage?: string;
 }
 
-interface PipelineTemplate {      // __art__/templates/<name>.json
+interface PipelineTemplate {      // templates/<name>.json
   entry?: string;                  // defaults to stages[0].name
   stages: PipelineStage[];
 }
@@ -70,436 +86,159 @@ interface PipelineTemplate {      // __art__/templates/<name>.json
 
 | | Agent stage | Command stage |
 |---|---|---|
-| `prompt` | Non-empty instructions | Must be `""` |
+| `prompt` | Omitted in JSON (lives in `agents/<name>.md`) | Must be `""` |
 | `command` | Absent or undefined | Shell string (`sh -c`) |
 | `image` | Optional (registry key or omit for default) | **Required** (Docker image name) |
 | Execution | Claude agent with tools | `sh -c <command>`, no agent |
-| Marker emission | Agent prints `[MARKER]` in response | Automatic: `STAGE_COMPLETE` / `STAGE_ERROR` based on `successMarker` or exit code |
+| Marker emission | Agent prints `[MARKER]` in response | Automatic based on `successMarker`/exit code |
 | Transitions | N transitions with custom markers | Fixed: `STAGE_COMPLETE` + `STAGE_ERROR` only |
-| Retry | No user-authored retry; emit an error marker and let the next stage handle it, or stitch a recovery template | Same — exit non-zero triggers container respawn (capped), user-authored retry is gone |
 
 #### Command stage success detection
-
-Markers are detected by **streaming** stdout line-by-line. The first marker found wins — no need to wait for process exit.
 
 1. `successMarker` found in stdout → immediately `STAGE_COMPLETE`
 2. `errorMarker` found in stdout → immediately `STAGE_ERROR` (process is killed)
 3. Neither found, process exits → exit code 0 = `STAGE_COMPLETE`, non-zero = `STAGE_ERROR`
 
-Both fields are optional:
-- Neither set → exit code only
-- `successMarker` only → match = success, no match = exit code fallback
-- `errorMarker` only → match = immediate failure, no match = exit code fallback
-- Both set → first match wins
-
 #### External MCP access (`mcpAccess`)
 
-Agent stages can opt into external MCP servers by referencing keys from the host-side registry at `~/.config/aer-art/mcp-registry.json`.
-
-```json
-{
-  "pipeline.sqlite.reader": {
-    "name": "pipeline_sqlite_reader",
-    "transport": "http",
-    "url": "http://${ART_HOST_GATEWAY}:4318/mcp-reader",
-    "tools": ["get_batch"]
-  }
-}
-```
-
-```json
-{
-  "name": "fetch-batch",
-  "prompt": "Use the pipeline DB reader MCP to load the next batch.",
-  "mounts": { "project": "ro", "results": "rw" },
-  "mcpAccess": ["pipeline.sqlite.reader"],
-  "transitions": [
-    { "marker": "STAGE_COMPLETE", "next": null, "prompt": "Batch fetched successfully" }
-  ]
-}
-```
-
-Rules:
+Agent stages can opt into external MCP servers by referencing keys from `~/.config/aer-art/mcp-registry.json`. Rules:
 - `mcpAccess` is valid only for **agent stages**
-- `mcpAccess` values are **registry refs**, not raw tool names
-- Prefer one ref per isolated capability/server when stage-level access must also hold for Codex
-- If the same backend needs different tool subsets for different stages, prefer separate MCP endpoints such as `/mcp-reader`, `/mcp-examiner`, `/mcp-reviewer`
+- Values are **registry refs**, not raw tool names or URLs
+- Prefer one ref per isolated capability/server
 
 #### Templates & Stitch
 
-Templates live at `__art__/templates/<name>.json` and hold reusable sub-graphs. A transition with `template: "<name>"` clones the template into the live graph at runtime (**stitch**). Use this for:
-- Recovery paths (emit marker, stitch a cleanup/revert template, terminate).
-- "Looping" iteration without cycles — e.g., review emits `STAGE_KEEP`, which stitches a fresh experiment template downstream of itself. Each stitched copy has uniquely-prefixed stage names so the graph stays acyclic.
-- Parallel work — `count: N` inserts N lane copies + a synthesized join (`<origin>__<template>__join`).
+Templates live at `templates/<name>.json` and hold reusable sub-graphs. A transition with `template: "<name>"` clones the template into the live graph at runtime (**stitch**). Use for:
+- Recovery paths — stitch a cleanup template on error
+- Iteration without cycles — review stitches a fresh experiment template downstream
+- Parallel work — `count: N` inserts N lane copies + a synthesized join
 
 ```jsonc
-// __art__/PIPELINE.json
+// pipeline.json
 {
   "stages": [
     {
       "name": "review",
-      "prompt": "...",
       "mounts": {"results": "rw"},
       "transitions": [
-        { "marker": "STAGE_DONE", "next": null,                         "prompt": "Stop iterating" },
-        { "marker": "STAGE_KEEP", "template": "experiment", "next": null, "prompt": "Run another experiment (stitch template)" },
-        { "marker": "STAGE_RESET","template": "revert-tpl", "next": null, "prompt": "Revert and try again (stitch revert template)" },
-        { "marker": "FANOUT",     "template": "probe", "next": "summarize", "count": 4, "joinPolicy": "all_success", "prompt": "Probe 4 variants in parallel, then continue only if all succeed" }
+        { "marker": "STAGE_DONE", "next": null, "prompt": "Stop iterating" },
+        { "marker": "STAGE_KEEP", "template": "experiment", "next": null, "prompt": "Run another experiment" },
+        { "marker": "FANOUT", "template": "probe", "next": "summarize", "count": 4, "joinPolicy": "all_success", "prompt": "Probe 4 variants in parallel" }
       ]
     }
-  ],
-  "entryStage": "review"
-}
-```
-
-```jsonc
-// __art__/templates/experiment.json
-{
-  "entry": "build",
-  "stages": [
-    { "name": "build",  "prompt": "...", "mounts": {...}, "transitions": [{ "marker": "OK", "next": "test" }] },
-    { "name": "test",   "command": "...", "transitions": [{ "marker": "OK", "next": "review" }] },
-    { "name": "review", "prompt": "...", "mounts": {...}, "transitions": [
-      { "marker": "STAGE_DONE", "next": null },
-      { "marker": "STAGE_KEEP", "template": "experiment", "next": null }   // re-stitch self at runtime
-    ] }
   ]
 }
 ```
 
-Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
+```jsonc
+// templates/experiment.json
+{
+  "entry": "build",
+  "stages": [
+    { "name": "build", "mounts": {"project": "rw"}, "transitions": [{ "marker": "OK", "next": "test" }] },
+    { "name": "test", "prompt": "", "command": "npm test", "image": "node:22-slim", "mounts": {"project": "ro"}, "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }] }
+  ]
+}
+```
+
+Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
 
 Rules:
-- `next` is **always required** per transition. It is scope-local: it must reference a stage in the current scope (base pipeline or the same template), or be `null` to end the current scope.
-- If `template` is present, the transition means "spawn this template, then continue to `next`".
-- `count` requires `template`. Stitch always synthesizes a join stage; terminal `next: null` edges inside the spawned template return to that join.
-- `joinPolicy` is valid only with `template`. Use:
-  - `all_success` when every spawned copy must succeed before continuing.
-  - `any_success` when at least one spawned copy succeeding is enough.
-  - `all_settled` when all spawned copies must finish, regardless of success.
-- Templates must have internally acyclic transitions. Cross-scope `next` references are rejected at load — use `template:` instead.
-- Inserted stage names follow `{origin}__{template}{index}__{templateStage}` — visible in logs, `PIPELINE_STATE.insertedStages`, and container names.
-- Synthetic join stage names follow `{origin}__{template}__join`.
-- Templates **cannot** declare `retry`, `next_dynamic`, `kind: "dynamic-fanout"`, `fan_in: "dynamic"`, or authored array `next` — those are all gone.
+- `next` is **always required** per transition. Scope-local: reference a stage in the current scope, or `null` to end
+- `count` requires `template`. Stitch synthesizes a join stage; `next: null` edges inside the template return to that join
+- `joinPolicy`: `all_success` (all must succeed), `any_success` (one enough), `all_settled` (all must finish)
+- Templates must be internally acyclic. Cross-scope `next` is rejected — use `template:` instead
+- Inserted stage names: `{origin}__{template}{index}__{templateStage}`. Join: `{origin}__{template}__join`
 
 #### Payload-driven fanout
 
-When lane count can only be decided at runtime (e.g., one lane per discovered ID), use `countFrom: "payload"` on the transition. The preceding agent emits a fenced JSON array after its marker; runtime uses its length as the lane count, and (if `substitutionsFrom: "payload"` is set) feeds each element's fields as per-lane substitutions:
+Use `countFrom: "payload"` when lane count is decided at runtime. The preceding agent emits a JSON array after its marker:
 
 ```
 [PLAN_READY]
 ---PAYLOAD_START---
-[{"id":"alpha","kind":"stimulus"}, {"id":"beta","kind":"monitor"}, {"id":"gamma","kind":"probe"}]
+[{"id":"alpha","kind":"stimulus"}, {"id":"beta","kind":"monitor"}]
 ---PAYLOAD_END---
 ```
 
-The template then uses `{{id}}` / `{{kind}}` in any substitution-eligible field (prompt / mounts / env / transitions / etc.) and each lane gets its own payload-object values. Length-1 payloads collapse to a single-copy stitch with a 1-copy join. Payload elements may NOT use reserved keys `index` / `insertId`.
-
-Stitch verifies after substitution that every `{{X}}` placeholder in a cloned stage was actually resolved — any leftover `{{X}}` (template typo, missing payload field, key-name mismatch) is a stitch-time error, so broken prompts never reach the agent.
+With `substitutionsFrom: "payload"`, each element's fields become per-lane substitutions (`{{id}}`, `{{kind}}`). Reserved keys `index`/`insertId` cannot appear in payload elements. Unresolved `{{X}}` placeholders after substitution are a stitch-time error.
 
 ---
 
 ## Mount Reference
 
-### Mount keys
-
 | Key | Container path | Notes |
 |-----|---------------|-------|
-| `project` | `/workspace/project/` | User's project root (parent of `__art__/`) |
-| `project:<subdir>` | `/workspace/project/<subdir>/` | Sub-path override relative to the project root (directories only) |
-| Any other key | `/workspace/<key>/` | Art-managed directory under `__art__/<key>/` |
-| `<key>:<subdir>` | `/workspace/<key>/<subdir>/` | Sub-path under an art-managed key — override mode when `<key>` is also mounted, direct mode when only the sub-path is listed |
+| `project` | `/workspace/project/` | User's project root |
+| `project:<subdir>` | `/workspace/project/<subdir>/` | Sub-path override (directories only) |
+| Any other key | `/workspace/<key>/` | Art-managed directory |
+| `<key>:<subdir>` | `/workspace/<key>/<subdir>/` | Sub-path under art-managed key |
 
-### Permission values
+Permissions: `"ro"` (read-only), `"rw"` (read-write), `null` (hidden). Default for `project` when omitted: `"ro"`.
 
-- `"ro"` — read-only
-- `"rw"` — read-write
-- `null` — no access (hidden)
+Reserved keys (cannot use): `ipc`, `global`, `extra`, `conversations`.
 
-### Host mounts
-
-Stages can mount host directories outside the project via `hostMounts`. Each mount is validated against `~/.config/aer-art/mount-allowlist.json`.
+Host mounts via `hostMounts` — validated against `~/.config/aer-art/mount-allowlist.json`:
 
 ```json
 "hostMounts": [
-  { "hostPath": "~/datasets/imagenet", "containerPath": "data", "readonly": true },
-  { "hostPath": "/opt/tools", "containerPath": "tools", "readonly": true }
+  { "hostPath": "~/datasets/imagenet", "containerPath": "data", "readonly": true }
 ]
 ```
 
-- Mounted at `/workspace/extra/{containerPath}` (defaults to basename of `hostPath`)
-- `readonly` defaults to `true` — only set `false` when the stage needs to write
-- Host path must be under an allowed root in the allowlist
-- Blocked patterns (`.ssh`, `.env`, `.aws`, etc.) are automatically rejected
-- If a `hostMounts` entry has the same container path as a parent group's `additionalMounts`, the stage-level mount takes precedence
+**Least privilege**: each stage gets minimum permissions. Read-only by default, `rw` only where the stage must write.
 
-### Rules
-
-- If `project` is `null`, all `project:*` overrides must also be `null` or omitted.
-- If `project` is omitted, it defaults to `"ro"`.
-- Reserved keys (cannot use as mount names, including as sub-path parents): `ipc`, `global`, `extra`, `conversations`.
-- `__art__/` is always shadowed (agents cannot see pipeline config).
-- **Sub-path rules**: relative paths only, no `..` or `.` segments, no leading `/`, directories only.
-- **Direct-mode sub-paths** (`<key>:<sub>` without the parent `<key>` being mounted) are useful for fan-out: each child mounts its own isolated sub-path while the parent remains visible only to stages that mount the top-level key.
-
-### Least privilege principle
-
-Each stage must have the **minimum permissions required** to do its job. A build stage that only modifies `src/` should not have `rw` on the entire project. A reviewer that only reads results should not have write access to code. Think about what each stage reads and writes, then set permissions accordingly. When in doubt, default to `ro` and only upgrade to `rw` for directories the stage must modify.
-
-### Common mount patterns
-
+Common patterns:
 ```jsonc
-// Git agent: read source, write only .git
-{ "project": "ro", "project:.git": "rw" }
-
-// Builder: modify project code
-{ "project": "rw", "plan": "ro", "src": "rw" }
-
-// Tester: read code, write results
-{ "project": "ro", "results": "rw", "cache": "rw" }
-
-// Reviewer: read everything, write metrics
-{ "project": "ro", "results": "rw" }
-
-// ML training: read external dataset, write model cache
-"mounts": { "project": "ro", "results": "rw" },
-"hostMounts": [
-  { "hostPath": "~/datasets/imagenet", "containerPath": "data", "readonly": true },
-  { "hostPath": "~/model-cache", "containerPath": "cache", "readonly": false }
-]
+{ "project": "ro", "project:.git": "rw" }          // Git: read source, write .git
+{ "project": "rw", "plan": "ro" }                   // Builder: modify project
+{ "project": "ro", "results": "rw" }                // Tester/reviewer: read code, write results
 ```
 
 ---
 
-## Built-in Template Reference
-
-These are common patterns. Customize mounts and transitions for each use case.
-
-| Template | Type | Purpose | Typical Mounts |
-|----------|------|---------|----------------|
-| `plan` | agent | Read context, write PLAN.md | plan:rw, metrics:ro, insights:ro |
-| `build` | agent | Implement code changes | project:rw, plan:ro, src:rw |
-| `test` | agent | Adversarial validation | project:ro, src:ro, tests:rw, outputs:rw |
-| `review` | agent | Examine results, write report | project:ro, metrics:rw, outputs:ro |
-| `history` | agent | Distill insights from reports | metrics:ro, insights:rw, memory:rw |
-| `deploy` | agent | Build and deploy | project:ro, src:ro, build:rw |
-| `git` | agent | Git operations (commit, branch, push) | project:ro, project:.git:rw |
-| `git-init` | command | Initialize git repo | project:rw, image: alpine/git |
-| `git-branch` | command | Create branch | project:rw, image: alpine/git |
-| `git-commit` | command | Stage & commit | project:rw, msg:ro, image: alpine/git |
-| `git-reset` | command | Hard reset HEAD~1 | project:rw, image: alpine/git |
-| `git-keep` | command | No-op passthrough | {}, image: alpine/git |
-| `git-push` | command | Push to remote | project:rw, image: alpine/git |
-| `git-pr` | command | Create GitHub PR | project:ro, image: alpine/git |
-| `run` | command | Generic shell command | project:ro |
-
----
-
-## Common Pipeline Patterns
+## Common Patterns
 
 ### Linear
 ```
 A → B → C → (end)
 ```
-Each stage's transition: `{ "marker": "STAGE_COMPLETE", "next": "B" }`, last has `"next": null`.
 
 ### Loop with exit condition
 ```
-build → test → review → [KEEP → build | FAIL → end]
+build → test → review → [KEEP → stitch(experiment) | DONE → end]
 ```
-The review stage has multiple markers routing to different next stages. At least one path must reach `null`.
-
-### Git sandwich
-```
-git-start → (work stages) → git-save → (more stages)
-```
-Wrap iteration loops with git agent stages. Use `project:ro` + `project:.git:rw`.
+Review stage has multiple markers. At least one path must reach `null`. Loops are expressed via template self-stitch (DAG — no cycles).
 
 ### Error handling
-No user-authored retry. Options when something fails:
-- Terminate: `{ "marker": "STAGE_ERROR", "next": null }` — pipeline ends.
-- Recover via stitch: `{ "marker": "STAGE_ERROR", "next": "recovery-tpl" }` — template runs a corrective flow.
-- Parse-miss loop: if the agent emits no recognizable marker, the runner automatically re-prompts with a hint. Unlimited — use markers carefully.
+- Terminate: `{ "marker": "STAGE_ERROR", "next": null }`
+- Recover via stitch: `{ "marker": "STAGE_ERROR", "template": "recovery", "next": null }`
 
-### GPU command stage
-```json
-{
-  "name": "train",
-  "prompt": "",
-  "command": "cd /workspace/project && python train.py > /workspace/results/log.txt 2>&1",
-  "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04",
-  "gpu": true,
-  "runAsRoot": true,
-  "mounts": { "project": "ro", "results": "rw", "cache": "rw" },
-  "transitions": [
-    { "marker": "STAGE_COMPLETE", "next": "review" },
-    { "marker": "STAGE_ERROR", "next": null }
-  ]
-}
-```
-
-### Privileged command stage (e.g. FPGA tools, USB devices)
-```json
-{
-  "name": "fpga-synth",
-  "prompt": "",
-  "command": "source /tools/Xilinx/Vivado/2023.2/settings64.sh && cd /workspace/project && make fpga 2>&1",
-  "image": "cva6-vivado",
-  "privileged": true,
-  "mounts": { "project": "ro", "build": "rw" },
-  "transitions": [
-    { "marker": "STAGE_COMPLETE", "next": "review" },
-    { "marker": "STAGE_ERROR", "next": null }
-  ]
-}
-```
-
-### Chatting stage (interactive user conversation)
-```json
-{
-  "name": "interview",
-  "prompt": "Discuss requirements with the user. Ask clarifying questions.",
-  "chat": true,
-  "mounts": { "project": "ro", "plan": "rw" },
-  "transitions": [
-    { "marker": "INTERVIEW_COMPLETE", "next": "implement", "prompt": "Requirements clarified" },
-    { "marker": "STAGE_ERROR", "next": null, "prompt": "Interview could not proceed — abort" }
-  ]
-}
-```
-
-### Parallel work via stitch (`count: N`)
-Parallel execution comes from stitching a template `N` times with a synthesized join. Author the parallel work as a template and reference it with `count`:
-
+### Parallel work
+Stitch a template `N` times with `count`:
 ```jsonc
-// PIPELINE.json
-{
-  "stages": [
-    {
-      "name": "plan",
-      "prompt": "Decide how many variants to probe (emit [GO]).",
-      "mounts": { "plan": "rw" },
-      "transitions": [
-        { "marker": "GO", "template": "probe-variant", "next": "summarize", "count": 4, "joinPolicy": "all_settled", "prompt": "Probe 4 variants in parallel, then summarize after all finish" }
-      ]
-    },
-    {
-      "name": "summarize",
-      "prompt": "Read all probe outputs and summarize them.",
-      "mounts": { "results": "rw" },
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": null, "prompt": "Summary is complete" }
-      ]
-    }
-  ],
-  "entryStage": "plan"
-}
+{ "marker": "GO", "template": "probe", "next": "summarize", "count": 4, "joinPolicy": "all_settled", "prompt": "Probe 4 variants" }
 ```
 
-```jsonc
-// __art__/templates/probe-variant.json
-{
-  "entry": "probe",
-  "stages": [
-    {
-      "name": "probe",
-      "prompt": "Probe variant {{index}} (insertId={{insertId}}). Write result to /workspace/results/{{insertId}}.txt",
-      "mounts": { "results": "rw" },
-      "transitions": [{ "marker": "DONE", "next": null }]
-    }
-  ]
-}
+### Command stages
+```json
+{ "name": "train", "prompt": "", "command": "python train.py", "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04", "gpu": true, "mounts": { "project": "ro", "results": "rw" }, "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review" }, { "marker": "STAGE_ERROR", "next": null }] }
 ```
-
-At runtime this expands to `plan → [plan__probe-variant0__probe, plan__probe-variant1__probe, plan__probe-variant2__probe, plan__probe-variant3__probe] → plan__probe-variant__join → summarize`.
-
----
-
-## Registry & Bundle Format
-
-Pipelines can be stored in a remote registry and managed with `art pull`/`art push`. A **bundle directory** is the local working copy of a registry-managed pipeline.
-
-### Bundle directory structure
-
-```
-my-pipeline/
-  pipeline.json              # Orchestration (stages, transitions, mounts) — prompts stripped
-  agents/
-    scope_analysis.md        # Agent prompt for the "scope_analysis" stage
-    implementation.md        # Agent prompt for the "implementation" stage
-    review.md                # ...
-  templates/
-    experiment.json          # Pipeline template (prompts stripped, same as pipeline.json)
-  dockerfiles/
-    custom-build.Dockerfile  # Custom Dockerfile definitions
-  .art-bundle.json           # Metadata: remote, pipeline name, tag, per-file hashes
-```
-
-**Key rule**: In a bundle directory, `pipeline.json` (and templates) contain **no inline prompts**. Agent prompts live exclusively in `agents/<stage-name>.md`. This separation lets you edit prompts in markdown files without touching the pipeline JSON.
-
-### How prompt extraction works
-
-- **`art pull`**: Downloads the full pipeline from the registry (where prompts are inline in stage objects). Extracts each non-command stage's `prompt` field into `agents/<stage-name>.md`. Writes `pipeline.json` with prompts stripped out.
-- **`art push`**: Reads `pipeline.json` + `agents/*.md`. For each stage, if `agents/<stage-name>.md` exists, its content is assembled back into the stage's `prompt` field before uploading. Only changed files are pushed; if any agent file changes, pipeline and templates are re-assembled and re-pushed automatically.
-- **`art diff`**: Compares local file hashes against `.art-bundle.json` to show what changed since last pull/push.
-
-### Registry workflow
-
-```bash
-# Configure a remote
-art remote add origin https://art.example.com
-art login --remote origin
-
-# Pull an existing pipeline
-art pull my-pipeline --remote origin --project myproject
-
-# Edit locally: modify agents/*.md, pipeline.json, templates, dockerfiles
-# Check what changed
-art diff my-pipeline
-
-# Push changes back
-art push my-pipeline --remote origin
-
-# Initial push (no prior pull)
-art push ./my-pipeline --name my-pipeline --remote origin --project myproject
-```
-
-### Local vs bundle format
-
-| | Local (`__art__/PIPELINE.json`) | Bundle (`<name>/pipeline.json`) |
-|---|---|---|
-| Prompts | Inline in stage objects | Separate `agents/*.md` files |
-| Templates | `__art__/templates/*.json` | `templates/*.json` |
-| Used by | `art run`, `art compose` | `art pull`, `art push`, `art diff` |
-| Metadata | None | `.art-bundle.json` (hashes, remote, tag) |
-
-When generating a pipeline, ask the user whether it's for **local execution** (`__art__/PIPELINE.json` with inline prompts) or **registry push** (bundle directory with separate agent files). Default to local unless the user mentions pull/push/registry/remote.
-
-### Generating for bundle format
-
-When generating a bundle directory instead of a single `PIPELINE.json`:
-
-1. Write `pipeline.json` with `prompt: ""` for all agent stages (or omit the field entirely)
-2. Write each agent stage's prompt to `agents/<stage-name>.md`
-3. Write templates to `templates/<name>.json` (also with prompts stripped)
-4. Write agent prompts from templates to `agents/<stage-name>.md` as well
-5. Create the directory structure: `mkdir -p <name>/agents <name>/templates`
 
 ---
 
 ## Prompt Writing Guidelines
 
-Agent stage prompts must be **self-contained** — the agent has no memory of previous stages.
+Agent prompts are written as **standalone markdown files** (`agents/<stage-name>.md`). Each must be self-contained — the agent has no memory of previous stages.
 
 1. **Reference concrete paths**: `/workspace/project/src/`, `/workspace/results/metrics.txt`
-2. **Specify markers**: "When done, emit [STAGE_COMPLETE]." If multiple exits: "Emit [KEEP] if improved, [RESET] if not."
-3. **State constraints**: what the agent must NOT do ("Do NOT run the code", "Only modify src/train.py")
-4. **Describe the goal**: what success looks like for this stage
-5. **Mention inputs**: what files/data the agent should read first
-6. **Keep it focused**: one clear responsibility per stage
-7. **Validation stages must be adversarial**: test/validation stages must try to break the implementation, not confirm it works. They should be independent of how the code was built — test against the specification, not the implementation. The tester should not see the plan or know the builder's approach.
-8. **When using external MCP tools, describe intent not protocol**: mention which capability the stage should use and when (e.g. "Use get_batch to load the next batch from the pipeline DB"). Do not restate raw HTTP/MCP protocol details in the prompt.
-9. **If a stage gets exactly one MCP tool, naming the tool is enough**. If multiple MCP tools or similar capabilities are present, mention both the server role and the tool intent to avoid ambiguity.
+2. **Specify markers**: "When done, emit [STAGE_COMPLETE]." Multiple exits: "Emit [KEEP] if improved, [RESET] if not."
+3. **State constraints**: what the agent must NOT do
+4. **Describe the goal**: what success looks like
+5. **Mention inputs**: what files/data to read first
+6. **One responsibility per stage**
+7. **Validation must be adversarial**: test against the spec, not the implementation
+8. **MCP tools**: describe intent, not protocol. Name the tool if only one; disambiguate if multiple
 
 ---
 
@@ -507,90 +246,58 @@ Agent stage prompts must be **self-contained** — the agent has no memory of pr
 
 When this skill is invoked:
 
-1. **Read the input.** If the user provides a file path (e.g., plan.md), read it. Otherwise use the conversation context.
+1. **Read the input.** File path (plan.md) or conversation context.
 
-2. **Determine output format.** Ask or infer whether the pipeline is for:
-   - **Local execution** → `__art__/PIPELINE.json` with inline prompts (default)
-   - **Registry bundle** → bundle directory with separate `agents/*.md` files (if the user mentions pull/push/registry/remote, or an existing bundle directory is present)
-
-3. **Identify stages.** List each discrete step. For each, determine:
+2. **Identify stages.** For each:
    - Name (kebab-case, descriptive)
    - Type (agent if judgment needed, command if deterministic)
    - What it reads and writes
 
-4. **Design mounts.** Apply least privilege. Use `project:` sub-path overrides where needed (e.g., `project:.git: rw` for git operations).
+3. **Design mounts.** Least privilege. Use `project:<sub>` overrides where needed.
 
-5. **Decide external MCP access.** If the workflow needs host-side tools or databases:
-   - Add `mcpAccess` only to the stages that need it
-   - Use registry refs from `~/.config/aer-art/mcp-registry.json`
-   - Prefer separate refs/endpoints per stage capability when strong isolation matters
-   - Do not put raw MCP server URLs or transport details in `PIPELINE.json`
+4. **Wire transitions.** Ensure:
+   - At least one path reaches `next: null`
+   - Every transition has `next` and `prompt`
+   - Loops expressed via template self-stitch
+   - `joinPolicy` set deliberately for parallel work
 
-6. **Wire transitions.** Map the flow between stages. Ensure:
-   - At least one path reaches `next: null` (pipeline termination)
-   - Loops have clear exit conditions
-   - Error handling where appropriate
-   - Every transition has an explicit `next`; if the transition also has `template`, `next` means "where control goes after the spawned template finishes"
-   - For template fanout, choose `joinPolicy` deliberately instead of relying on defaults when behavior matters
-   - **Every transition has a `prompt`** describing the condition under which the agent should emit that marker (e.g., "All tests pass and code is ready for review", "Recoverable error — retry with different approach"). Write these as conditions: "when X", "if Y", or declarative descriptions of the trigger scenario.
+5. **Choose images** for command stages (`alpine/git`, `node:22-slim`, `python:3.12-slim`, `nvidia/cuda:12.4.1-devel-ubuntu22.04`).
 
-7. **Choose images** for command stages. Common choices:
-   - `alpine/git` — git operations
-   - `node:22-slim` — Node.js tasks
-   - `python:3.12-slim` — Python tasks
-   - `nvidia/cuda:12.4.1-devel-ubuntu22.04` — GPU workloads
+6. **Write agent prompts** as markdown files following the guidelines above.
 
-8. **Write prompts** for agent stages following the guidelines above.
+7. **Run the checklist** (below).
 
-9. **Run the checklist** (below).
-
-10. **Write output files.**
-    - **Local format**: Write `__art__/PIPELINE.json` with 2-space indentation (inline prompts). If the file already exists, ask before overwriting.
-    - **Bundle format**: Create the bundle directory structure, write `pipeline.json` (prompts stripped), write each agent prompt to `agents/<stage-name>.md`, write templates to `templates/<name>.json` (prompts stripped), and write template agent prompts to `agents/` as well.
-
-11. **Create mount directories** under `__art__/` (local) or the bundle dir (bundle) for any art-managed keys referenced in mounts (e.g., `mkdir -p __art__/results`).
+8. **Write the bundle:**
+   - `mkdir -p <name>/agents <name>/templates`
+   - Write `<name>/pipeline.json` (2-space indent, **no inline prompts** for agent stages)
+   - Write each agent prompt to `<name>/agents/<stage-name>.md`
+   - Write templates to `<name>/templates/<name>.json` (prompts stripped)
+   - Write template agent prompts to `<name>/agents/<stage-name>.md` as well
+   - Create mount directories under the bundle dir for art-managed keys
 
 ---
 
 ## Pre-Output Checklist
 
-Before writing the JSON, verify ALL of the following:
-
 - [ ] Every stage has a unique `name`
-- [ ] Every transition has an explicit `next` (`string` or `null`)
-- [ ] Every transition's `next` (when a string) references an existing stage in the same scope (base pipeline for base transitions; same template for template-internal transitions)
+- [ ] Every transition has an explicit `next` (`string` or `null`) and a `prompt`
+- [ ] Every transition's `next` references an existing stage in the same scope, or is `null`
 - [ ] Every stage has at least one transition
-- [ ] Command stages have `prompt: ""`, an `image` field, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions
-- [ ] Command stages use `successMarker` if success depends on stdout content (otherwise exit code is used)
-- [ ] Agent stages have a non-empty `prompt` and no `command` field
-- [ ] `mcpAccess` appears only on agent stages
-- [ ] Every `mcpAccess` entry is a registry ref, not a raw tool name or URL
-- [ ] Stage-level MCP capabilities follow least privilege (only the stages that need them get them)
-- [ ] If Codex compatibility matters, stage-level MCP isolation is enforced by separate refs/endpoints rather than relying on tool subsets within one shared server
+- [ ] Command stages have `prompt: ""`, an `image`, and only `STAGE_COMPLETE`/`STAGE_ERROR` transitions
+- [ ] Agent stages have no inline `prompt` in JSON and no `command` field
+- [ ] Every agent stage has a corresponding `agents/<stage-name>.md` file with non-empty content
+- [ ] Template JSON files also have agent prompts stripped; their agent prompts are in `agents/` too
+- [ ] Agent `.md` filenames match stage `name` fields exactly
+- [ ] `mcpAccess` appears only on agent stages, values are registry refs
 - [ ] At least one path through the graph reaches `next: null`
-- [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`) — including as sub-path parents (`ipc:x` is invalid)
+- [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`)
 - [ ] `project:*` overrides are absent when `project` is `null`
-- [ ] Sub-path mounts (`<key>:<sub>`) use only relative directory paths (no `..`, no leading `/`)
+- [ ] Sub-path mounts use only relative directory paths (no `..`, no leading `/`)
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
-- [ ] `hostMounts` entries use absolute paths or `~` prefix and reference valid `containerPath` values
-- [ ] No transition uses legacy `retry` or `next_dynamic` (both removed)
-- [ ] No stage uses `kind: "dynamic-fanout"` or `fan_in: "dynamic"` (both removed)
-- [ ] No transition has an authored array `next` — multi-target arrays are only produced by parallel stitch
-- [ ] The base PIPELINE.json graph is acyclic (DAG). If you need a loop, express it as a template that stitches itself via `template:`
-- [ ] `count` is only used together with `template`, and is a positive integer
-- [ ] `countFrom` is only `"payload"`, only used with `template`, and not together with `count`
-- [ ] `substitutionsFrom` is only `"payload"` and only used with `countFrom: "payload"`
-- [ ] `joinPolicy` is used only with `template` and is one of `all_success`, `any_success`, or `all_settled`
-- [ ] `outcome` (if present) is only `success` or `error`
-- [ ] For payload-driven fanout, the preceding agent emits a fenced `---PAYLOAD_START--- ... ---PAYLOAD_END---` JSON array of flat objects; payload elements never use reserved keys `index` / `insertId`
-- [ ] Templates live at `__art__/templates/<name>.json` (local) or `templates/<name>.json` (bundle) with `{ entry?, stages }` shape; internal transitions are acyclic; `next` inside a template stays scope-local and `template` handoffs return to that transition's `next`
+- [ ] The pipeline graph is acyclic (DAG). Loops via template self-stitch only
+- [ ] `count`/`countFrom` only used with `template`; `substitutionsFrom` only with `countFrom`
+- [ ] `joinPolicy` only used with `template`
+- [ ] Templates at `templates/<name>.json` with `{ entry?, stages }` shape; internally acyclic
+- [ ] No `.art-bundle.json` generated (created by `art pull`/`art push`, not this skill)
 - [ ] The JSON is valid and parseable
-
-### Bundle format additional checks (when generating for registry)
-
-- [ ] `pipeline.json` has no inline `prompt` values for agent stages (prompts live in `agents/*.md`)
-- [ ] Every agent stage has a corresponding `agents/<stage-name>.md` file
-- [ ] Template JSON files also have prompts stripped; their agent prompts are in `agents/` too
-- [ ] Agent `.md` filenames match stage `name` fields exactly (kebab-case)
-- [ ] No `.art-bundle.json` is generated (it's created by `art pull`/`art push`, not by this skill)
