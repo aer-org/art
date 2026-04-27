@@ -35,6 +35,7 @@ import {
   resolveStageMcpServers,
   type ExternalMcpRegistry,
 } from './mcp-registry.js';
+import { resolveAgentRefs } from './agent-ref.js';
 import { resolveStagePrompt } from './prompt-store.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
 import {
@@ -322,22 +323,23 @@ export function pipelineTagFromPath(
 }
 
 export function savePipelineState(
-  groupDir: string,
+  stateDir: string,
   state: PipelineState,
   tag?: string,
   scopeId?: string,
 ): void {
-  const filepath = path.join(groupDir, pipelineStateFileName(tag, scopeId));
+  fs.mkdirSync(stateDir, { recursive: true });
+  const filepath = path.join(stateDir, pipelineStateFileName(tag, scopeId));
   const stateOut: PipelineState = { ...state, version: 3 };
   atomicWrite(filepath, JSON.stringify(stateOut, null, 2));
 }
 
 export function loadPipelineState(
-  groupDir: string,
+  stateDir: string,
   tag?: string,
   scopeId?: string,
 ): PipelineState | null {
-  const filepath = path.join(groupDir, pipelineStateFileName(tag, scopeId));
+  const filepath = path.join(stateDir, pipelineStateFileName(tag, scopeId));
   let raw: string;
   try {
     raw = fs.readFileSync(filepath, 'utf-8');
@@ -504,6 +506,8 @@ export class PipelineRunner {
     containerName: string,
   ) => void;
   private groupDir: string;
+  private stateDir: string;
+  private bundleDir: string;
   private runId: string;
   private pipelineTag: string | undefined;
   private scopeId: string | undefined;
@@ -528,6 +532,7 @@ export class PipelineRunner {
     runId?: string,
     pipelineTag?: string,
     scopeId?: string,
+    bundleDir?: string,
   ) {
     this.group = group;
     this.chatJid = chatJid;
@@ -536,6 +541,8 @@ export class PipelineRunner {
     this.notify = notify;
     this.onProcess = onProcess;
     this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
+    this.stateDir = path.join(this.groupDir, '.state');
+    this.bundleDir = bundleDir ?? this.groupDir;
     this.runId = runId ?? generateRunId();
     this.pipelineTag = pipelineTag;
     if (scopeId !== undefined) assertValidScopeId(scopeId);
@@ -610,7 +617,7 @@ export class PipelineRunner {
     >,
   ): void {
     savePipelineState(
-      this.groupDir,
+      this.stateDir,
       {
         ...state,
         activations: Object.fromEntries(this.activations),
@@ -1466,7 +1473,7 @@ PAYLOAD FORMATS:
     stagesByName: Map<string, PipelineStage>;
     pipelineLogStream: fs.WriteStream;
   } | null> {
-    const planPath = path.join(this.groupDir, 'plan', 'PLAN.md');
+    const planPath = path.join(this.bundleDir, 'plan', 'PLAN.md');
     const planContent = fs.existsSync(planPath)
       ? fs.readFileSync(planPath, 'utf-8')
       : '';
@@ -1492,7 +1499,7 @@ PAYLOAD FORMATS:
     }
 
     // Write initial manifest
-    writeRunManifest(this.groupDir, this.manifest);
+    writeRunManifest(this.stateDir, this.manifest);
     logger.info(
       {
         group: this.group.name,
@@ -1508,15 +1515,15 @@ PAYLOAD FORMATS:
 
     // Pipeline-wide log file
     const logsDir = this.scopeId
-      ? path.join(this.groupDir, 'logs', this.scopeId)
-      : path.join(this.groupDir, 'logs');
+      ? path.join(this.stateDir, 'logs', this.scopeId)
+      : path.join(this.stateDir, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const pipelineLogFile = path.join(logsDir, `pipeline-${ts}.log`);
     this.manifest.logFile = this.scopeId
       ? `logs/${this.scopeId}/pipeline-${ts}.log`
       : `logs/pipeline-${ts}.log`;
-    writeRunManifest(this.groupDir, this.manifest);
+    writeRunManifest(this.stateDir, this.manifest);
     const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
     pipelineLogStream.write(
       `=== Pipeline Log ===\n` +
@@ -1594,7 +1601,7 @@ PAYLOAD FORMATS:
         `Host transition for "${stageConfig.name}" not found in stage config`,
       );
     }
-    const template = loadPipelineTemplate(this.groupDir, templateName);
+    const template = loadPipelineTemplate(this.bundleDir, templateName);
     if (directive.mode === 'parallel') {
       const r = stitchParallel({
         config: this.config,
@@ -1692,7 +1699,7 @@ PAYLOAD FORMATS:
 
     // Resume from last completed stage if pipeline was interrupted
     const existingState = loadPipelineState(
-      this.groupDir,
+      this.stateDir,
       this.pipelineTag,
       this.scopeId,
     );
@@ -1948,7 +1955,7 @@ PAYLOAD FORMATS:
       status: isErrorTransition ? 'error' : 'success',
       duration: Date.now() - stageStartTime,
     });
-    writeRunManifest(this.groupDir, this.manifest);
+    writeRunManifest(this.stateDir, this.manifest);
     this.saveRunnerState({
       currentStage: targetName,
       completedStages,
@@ -2018,7 +2025,7 @@ PAYLOAD FORMATS:
 
     this.manifest.endTime = new Date().toISOString();
     this.manifest.status = lastResult;
-    writeRunManifest(this.groupDir, this.manifest);
+    writeRunManifest(this.stateDir, this.manifest);
 
     pipelineLogStream.write(
       `\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`,
@@ -2070,7 +2077,7 @@ PAYLOAD FORMATS:
       status: stageOutcome,
       duration: Date.now() - stageStartTime,
     });
-    writeRunManifest(this.groupDir, this.manifest);
+    writeRunManifest(this.stateDir, this.manifest);
     this.saveRunnerState({
       currentStage: nextStages,
       completedStages,
@@ -2545,6 +2552,8 @@ PAYLOAD FORMATS:
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
  *   groupFolder/groupDir are ignored and the file is loaded directly.
+ * Bundle-relative assets (agents/, templates/) resolve from the directory
+ * containing the pipeline file (bundleDir).
  * Returns null if the file doesn't exist.
  */
 export function loadPipelineConfig(
@@ -2557,6 +2566,8 @@ export function loadPipelineConfig(
     pipelinePath = path.join(dir, 'PIPELINE.json');
   }
 
+  const bundleDir = path.dirname(pipelinePath);
+
   if (!fs.existsSync(pipelinePath)) {
     return null;
   }
@@ -2565,6 +2576,11 @@ export function loadPipelineConfig(
     const raw = fs.readFileSync(pipelinePath, 'utf-8');
     const config: PipelineConfig = JSON.parse(raw);
     let mcpRegistry: ExternalMcpRegistry | undefined;
+
+    // Resolve agent refs (agents/*.md) relative to bundle dir
+    if (Array.isArray(config.stages)) {
+      resolveAgentRefs(config.stages, bundleDir);
+    }
 
     // Basic validation
     if (!Array.isArray(config.stages) || config.stages.length === 0) {

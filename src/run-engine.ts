@@ -50,7 +50,8 @@ export async function runPipeline(opts: {
 
   // Create group folder
   const groupDir = resolveGroupFolderPath(group.folder);
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  const stateDir = path.join(groupDir, '.state');
+  fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
 
   const provider = resolveProvider();
   let proxyServer: import('http').Server | null = null;
@@ -222,6 +223,7 @@ export async function runPipeline(opts: {
 
   logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');
 
+  const bundleDir = pipeline ? path.dirname(path.resolve(pipeline)) : artDir;
   const runner = new PipelineRunner(
     group,
     chatJid,
@@ -231,6 +233,8 @@ export async function runPipeline(opts: {
     undefined,
     runId,
     pipelineTagFromPath(pipeline),
+    undefined,
+    bundleDir,
   );
   activeRunners.push(runner);
   const result = await runner.run();

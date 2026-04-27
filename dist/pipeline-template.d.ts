@@ -5,12 +5,12 @@ export interface PipelineTemplate {
     stages: PipelineStage[];
 }
 /**
- * Resolve the absolute path for a template given a groupDir (= __art__ dir).
+ * Resolve the absolute path for a template given a bundleDir.
  * Enforces containment — the resolved path must remain inside the templates
  * dir, rejecting traversal (`..`, absolute names).
  */
-export declare function resolveTemplatePath(groupDir: string, name: string): string;
-export declare function loadPipelineTemplate(groupDir: string, name: string): PipelineTemplate;
+export declare function resolveTemplatePath(bundleDir: string, name: string): string;
+export declare function loadPipelineTemplate(bundleDir: string, name: string): PipelineTemplate;
 /**
  * Validate a parsed template object and return a normalized PipelineTemplate.
  * Throws on any schema violation. Pure function — no I/O.

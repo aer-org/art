@@ -5,7 +5,7 @@
  * into the running pipeline when a transition targets a template name. See
  * PLAN_spawn_only_transitions.md for the full model.
  *
- * File layout: <groupDir>/templates/<name>.json
+ * File layout: <bundleDir>/templates/<name>.json
  * File shape:  { entry?: string, stages: PipelineStage[] }
  *
  * Semantics:
@@ -19,6 +19,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { resolveAgentRefs } from './agent-ref.js';
 import type { PipelineStage, PipelineTransition } from './pipeline-runner.js';
 
 export interface PipelineTemplate {
@@ -31,17 +32,17 @@ const TEMPLATE_DIR_NAME = 'templates';
 const TEMPLATE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
- * Resolve the absolute path for a template given a groupDir (= __art__ dir).
+ * Resolve the absolute path for a template given a bundleDir.
  * Enforces containment — the resolved path must remain inside the templates
  * dir, rejecting traversal (`..`, absolute names).
  */
-export function resolveTemplatePath(groupDir: string, name: string): string {
+export function resolveTemplatePath(bundleDir: string, name: string): string {
   if (!TEMPLATE_NAME_PATTERN.test(name)) {
     throw new Error(
       `Template name "${name}" must match ${TEMPLATE_NAME_PATTERN}`,
     );
   }
-  const dir = path.join(groupDir, TEMPLATE_DIR_NAME);
+  const dir = path.join(bundleDir, TEMPLATE_DIR_NAME);
   const resolved = path.resolve(dir, `${name}.json`);
   const rel = path.relative(dir, resolved);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
@@ -51,10 +52,10 @@ export function resolveTemplatePath(groupDir: string, name: string): string {
 }
 
 export function loadPipelineTemplate(
-  groupDir: string,
+  bundleDir: string,
   name: string,
 ): PipelineTemplate {
-  const filepath = resolveTemplatePath(groupDir, name);
+  const filepath = resolveTemplatePath(bundleDir, name);
   if (!fs.existsSync(filepath)) {
     throw new Error(`Template "${name}" not found: ${filepath}`);
   }
@@ -75,6 +76,11 @@ export function loadPipelineTemplate(
     throw new Error(
       `Template "${name}": invalid JSON — ${(err as Error).message}`,
     );
+  }
+
+  const obj = parsed as { stages?: PipelineStage[] };
+  if (Array.isArray(obj.stages)) {
+    resolveAgentRefs(obj.stages, bundleDir);
   }
 
   return validatePipelineTemplate(parsed, name);
