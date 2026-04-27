@@ -134,6 +134,8 @@ export declare class PipelineRunner {
     private activeHandles;
     private stageSessionIds;
     private joinSettlements;
+    private activations;
+    private completions;
     private baseStageCount;
     constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string, scopeId?: string);
     /**
@@ -209,6 +211,7 @@ export declare class PipelineRunner {
     private static fanInReady;
     /**
      * Determine entry stage and resume from previous state if applicable.
+     * Restores activations/completions/joinSettlements into instance fields.
      */
     private resolveEntryStage;
     /**

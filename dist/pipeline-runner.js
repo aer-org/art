@@ -21,7 +21,7 @@ import { generateRunId, writeRunManifest, } from './run-manifest.js';
 import { formatStageMcpAccessSummary, loadMcpRegistry, resolveStageMcpServers, } from './mcp-registry.js';
 import { resolveStagePrompt } from './prompt-store.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
-import { assertConfigAcyclic, stitchParallel, stitchSingle, RESERVED_SUBSTITUTION_KEYS, } from './stitch.js';
+import { assertConfigAcyclic, assertNoNameCollision, stitchParallel, stitchSingle, RESERVED_SUBSTITUTION_KEYS, } from './stitch.js';
 function resolveProvider() {
     return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
 }
@@ -331,6 +331,8 @@ export class PipelineRunner {
     activeHandles = new Map();
     stageSessionIds = new Map();
     joinSettlements = new Map();
+    activations = new Map();
+    completions = new Map();
     baseStageCount = 0;
     constructor(group, chatJid, pipelineConfig, notify, onProcess, groupDir, runId, pipelineTag, scopeId) {
         this.group = group;
@@ -395,14 +397,23 @@ export class PipelineRunner {
     saveRunnerState(state) {
         savePipelineState(this.groupDir, {
             ...state,
+            activations: Object.fromEntries(this.activations),
+            completions: Object.fromEntries(this.completions),
             insertedStages: this.config.stages.slice(this.baseStageCount),
             joinSettlements: this.serializeJoinSettlements(),
         }, this.pipelineTag, this.scopeId);
     }
     copyIndexForJoinArrival(joinStage, finishedStage) {
-        const prefixes = joinStage.join?.copyPrefixes ?? [];
+        const join = joinStage.join;
+        if (!join)
+            return null;
+        const prefixes = join.copyPrefixes ?? [];
         const index = prefixes.findIndex((prefix) => finishedStage.startsWith(prefix));
-        return index >= 0 ? index : null;
+        if (index >= 0)
+            return index;
+        if (join.expectedCopies === 1)
+            return 0;
+        return null;
     }
     recordJoinSettlement(joinStageName, finishedStage, outcome) {
         if (!outcome)
@@ -1170,6 +1181,7 @@ PAYLOAD FORMATS:
     }
     /**
      * Determine entry stage and resume from previous state if applicable.
+     * Restores activations/completions/joinSettlements into instance fields.
      */
     async resolveEntryStage(stagesByName) {
         // Determine entry stage: explicit > heuristic (prefer nodes with outgoing edges) > stages[0]
@@ -1224,15 +1236,22 @@ PAYLOAD FORMATS:
                     .filter((s) => stagesByName.has(s));
             }
             else {
-                initialStages = [];
+                // Pipeline finished with error (currentStage: null). Find the last
+                // stage that errored and retry from it rather than restarting the
+                // whole pipeline.
+                const completedSet = new Set(completedStages);
+                const unfinished = this.config.stages
+                    .filter((s) => !completedSet.has(s.name))
+                    .map((s) => s.name);
+                initialStages = unfinished.length > 0 ? [unfinished[0]] : [];
             }
             if (initialStages.length === 0) {
                 initialStages = [resolveEntry()];
             }
             await this.notifyBanner(`🔄 Resuming from ${initialStages.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`);
             // Restore activation/completion counts from persisted state
-            const activations = new Map(Object.entries(existingState.activations ?? {}));
-            const completions = new Map(Object.entries(existingState.completions ?? {}));
+            this.activations = new Map(Object.entries(existingState.activations ?? {}));
+            this.completions = new Map(Object.entries(existingState.completions ?? {}));
             this.restoreJoinSettlements(existingState.joinSettlements);
             // Restore dynamically-inserted stages (from earlier stitch operations)
             if (existingState.insertedStages &&
@@ -1241,16 +1260,17 @@ PAYLOAD FORMATS:
                     ...this.config,
                     stages: [...this.config.stages, ...existingState.insertedStages],
                 };
+                assertNoNameCollision(this.config);
                 // baseStageCount already reflects the pre-resume count; don't update
             }
-            return { initialStages, completedStages, activations, completions };
+            return { initialStages, completedStages };
         }
         this.restoreJoinSettlements(undefined);
+        this.activations = new Map();
+        this.completions = new Map();
         return {
             initialStages: [resolveEntry()],
             completedStages: [],
-            activations: new Map(),
-            completions: new Map(),
         };
     }
     /**
@@ -1372,8 +1392,6 @@ PAYLOAD FORMATS:
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: 'running',
-            activations: undefined,
-            completions: undefined,
         });
         // Close the container first, then retrieve session ID
         await this.closeAndWait(handle);
@@ -1426,8 +1444,6 @@ PAYLOAD FORMATS:
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: lastResult,
-            activations: undefined,
-            completions: undefined,
         });
         this.manifest.endTime = new Date().toISOString();
         this.manifest.status = lastResult;
@@ -1467,8 +1483,6 @@ PAYLOAD FORMATS:
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: 'running',
-            activations: undefined,
-            completions: undefined,
         });
         return {
             nextStages,
@@ -1632,18 +1646,16 @@ PAYLOAD FORMATS:
         if (!init)
             return 'error';
         const { planContent, stagesByName, pipelineLogStream } = init;
-        const { initialStages, completedStages, activations, completions } = await this.resolveEntryStage(stagesByName);
+        const { initialStages, completedStages } = await this.resolveEntryStage(stagesByName);
         // Track activations for initial stages
         for (const name of initialStages) {
-            activations.set(name, (activations.get(name) ?? 0) + 1);
+            this.activations.set(name, (this.activations.get(name) ?? 0) + 1);
         }
         this.saveRunnerState({
             currentStage: initialStages.length === 1 ? initialStages[0] : initialStages,
             completedStages,
             lastUpdated: new Date().toISOString(),
             status: 'running',
-            activations: Object.fromEntries(activations),
-            completions: Object.fromEntries(completions),
         });
         // `predecessors` is recomputed per-call below — stitch may add stages at
         // runtime, so a snapshot taken at run-start would miss join-adjacent
@@ -1718,9 +1730,14 @@ PAYLOAD FORMATS:
             }
             launchStage(entry);
         };
-        // Launch initial stages
+        // Launch initial stages (gate fan-in/join stages that aren't ready yet)
         for (const entry of pendingStages) {
-            tryLaunch(entry);
+            if (isStageReady(entry.name)) {
+                tryLaunch(entry);
+            }
+            else {
+                waitingForFanIn.add(entry.name);
+            }
         }
         pendingStages = [];
         while (running.size > 0 ||
@@ -1753,8 +1770,6 @@ PAYLOAD FORMATS:
                 completedStages,
                 lastUpdated: new Date().toISOString(),
                 status: 'running',
-                activations: Object.fromEntries(activations),
-                completions: Object.fromEntries(completions),
             });
             // Wait for at least one stage to complete
             await waitForResult();
@@ -1764,7 +1779,7 @@ PAYLOAD FORMATS:
                 if (result === 'error')
                     lastResult = 'error';
                 // Track completion for dynamic fan-in
-                completions.set(finishedStage, (completions.get(finishedStage) ?? 0) + 1);
+                this.completions.set(finishedStage, (this.completions.get(finishedStage) ?? 0) + 1);
                 const targets = PipelineRunner.nextTargets(nextStages);
                 for (const target of targets) {
                     const targetConfig = stagesByName.get(target);
@@ -1778,7 +1793,7 @@ PAYLOAD FORMATS:
                         continue;
                     }
                     // Track activation for dynamic fan-in (only when actually queued, not deduped)
-                    activations.set(target, (activations.get(target) ?? 0) + 1);
+                    this.activations.set(target, (this.activations.get(target) ?? 0) + 1);
                     if (isStageReady(target)) {
                         tryLaunch({
                             name: target,
