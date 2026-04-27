@@ -82,14 +82,16 @@ export interface PipelineContentMinimal {
   [key: string]: unknown;
 }
 
-export function extractAgentPrompts(
-  pipelineContent: PipelineContentMinimal,
-): { stripped: PipelineContentMinimal; agents: Map<string, string> } {
+export function extractAgentPrompts(pipelineContent: PipelineContentMinimal): {
+  stripped: PipelineContentMinimal;
+  agents: Map<string, string>;
+} {
   const agents = new Map<string, string>();
   if (!pipelineContent.stages) return { stripped: pipelineContent, agents };
 
   const strippedStages = pipelineContent.stages.map((stage) => {
-    const isCommand = stage.kind === 'command' || typeof stage.command === 'string';
+    const isCommand =
+      stage.kind === 'command' || typeof stage.command === 'string';
     if (isCommand || !stage.prompt || stage.agent) return stage;
 
     agents.set(stage.name, stage.prompt);

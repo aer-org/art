@@ -36,7 +36,9 @@ describe('remote CLI', () => {
   it('saveRemotes writes JSON', async () => {
     const { saveRemotes } = await loadModule();
     const config = {
-      remotes: { origin: { url: 'https://art.example.com', default: true as const } },
+      remotes: {
+        origin: { url: 'https://art.example.com', default: true as const },
+      },
     };
     saveRemotes(config);
     expect(fs.mkdirSync).toHaveBeenCalled();
