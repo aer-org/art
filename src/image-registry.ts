@@ -7,6 +7,7 @@ export interface RegisteredImage {
   image: string; // Docker image name
   hasAgent: boolean; // Agent stack included
   baseImage?: string; // Original base (for rebuild)
+  contentHash?: string; // sha256 hash of the Dockerfile content
 }
 
 export type ImageRegistry = Record<string, RegisteredImage>;

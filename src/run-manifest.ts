@@ -30,17 +30,17 @@ export interface RunManifest {
 
 // --- Helpers ---
 
-function runsDir(groupDir: string): string {
-  return path.join(groupDir, 'runs');
+function runsDir(stateDir: string): string {
+  return path.join(stateDir, 'runs');
 }
 
 // --- Run Manifest ---
 
 export function writeRunManifest(
-  groupDir: string,
+  stateDir: string,
   manifest: RunManifest,
 ): void {
-  const dir = runsDir(groupDir);
+  const dir = runsDir(stateDir);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `${manifest.runId}.json`);
   const tmpPath = `${filePath}.tmp`;
@@ -49,12 +49,12 @@ export function writeRunManifest(
 }
 
 export function readRunManifest(
-  groupDir: string,
+  stateDir: string,
   runId: string,
 ): RunManifest | null {
   try {
     const raw = fs.readFileSync(
-      path.join(runsDir(groupDir), `${runId}.json`),
+      path.join(runsDir(stateDir), `${runId}.json`),
       'utf-8',
     );
     return JSON.parse(raw) as RunManifest;
@@ -63,8 +63,8 @@ export function readRunManifest(
   }
 }
 
-export function listRunManifests(groupDir: string): RunManifest[] {
-  const dir = runsDir(groupDir);
+export function listRunManifests(stateDir: string): RunManifest[] {
+  const dir = runsDir(stateDir);
   if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir)

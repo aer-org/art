@@ -91,8 +91,8 @@ export declare function assertValidScopeId(scopeId: string): void;
  *      undefined (default PIPELINE.json) → undefined
  */
 export declare function pipelineTagFromPath(pipelinePath: string | undefined): string | undefined;
-export declare function savePipelineState(groupDir: string, state: PipelineState, tag?: string, scopeId?: string): void;
-export declare function loadPipelineState(groupDir: string, tag?: string, scopeId?: string): PipelineState | null;
+export declare function savePipelineState(stateDir: string, state: PipelineState, tag?: string, scopeId?: string): void;
+export declare function loadPipelineState(stateDir: string, tag?: string, scopeId?: string): PipelineState | null;
 interface StageMarkerResult {
     matched: PipelineTransition | null;
     payload: string | null;
@@ -126,6 +126,8 @@ export declare class PipelineRunner {
     private notify;
     private onProcess;
     private groupDir;
+    private stateDir;
+    private bundleDir;
     private runId;
     private pipelineTag;
     private scopeId;
@@ -137,7 +139,7 @@ export declare class PipelineRunner {
     private activations;
     private completions;
     private baseStageCount;
-    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string, scopeId?: string);
+    constructor(group: RegisteredGroup, chatJid: string, pipelineConfig: PipelineConfig, notify: (text: string) => Promise<void>, onProcess: (proc: import('child_process').ChildProcess, containerName: string) => void, groupDir?: string, runId?: string, pipelineTag?: string, scopeId?: string, bundleDir?: string);
     /**
      * Compute the virtual sub-group folder for a stage container.
      * When scopeId is set, embed it so sibling runners that spawn the same
@@ -240,6 +242,8 @@ export declare class PipelineRunner {
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
  *   groupFolder/groupDir are ignored and the file is loaded directly.
+ * Bundle-relative assets (agents/, templates/) resolve from the directory
+ * containing the pipeline file (bundleDir).
  * Returns null if the file doesn't exist.
  */
 export declare function loadPipelineConfig(groupFolder: string, groupDir?: string, pipelinePath?: string): PipelineConfig | null;

@@ -2,6 +2,7 @@ export interface RegisteredImage {
     image: string;
     hasAgent: boolean;
     baseImage?: string;
+    contentHash?: string;
 }
 export type ImageRegistry = Record<string, RegisteredImage>;
 export declare function loadImageRegistry(): ImageRegistry;

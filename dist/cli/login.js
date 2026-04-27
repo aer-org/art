@@ -1,57 +1,194 @@
 import readline from 'readline';
-import { RegistryClient, RegistryError, credentialsPath, loadCredentials, saveCredentials, } from '../registry-client.js';
-const DEFAULT_SERVER = 'http://localhost:8787';
-async function readTokenFromStdinOrPrompt() {
-    if (!process.stdin.isTTY) {
-        const chunks = [];
-        for await (const chunk of process.stdin)
-            chunks.push(chunk);
-        return Buffer.concat(chunks).toString('utf8').trim();
-    }
+import { RegistryApi } from '../registry-api.js';
+import { RegistryError, saveCredentials } from '../registry-client.js';
+import { resolveRemote, saveRemoteCredentials, loadRemotes, getDefaultRemote, } from '../remote-config.js';
+const DEFAULT_SERVER = 'https://aerclaw.com';
+function promptText(question) {
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
     });
-    const answer = await new Promise((resolve) => rl.question('Token: ', resolve));
-    rl.close();
-    return answer.trim();
+    return new Promise((resolve) => {
+        rl.question(question, (answer) => {
+            rl.close();
+            resolve(answer.trim());
+        });
+    });
 }
-async function promptLine(prompt, fallback) {
-    if (!process.stdin.isTTY)
-        return fallback;
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
+function promptPassword(question) {
+    if (!process.stdin.isTTY) {
+        return promptText(question);
+    }
+    return new Promise((resolve) => {
+        process.stdout.write(question);
+        const stdin = process.stdin;
+        const wasRaw = stdin.isRaw;
+        stdin.setRawMode(true);
+        stdin.resume();
+        let buf = '';
+        const onData = (ch) => {
+            const code = ch[0];
+            if (code === 13 || code === 10) {
+                // Enter
+                stdin.setRawMode(wasRaw);
+                stdin.removeListener('data', onData);
+                stdin.pause();
+                process.stdout.write('\n');
+                resolve(buf);
+            }
+            else if (code === 3) {
+                // Ctrl-C
+                stdin.setRawMode(wasRaw);
+                stdin.pause();
+                process.exit(130);
+            }
+            else if (code === 127 || code === 8) {
+                // Backspace
+                if (buf.length > 0) {
+                    buf = buf.slice(0, -1);
+                    process.stdout.write('\b \b');
+                }
+            }
+            else if (code >= 32) {
+                // Printable
+                buf += ch.toString('utf8');
+                process.stdout.write('*');
+            }
+        };
+        stdin.on('data', onData);
     });
-    const answer = await new Promise((resolve) => rl.question(`${prompt} [${fallback}]: `, resolve));
-    rl.close();
-    return answer.trim() || fallback;
 }
 export async function login(args) {
-    const serverIdx = args.indexOf('--server');
-    const serverFlag = serverIdx !== -1 ? args[serverIdx + 1] : undefined;
-    const envToken = process.env.ART_TOKEN;
-    const existing = loadCredentials();
-    const server = serverFlag ??
-        (await promptLine('Server URL', existing?.server ?? DEFAULT_SERVER));
-    const token = envToken ?? (await readTokenFromStdinOrPrompt());
-    if (!token) {
-        console.error('No token provided.');
+    const remoteIdx = args.indexOf('--remote');
+    const remoteFlag = remoteIdx !== -1 ? args[remoteIdx + 1] : undefined;
+    const tokenMode = args.includes('--token');
+    const remotes = loadRemotes();
+    const hasRemotes = Object.keys(remotes.remotes).length > 0;
+    let serverUrl;
+    let remoteName;
+    if (hasRemotes) {
+        const resolved = resolveRemote(remoteFlag);
+        remoteName = resolved.name;
+        serverUrl = resolved.remote.url;
+    }
+    else {
+        const def = getDefaultRemote();
+        serverUrl = def?.remote.url ?? DEFAULT_SERVER;
+    }
+    if (tokenMode) {
+        const token = process.env.ART_TOKEN ?? (await promptText('Token: '));
+        if (!token) {
+            console.error('No token provided.');
+            process.exit(1);
+        }
+        await saveTokenCredentials(serverUrl, token, remoteName);
+        return;
+    }
+    const username = await promptText('Username: ');
+    if (!username) {
+        console.error('No username provided.');
         process.exit(1);
     }
-    const creds = {
-        server,
-        token,
-        scope: 'read',
-        saved_at: new Date().toISOString(),
-    };
-    const client = new RegistryClient(creds);
+    const password = await promptPassword('Password: ');
+    if (!password) {
+        console.error('No password provided.');
+        process.exit(1);
+    }
     try {
-        const info = await client.whoami();
-        creds.scope = info.scope;
-        saveCredentials(creds);
-        console.log(`Logged in to ${server} (scope=${info.scope}, label=${info.label ?? 'none'})`);
-        console.log(`Credentials saved to ${credentialsPath()}`);
+        const result = await RegistryApi.login(serverUrl, username, password);
+        const expiresDate = new Date(result.expires_at).toLocaleDateString();
+        saveCredentials({
+            server: serverUrl,
+            token: result.token,
+            scope: 'write',
+            saved_at: new Date().toISOString(),
+        });
+        if (remoteName) {
+            saveRemoteCredentials(remoteName, {
+                token: result.token,
+                scope: 'write',
+                username,
+                saved_at: new Date().toISOString(),
+            });
+            console.log(`✓ Logged in as ${username} to ${remoteName} (${serverUrl}) — expires ${expiresDate}`);
+        }
+        else {
+            console.log(`✓ Logged in as ${username} (${serverUrl}) — expires ${expiresDate}`);
+        }
+    }
+    catch (e) {
+        if (e instanceof RegistryError) {
+            console.error(`Login failed: ${e.message}`);
+        }
+        else {
+            console.error(`Login failed: ${e.message}`);
+        }
+        process.exit(1);
+    }
+}
+export async function signup(args) {
+    const remoteIdx = args.indexOf('--remote');
+    const remoteFlag = remoteIdx !== -1 ? args[remoteIdx + 1] : undefined;
+    const remotes = loadRemotes();
+    const hasRemotes = Object.keys(remotes.remotes).length > 0;
+    let serverUrl;
+    if (hasRemotes) {
+        const resolved = resolveRemote(remoteFlag);
+        serverUrl = resolved.remote.url;
+    }
+    else {
+        const def = getDefaultRemote();
+        serverUrl = def?.remote.url ?? DEFAULT_SERVER;
+    }
+    const username = await promptText('Username: ');
+    if (!username) {
+        console.error('No username provided.');
+        process.exit(1);
+    }
+    const password = await promptPassword('Password (min 8 chars): ');
+    if (!password) {
+        console.error('No password provided.');
+        process.exit(1);
+    }
+    const confirm = await promptPassword('Confirm password: ');
+    if (password !== confirm) {
+        console.error('Passwords do not match.');
+        process.exit(1);
+    }
+    try {
+        const result = await RegistryApi.signup(serverUrl, username, password);
+        console.log(`✓ Account created: ${result.username}`);
+        console.log(`  Run 'art login' to sign in.`);
+    }
+    catch (e) {
+        if (e instanceof RegistryError) {
+            console.error(`Signup failed: ${e.message}`);
+        }
+        else {
+            console.error(`Signup failed: ${e.message}`);
+        }
+        process.exit(1);
+    }
+}
+async function saveTokenCredentials(serverUrl, token, remoteName) {
+    const api = new RegistryApi(serverUrl, token);
+    try {
+        const info = await api.whoami();
+        saveCredentials({
+            server: serverUrl,
+            token,
+            scope: info.scope,
+            saved_at: new Date().toISOString(),
+        });
+        if (remoteName) {
+            saveRemoteCredentials(remoteName, {
+                token,
+                scope: info.scope,
+                username: info.username,
+                saved_at: new Date().toISOString(),
+            });
+        }
+        console.log(`✓ Logged in with token — scope=${info.scope}, label=${info.label ?? 'none'}`);
     }
     catch (e) {
         if (e instanceof RegistryError) {

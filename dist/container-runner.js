@@ -415,7 +415,8 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
         isMain: input.isMain,
         provider,
     }, 'Spawning container agent');
-    const logsDir = path.join(groupDir, 'logs');
+    const stateDir = path.join(groupDir, '.state');
+    const logsDir = path.join(stateDir, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
     return new Promise((resolve) => {
         const rt = getRuntime();

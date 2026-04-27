@@ -121,7 +121,7 @@ describe.skipIf(!hasDocker)('Command-mode pipeline', () => {
     }
     expect(result.code).toBe(0);
 
-    const state = readPipelineState(path.join(fixtureDir, '__art__'));
+    const state = readPipelineState(path.join(fixtureDir, '__art__', '.state'));
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
   });
@@ -145,7 +145,7 @@ describe.skipIf(!hasDocker)('Multi-stage command pipeline', () => {
 
     expect(result.code).toBe(0);
 
-    const state = readPipelineState(path.join(fixtureDir, '__art__'));
+    const state = readPipelineState(path.join(fixtureDir, '__art__', '.state'));
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
 
@@ -180,7 +180,7 @@ describe.skipIf(!hasDocker)('Fan-out/fan-in command pipeline', () => {
     }
     expect(result.code).toBe(0);
 
-    const state = readPipelineState(path.join(fixtureDir, '__art__'));
+    const state = readPipelineState(path.join(fixtureDir, '__art__', '.state'));
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
 
@@ -225,7 +225,7 @@ describe.skipIf(!hasDocker || !hasApiKey)('Agent-mode pipeline @api', () => {
 
     expect(result.code).toBe(0);
 
-    const state = readPipelineState(path.join(fixtureDir, '__art__'));
+    const state = readPipelineState(path.join(fixtureDir, '__art__', '.state'));
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
   });
@@ -283,7 +283,7 @@ describe.skipIf(!hasDocker || !hasApiKey)('Init + Run full flow @api', () => {
     const runResult = runArt(['run', '.'], fixtureDir, undefined, 600_000);
     expect(runResult.code).toBe(0);
 
-    const state = readPipelineState(path.join(fixtureDir, '__art__'));
+    const state = readPipelineState(path.join(fixtureDir, '__art__', '.state'));
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
   });

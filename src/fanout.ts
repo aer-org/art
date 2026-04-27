@@ -64,25 +64,25 @@ export function parseFanoutPayload(
 }
 
 /**
- * Load a child pipeline template from disk, relative to groupDir.
+ * Load a child pipeline template from disk, relative to bundleDir.
  * Returns a freshly parsed PipelineConfig per call (no caching) so substitutions
  * of different inputs don't share object refs.
  */
 export function loadFanoutTemplate(
-  groupDir: string,
+  bundleDir: string,
   templatePath: string,
   stageName: string,
 ): PipelineConfig {
   const resolved = path.isAbsolute(templatePath)
     ? templatePath
-    : path.resolve(groupDir, templatePath);
+    : path.resolve(bundleDir, templatePath);
 
-  // Containment check: resolved path must be inside groupDir for non-absolute refs.
+  // Containment check: resolved path must be inside bundleDir for non-absolute refs.
   if (!path.isAbsolute(templatePath)) {
-    const rel = path.relative(groupDir, resolved);
+    const rel = path.relative(bundleDir, resolved);
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
       throw new Error(
-        `dynamic-fanout "${stageName}": template path escapes groupDir: ${templatePath}`,
+        `dynamic-fanout "${stageName}": template path escapes bundleDir: ${templatePath}`,
       );
     }
   }

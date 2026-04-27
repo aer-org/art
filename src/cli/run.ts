@@ -104,9 +104,11 @@ export async function run(
     process.exit(1);
   }
 
+  const stateDir = path.join(artDir, '.state');
+
   // Set TUI env vars before any engine import so logger routes to file
   process.env.ART_TUI_MODE = 'true';
-  process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
+  process.env.ART_TUI_LOG_DIR = path.join(stateDir, 'logs');
 
   const { generateRunId } = await import('../run-manifest.js');
 
@@ -136,30 +138,140 @@ export async function run(
 
   // Pre-pull missing pipeline stage images
   const { loadPipelineConfig } = await import('../pipeline-runner.js');
+  type PipelineStage = import('../pipeline-runner.js').PipelineStage;
+  const { loadPipelineTemplate } = await import('../pipeline-template.js');
   const { getRuntime } = await import('../container-runtime.js');
   const { CONTAINER_IMAGE } = await import('../config.js');
-  const { getImageForStage } = await import('../image-registry.js');
+  const { getImageForStage, loadImageRegistry, saveImageRegistry } =
+    await import('../image-registry.js');
+  const { contentHash: computeHash } = await import('../bundle.js');
 
   const pipelineOverride = opts?.pipeline
     ? path.resolve(projectDir, opts.pipeline)
     : undefined;
+  const bundleDir = pipelineOverride ? path.dirname(pipelineOverride) : artDir;
   const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
   if (pipelineConfig) {
     const rt = getRuntime();
-    const images = new Set<string>();
-    for (const stage of pipelineConfig.stages) {
-      if (stage.command) {
-        images.add(stage.image || CONTAINER_IMAGE);
-      } else {
-        try {
-          images.add(getImageForStage(stage.image, false));
-        } catch {
-          // Registry key not found — treat as direct image name
-          if (stage.image) images.add(stage.image);
+    const registry = loadImageRegistry();
+    const dockerfilesDir = path.join(artDir, 'dockerfiles');
+
+    // Collect ALL stages: pipeline + all referenced templates (recursive)
+    const allStages: PipelineStage[] = [...pipelineConfig.stages];
+    const visitedTemplates = new Set<string>();
+
+    function collectTemplateStages(stages: PipelineStage[]) {
+      for (const stage of stages) {
+        for (const t of stage.transitions) {
+          if (t.template && !visitedTemplates.has(t.template)) {
+            visitedTemplates.add(t.template);
+            try {
+              const tpl = loadPipelineTemplate(bundleDir, t.template);
+              allStages.push(...tpl.stages);
+              collectTemplateStages(tpl.stages);
+            } catch {
+              // Template not found — will error at runtime
+            }
+          }
         }
       }
     }
+    collectTemplateStages(pipelineConfig.stages);
 
+    // Phase 1: Resolve images — build from local Dockerfiles or check registry
+    const images = new Set<string>();
+    const checked = new Set<string>(); // dedupe by image name
+
+    for (const stage of allStages) {
+      const imageName = stage.image;
+      const dedupeKey = imageName ?? '__default__';
+      if (checked.has(dedupeKey)) continue;
+      checked.add(dedupeKey);
+
+      if (stage.command) {
+        images.add(imageName || CONTAINER_IMAGE);
+        continue;
+      }
+
+      // Agent stage: check images.json first
+      if (!imageName || registry[imageName]) {
+        try {
+          images.add(getImageForStage(imageName, false));
+        } catch {
+          if (imageName) images.add(imageName);
+        }
+        continue;
+      }
+
+      // Not in images.json — check local Dockerfile
+      const dockerfilePath = path.join(
+        dockerfilesDir,
+        `${imageName}.Dockerfile`,
+      );
+      if (fs.existsSync(dockerfilePath)) {
+        const content = fs.readFileSync(dockerfilePath, 'utf-8');
+        const hash = computeHash(content);
+
+        // Check if already built with same content (re-read in case of stale ref)
+        const existing = loadImageRegistry()[imageName];
+        if (existing?.contentHash === hash) {
+          images.add(existing.image);
+          continue;
+        }
+
+        const imageTag = `art-${imageName}:${hash.slice(7, 19)}`;
+        console.log(
+          `\n  Image "${imageName}" needs to be built from Dockerfile.`,
+        );
+        console.log(`    Source: dockerfiles/${imageName}.Dockerfile`);
+        console.log(`    Tag:    ${imageTag}`);
+        const confirmed = await askConfirmation('  Build now? [Y/n] ');
+        if (!confirmed) {
+          console.error(
+            `\n  ✗ Image "${imageName}" is required but not built. Aborting.`,
+          );
+          process.exit(1);
+        }
+
+        console.log(`\n  Building ${imageTag}...`);
+        execSync(
+          `${rt.bin} build -t ${imageTag} -f ${dockerfilePath} ${artDir}`,
+          { stdio: 'inherit', timeout: 600000 },
+        );
+
+        registry[imageName] = {
+          image: imageTag,
+          hasAgent: true,
+          contentHash: hash,
+        };
+        saveImageRegistry(registry);
+        images.add(imageTag);
+        continue;
+      }
+
+      // No local Dockerfile — check art registry
+      try {
+        const { resolveRemoteWithAuth } = await import('../remote-config.js');
+        const { RegistryApi } = await import('../registry-api.js');
+        const { url, token } = resolveRemoteWithAuth();
+        const api = new RegistryApi(url, token);
+        const check = await api.checkDockerfile(imageName);
+        if (check.exists) {
+          console.error(
+            `\n  ✗ Image "${imageName}" not found locally, but a Dockerfile exists in the registry.`,
+          );
+          console.error(`    Run "art pull" to download it, then re-run.`);
+          process.exit(1);
+        }
+      } catch {
+        // No remote configured or unreachable — skip registry check
+      }
+
+      // Docker Hub fallback
+      images.add(imageName);
+    }
+
+    // Phase 2: Pre-pull missing Docker images (Hub images + command stage images)
     const missing: string[] = [];
     for (const img of images) {
       try {
@@ -195,11 +307,11 @@ export async function run(
   // Register SIGINT/SIGTERM handlers to mark manifest as cancelled
   const cleanupOnSignal = () => {
     try {
-      const manifest = readRunManifest(artDir, runId);
+      const manifest = readRunManifest(stateDir, runId);
       if (manifest) {
         manifest.endTime = new Date().toISOString();
         manifest.status = 'cancelled';
-        writeRunManifest(artDir, manifest);
+        writeRunManifest(stateDir, manifest);
       }
     } catch {
       /* best effort */

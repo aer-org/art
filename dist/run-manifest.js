@@ -13,29 +13,29 @@ export function generateRunId() {
     return `run-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
 }
 // --- Helpers ---
-function runsDir(groupDir) {
-    return path.join(groupDir, 'runs');
+function runsDir(stateDir) {
+    return path.join(stateDir, 'runs');
 }
 // --- Run Manifest ---
-export function writeRunManifest(groupDir, manifest) {
-    const dir = runsDir(groupDir);
+export function writeRunManifest(stateDir, manifest) {
+    const dir = runsDir(stateDir);
     fs.mkdirSync(dir, { recursive: true });
     const filePath = path.join(dir, `${manifest.runId}.json`);
     const tmpPath = `${filePath}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(manifest, null, 2));
     fs.renameSync(tmpPath, filePath);
 }
-export function readRunManifest(groupDir, runId) {
+export function readRunManifest(stateDir, runId) {
     try {
-        const raw = fs.readFileSync(path.join(runsDir(groupDir), `${runId}.json`), 'utf-8');
+        const raw = fs.readFileSync(path.join(runsDir(stateDir), `${runId}.json`), 'utf-8');
         return JSON.parse(raw);
     }
     catch {
         return null;
     }
 }
-export function listRunManifests(groupDir) {
-    const dir = runsDir(groupDir);
+export function listRunManifests(stateDir) {
+    const dir = runsDir(stateDir);
     if (!fs.existsSync(dir))
         return [];
     return fs

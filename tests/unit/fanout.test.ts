@@ -267,11 +267,11 @@ describe('loadFanoutTemplate', () => {
     }
   });
 
-  it('rejects template path that escapes groupDir', () => {
+  it('rejects template path that escapes bundleDir', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-fanout-'));
     try {
       expect(() => loadFanoutTemplate(tmpDir, '../escape.json', 'fan')).toThrow(
-        /escapes groupDir/,
+        /escapes bundleDir/,
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -13,7 +13,7 @@ export interface RunManifest {
     logFile?: string;
     outputLogFile?: string;
 }
-export declare function writeRunManifest(groupDir: string, manifest: RunManifest): void;
-export declare function readRunManifest(groupDir: string, runId: string): RunManifest | null;
-export declare function listRunManifests(groupDir: string): RunManifest[];
+export declare function writeRunManifest(stateDir: string, manifest: RunManifest): void;
+export declare function readRunManifest(stateDir: string, runId: string): RunManifest | null;
+export declare function listRunManifests(stateDir: string): RunManifest[];
 //# sourceMappingURL=run-manifest.d.ts.map

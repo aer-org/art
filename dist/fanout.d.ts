@@ -9,11 +9,11 @@ export declare const MAX_FANOUT_RECURSION_DEPTH = 2;
  */
 export declare function parseFanoutPayload(payload: string, stageName: string): FanoutInputItem[];
 /**
- * Load a child pipeline template from disk, relative to groupDir.
+ * Load a child pipeline template from disk, relative to bundleDir.
  * Returns a freshly parsed PipelineConfig per call (no caching) so substitutions
  * of different inputs don't share object refs.
  */
-export declare function loadFanoutTemplate(groupDir: string, templatePath: string, stageName: string): PipelineConfig;
+export declare function loadFanoutTemplate(bundleDir: string, templatePath: string, stageName: string): PipelineConfig;
 /**
  * Apply flat {{key}} substitution to allowed fields of each stage in the template.
  * Only top-level PipelineStage fields listed in `allowedFields` are traversed.
