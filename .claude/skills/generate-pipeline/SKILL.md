@@ -263,12 +263,14 @@ When this skill is invoked:
 
 5. **Choose images** for command stages (`alpine/git`, `node:22-slim`, `python:3.12-slim`, `nvidia/cuda:12.4.1-devel-ubuntu22.04`).
 
-6. **Write agent prompts** as markdown files following the guidelines above.
+6. **Handle custom Dockerfiles.** If a stage references a custom image with a Dockerfile (not a public registry image), copy the Dockerfile into `<name>/dockerfiles/<image-name>.Dockerfile`. The convention is `dockerfiles/<name>.Dockerfile` — rename if the source file doesn't match. Update the stage's `image` field to reference the dockerfile name.
 
-7. **Run the checklist** (below).
+7. **Write agent prompts** as markdown files following the guidelines above.
 
-8. **Write the bundle:**
-   - `mkdir -p <name>/agents <name>/templates`
+8. **Run the checklist** (below).
+
+9. **Write the bundle:**
+   - `mkdir -p <name>/agents <name>/templates <name>/dockerfiles`
    - Write `<name>/pipeline.json` (2-space indent, **no inline prompts** for agent stages)
    - Write each agent prompt to `<name>/agents/<stage-name>.md`
    - Write templates to `<name>/templates/<name>.json` (prompts stripped)
@@ -299,5 +301,6 @@ When this skill is invoked:
 - [ ] `count`/`countFrom` only used with `template`; `substitutionsFrom` only with `countFrom`
 - [ ] `joinPolicy` only used with `template`
 - [ ] Templates at `templates/<name>.json` with `{ entry?, stages }` shape; internally acyclic
+- [ ] Custom Dockerfiles are in `dockerfiles/<name>.Dockerfile`; stage `image` fields reference the dockerfile name
 - [ ] No `.art-bundle.json` generated (created by `art pull`/`art push`, not this skill)
 - [ ] The JSON is valid and parseable
