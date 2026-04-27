@@ -32,6 +32,48 @@ export class RegistryApi {
         }
         return (await res.json());
     }
+    static async signup(baseUrl, username, password) {
+        const url = new URL('/v1/users', baseUrl).toString();
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+            let detail = `${res.status} ${res.statusText}`;
+            try {
+                const body = (await res.json());
+                if (body.error)
+                    detail = body.error;
+            }
+            catch {
+                /* non-JSON */
+            }
+            throw new RegistryError(res.status, detail);
+        }
+        return (await res.json());
+    }
+    static async login(baseUrl, username, password) {
+        const url = new URL('/v1/auth/login', baseUrl).toString();
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+            let detail = `${res.status} ${res.statusText}`;
+            try {
+                const body = (await res.json());
+                if (body.error)
+                    detail = body.error;
+            }
+            catch {
+                /* non-JSON */
+            }
+            throw new RegistryError(res.status, detail);
+        }
+        return (await res.json());
+    }
     async whoami() {
         return this.request('/v1/whoami');
     }
@@ -46,6 +88,18 @@ export class RegistryApi {
     }
     async pushPipeline(data) {
         return this.request('/v1/pipelines', { method: 'POST', body: data });
+    }
+    async checkDockerfile(name) {
+        try {
+            const res = await this.request(`/v1/dockerfiles/${encodeURIComponent(name)}`);
+            return { exists: true, latestHash: res.latest_hash };
+        }
+        catch (e) {
+            if (e instanceof RegistryError && e.status === 404) {
+                return { exists: false };
+            }
+            throw e;
+        }
     }
     async pushDockerfile(data) {
         return this.request('/v1/dockerfiles', { method: 'POST', body: data });

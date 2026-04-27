@@ -142,19 +142,14 @@ export async function run(
   const { loadPipelineTemplate } = await import('../pipeline-template.js');
   const { getRuntime } = await import('../container-runtime.js');
   const { CONTAINER_IMAGE } = await import('../config.js');
-  const {
-    getImageForStage,
-    loadImageRegistry,
-    saveImageRegistry,
-  } = await import('../image-registry.js');
+  const { getImageForStage, loadImageRegistry, saveImageRegistry } =
+    await import('../image-registry.js');
   const { contentHash: computeHash } = await import('../bundle.js');
 
   const pipelineOverride = opts?.pipeline
     ? path.resolve(projectDir, opts.pipeline)
     : undefined;
-  const bundleDir = pipelineOverride
-    ? path.dirname(pipelineOverride)
-    : artDir;
+  const bundleDir = pipelineOverride ? path.dirname(pipelineOverride) : artDir;
   const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
   if (pipelineConfig) {
     const rt = getRuntime();
@@ -256,9 +251,7 @@ export async function run(
 
       // No local Dockerfile — check art registry
       try {
-        const { resolveRemoteWithAuth } = await import(
-          '../remote-config.js'
-        );
+        const { resolveRemoteWithAuth } = await import('../remote-config.js');
         const { RegistryApi } = await import('../registry-api.js');
         const { url, token } = resolveRemoteWithAuth();
         const api = new RegistryApi(url, token);

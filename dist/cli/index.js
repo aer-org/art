@@ -50,6 +50,11 @@ async function main() {
             await login(args);
             break;
         }
+        case 'signup': {
+            const { signup } = await import('./login.js');
+            await signup(args);
+            break;
+        }
         case 'logout': {
             const { logout } = await import('./logout.js');
             await logout();
@@ -91,8 +96,10 @@ async function main() {
 Usage:
   art init [dir]              Create __art__/ scaffold and PIPELINE.json
   art run [dir]               Start the agent pipeline engine
-  art login                   Save registry credentials
-  art logout                  Remove stored registry credentials
+  art signup                  Create a new account
+  art login                   Sign in with username/password
+  art login --token           Sign in with a raw token
+  art logout                  Remove stored credentials
 
   art remote add <name> <url> Register a backend endpoint
   art remote remove <name>    Remove a registered backend

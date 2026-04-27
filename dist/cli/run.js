@@ -112,14 +112,12 @@ export async function run(targetDir, opts) {
     const { loadPipelineTemplate } = await import('../pipeline-template.js');
     const { getRuntime } = await import('../container-runtime.js');
     const { CONTAINER_IMAGE } = await import('../config.js');
-    const { getImageForStage, loadImageRegistry, saveImageRegistry, } = await import('../image-registry.js');
+    const { getImageForStage, loadImageRegistry, saveImageRegistry } = await import('../image-registry.js');
     const { contentHash: computeHash } = await import('../bundle.js');
     const pipelineOverride = opts?.pipeline
         ? path.resolve(projectDir, opts.pipeline)
         : undefined;
-    const bundleDir = pipelineOverride
-        ? path.dirname(pipelineOverride)
-        : artDir;
+    const bundleDir = pipelineOverride ? path.dirname(pipelineOverride) : artDir;
     const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
     if (pipelineConfig) {
         const rt = getRuntime();

@@ -806,8 +806,9 @@ describe('PipelineRunner FSM', () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
 
-    // Pre-save state with implement completed
-    savePipelineState(groupDir, {
+    // Pre-save state with implement completed (state lives under .state/)
+    const stateDir = path.join(groupDir, '.state');
+    savePipelineState(stateDir, {
       currentStage: 'implement',
       completedStages: ['implement'],
       lastUpdated: new Date().toISOString(),

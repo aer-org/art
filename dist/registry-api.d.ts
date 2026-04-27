@@ -24,6 +24,14 @@ export declare class RegistryApi {
     private token;
     constructor(baseUrl: string, token: string);
     private request;
+    static signup(baseUrl: string, username: string, password: string): Promise<{
+        id: number;
+        username: string;
+    }>;
+    static login(baseUrl: string, username: string, password: string): Promise<{
+        token: string;
+        expires_at: number;
+    }>;
     whoami(): Promise<{
         prefix: string;
         label: string | null;
@@ -57,6 +65,10 @@ export declare class RegistryApi {
         tags?: string[];
     }): Promise<{
         content_hash: string;
+    }>;
+    checkDockerfile(name: string): Promise<{
+        exists: boolean;
+        latestHash?: string;
     }>;
     pushDockerfile(data: {
         name: string;

@@ -102,7 +102,7 @@ export async function push(args) {
                 await api.pushAgent({
                     name,
                     system_prompt: file.content,
-                    dockerfile: { name: 'art-agent' },
+                    dockerfile: { name: 'vcs-agent' },
                     project: meta.project,
                 });
                 console.log(`  ${file.relPath}  ${label} → pushed`);

@@ -65,6 +65,54 @@ export class RegistryApi {
     return (await res.json()) as T;
   }
 
+  static async signup(
+    baseUrl: string,
+    username: string,
+    password: string,
+  ): Promise<{ id: number; username: string }> {
+    const url = new URL('/v1/users', baseUrl).toString();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body.error) detail = body.error;
+      } catch {
+        /* non-JSON */
+      }
+      throw new RegistryError(res.status, detail);
+    }
+    return (await res.json()) as { id: number; username: string };
+  }
+
+  static async login(
+    baseUrl: string,
+    username: string,
+    password: string,
+  ): Promise<{ token: string; expires_at: number }> {
+    const url = new URL('/v1/auth/login', baseUrl).toString();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body.error) detail = body.error;
+      } catch {
+        /* non-JSON */
+      }
+      throw new RegistryError(res.status, detail);
+    }
+    return (await res.json()) as { token: string; expires_at: number };
+  }
+
   async whoami(): Promise<{
     prefix: string;
     label: string | null;
@@ -108,6 +156,23 @@ export class RegistryApi {
     tags?: string[];
   }): Promise<{ content_hash: string }> {
     return this.request('/v1/pipelines', { method: 'POST', body: data });
+  }
+
+  async checkDockerfile(
+    name: string,
+  ): Promise<{ exists: boolean; latestHash?: string }> {
+    try {
+      const res = await this.request<{
+        name: string;
+        latest_hash: string;
+      }>(`/v1/dockerfiles/${encodeURIComponent(name)}`);
+      return { exists: true, latestHash: res.latest_hash };
+    } catch (e) {
+      if (e instanceof RegistryError && e.status === 404) {
+        return { exists: false };
+      }
+      throw e;
+    }
   }
 
   async pushDockerfile(data: {
