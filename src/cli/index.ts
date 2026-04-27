@@ -62,14 +62,55 @@ async function main(): Promise<void> {
       await logout();
       break;
     }
+    case 'remote': {
+      const { remote } = await import('./remote.js');
+      await remote(args);
+      break;
+    }
+    case 'pull': {
+      const { pull } = await import('./pull.js');
+      await pull(args);
+      break;
+    }
+    case 'push': {
+      const { push } = await import('./push.js');
+      await push(args);
+      break;
+    }
+    case 'diff': {
+      const { diff } = await import('./diff.js');
+      await diff(args);
+      break;
+    }
+    case 'fork': {
+      const { fork } = await import('./fork.js');
+      await fork(args);
+      break;
+    }
+    case 'promote': {
+      const { promote } = await import('./fork.js');
+      await promote(args);
+      break;
+    }
     default:
       console.log(`aer-art — AI agent pipeline runner
 
 Usage:
-  art init [dir]      Create __art__/ scaffold and PIPELINE.json
-  art run [dir]       Start the agent pipeline engine
-  art login           Save registry credentials (~/.config/aer-art/credentials.json)
-  art logout          Remove stored registry credentials
+  art init [dir]              Create __art__/ scaffold and PIPELINE.json
+  art run [dir]               Start the agent pipeline engine
+  art login                   Save registry credentials
+  art logout                  Remove stored registry credentials
+
+  art remote add <name> <url> Register a backend endpoint
+  art remote remove <name>    Remove a registered backend
+  art remote list             List configured backends
+  art remote set-default <n>  Set default backend
+
+  art pull <pipeline>         Download pipeline bundle to local directory
+  art push [dir]              Publish local changes back to registry
+  art diff [dir]              Preview local vs registry changes
+  art fork <agent>            Copy shared agent to user scope
+  art promote <agent>         Promote user agent to shared scope
 `);
       if (command && command !== 'help' && command !== '--help') {
         console.error(`\nUnknown command: ${command}`);
