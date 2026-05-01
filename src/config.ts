@@ -75,15 +75,6 @@ export function getCodexAuthProxyPort(): number {
 export function setCodexAuthProxyPort(port: number): void {
   _codexAuthProxyPort = port;
 }
-// Legacy compat — reads at import time, prefer getCredentialProxyPort()
-export const CREDENTIAL_PROXY_PORT = parseInt(
-  process.env.CREDENTIAL_PROXY_PORT || '3001',
-  10,
-);
-export const CODEX_AUTH_PROXY_PORT = parseInt(
-  process.env.CODEX_AUTH_PROXY_PORT || '3002',
-  10,
-);
 export const IDLE_TIMEOUT = parseInt(
   process.env.IDLE_TIMEOUT || '2147483647',
   10,

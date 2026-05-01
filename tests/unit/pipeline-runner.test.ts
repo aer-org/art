@@ -10,7 +10,6 @@ vi.mock('../../src/config.js', () => ({
   CONTAINER_IMAGE: 'art-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000,
-  CREDENTIAL_PROXY_PORT: 3001,
   DATA_DIR: '/tmp/aer-art-test-data',
   GROUPS_DIR: '/tmp/aer-art-test-groups',
   IDLE_TIMEOUT: 1800000,
@@ -68,7 +67,6 @@ vi.mock('../../src/container-runtime.js', () => ({
 // Mock image-registry
 vi.mock('../../src/image-registry.js', () => ({
   getImageForStage: vi.fn(() => 'art-agent:latest'),
-  loadImageRegistry: vi.fn(() => ({})),
 }));
 
 // Mock group-folder — route to temp dirs
@@ -676,7 +674,7 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
 // Group B: PipelineRunner FSM (runContainerAgent mock)
 // ============================================================
 
-// Test fixture: 2-stage pipeline (strict DAG — no cycles, no retry)
+// Test fixture: 2-stage pipeline (strict DAG — no cycles)
 function makeTwoStagePipelineConfig(): PipelineConfig {
   return {
     stages: [
@@ -2095,13 +2093,12 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('accepts prompt DB ids for agent stages', () => {
+  it('rejects legacy prompt DB ids for agent stages', () => {
     const config = {
       stages: [
         {
           name: 'scope_plan',
           prompts: ['db_id_1', 'db_id_2'],
-          prompt_append: 'Target module is fixed to VPU.',
           mounts: {},
           transitions: [{ marker: 'DONE', next: null }],
         },
@@ -2112,16 +2109,16 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
       JSON.stringify(config),
     );
     const result = loadPipelineConfig('test', tmpDir);
-    expect(result).not.toBeNull();
-    expect(result!.stages[0].prompts).toEqual(['db_id_1', 'db_id_2']);
+    expect(result).toBeNull();
   });
 
-  it('rejects non-string prompt ids', () => {
+  it('rejects legacy prompt_append for agent stages', () => {
     const config = {
       stages: [
         {
           name: 'scope_plan',
-          prompts: ['db_id_1', 2],
+          prompt: 'Plan the work.',
+          prompt_append: 'Target module is fixed to VPU.',
           mounts: {},
           transitions: [{ marker: 'DONE', next: null }],
         },

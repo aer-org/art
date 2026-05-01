@@ -48,14 +48,6 @@ npx vitest run tests/unit/pipeline-runner.test.ts  # Single file
 
 **Mocking:** `config.js` for `GROUPS_DIR`/`DATA_DIR`.
 
-### `tests/unit/timezone.test.ts`
-
-**Target:** `timezone.ts` — timezone conversion utilities.
-
-| Tests   | Description                |
-| ------- | -------------------------- |
-| 2 tests | Timezone string conversion |
-
 ### `tests/unit/pipeline-runner.test.ts`
 
 **Target:** `pipeline-runner.ts` — FSM transitions, marker parsing, checkpoint, command mode.
