@@ -1478,26 +1478,6 @@ PAYLOAD FORMATS:
       ? fs.readFileSync(planPath, 'utf-8')
       : '';
 
-    // Ensure project directory is a git repo (containers need it for branching/committing)
-    const projectRoot = path.dirname(this.groupDir);
-    const dotGit = path.join(projectRoot, '.git');
-    if (!fs.existsSync(dotGit)) {
-      logger.info({ projectRoot }, 'Project is not a git repo, initializing');
-      const gitEnv = {
-        ...process.env,
-        GIT_AUTHOR_NAME: 'AerArt',
-        GIT_AUTHOR_EMAIL: 'art-agent@local',
-        GIT_COMMITTER_NAME: 'AerArt',
-        GIT_COMMITTER_EMAIL: 'art-agent@local',
-      };
-      execSync('git init -b main', { cwd: projectRoot, stdio: 'pipe' });
-      execSync('git commit --allow-empty -m "art: initial baseline"', {
-        cwd: projectRoot,
-        stdio: 'pipe',
-        env: gitEnv,
-      });
-    }
-
     // Write initial manifest
     writeRunManifest(this.stateDir, this.manifest);
     logger.info(
