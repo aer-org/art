@@ -134,7 +134,7 @@ Here's what the **default template** looks like. ART understands stages, transit
 
 ### Transitions and retries
 
-Stages emit markers like `[STAGE_COMPLETE]` or `[STAGE_ERROR: msg]` to trigger transitions. Retry transitions re-send the prompt with the error description. Non-retry transitions advance to the next stage.
+Stages emit markers like `[STAGE_COMPLETE]` or `[STAGE_ERROR: msg]` to trigger transitions. A transition either advances to another stage or ends the current scope. If the runner cannot match a marker, it sends feedback and keeps the same container session active.
 
 ### Resume on interrupt
 

@@ -10,7 +10,7 @@ import path from 'path';
 import crypto from 'crypto';
 import readline from 'readline';
 
-import { spawn, execSync } from 'child_process';
+import { spawn } from 'child_process';
 
 import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
 import {
@@ -20,7 +20,7 @@ import {
   runContainerAgent,
 } from './container-runner.js';
 import { getRuntime } from './container-runtime.js';
-import { getImageForStage, loadImageRegistry } from './image-registry.js';
+import { getImageForStage } from './image-registry.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -36,7 +36,6 @@ import {
   type ExternalMcpRegistry,
 } from './mcp-registry.js';
 import { resolveAgentRefs } from './agent-ref.js';
-import { resolveStagePrompt } from './prompt-store.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
 import {
   assertConfigAcyclic,
@@ -76,8 +75,6 @@ export interface PipelineStage {
   kind?: StageKind; // Explicit stage kind. Default: inferred (command if `command` set, else agent).
   agent?: string; // Registry ref like "builder:latest". Resolved to prompt/mcp at run start.
   prompt?: string;
-  prompts?: string[];
-  prompt_append?: string;
   image?: string; // Registry key (agent mode) or image name (command mode)
   command?: string; // Shell command mode (runs sh -c, no agent)
   successMarker?: string; // Command mode: stdout substring that indicates success → STAGE_COMPLETE
@@ -1202,7 +1199,7 @@ export class PipelineRunner {
         // the next stage. Command stages don't emit payload structurally, but
         // fenced `[MARKER] ... ---PAYLOAD_START--- ... ---PAYLOAD_END---`
         // blocks in stdout are picked up so a command stage can feed a
-        // downstream dynamic-fanout.
+        // downstream payload-driven template fanout.
         let effectivePayload = payload;
         if (
           isSuccess &&
@@ -1533,7 +1530,7 @@ PAYLOAD FORMATS:
   }
 
   /**
-   * Build predecessor map: for each stage, which stages have non-retry
+   * Build predecessor map: for each stage, which stages have primary
    * transitions pointing to it?
    */
   private buildPredecessorMap(): Map<string, Set<string>> {
@@ -1708,7 +1705,7 @@ PAYLOAD FORMATS:
           .filter((s) => stagesByName.has(s));
       } else {
         // Pipeline finished with error (currentStage: null). Find the last
-        // stage that errored and retry from it rather than restarting the
+        // stage that errored and resume from it rather than restarting the
         // whole pipeline.
         const completedSet = new Set(completedStages);
         const unfinished = this.config.stages
@@ -1755,7 +1752,7 @@ PAYLOAD FORMATS:
   }
 
   /**
-   * Handle stage result: no-match → retry prompt, retry → re-send,
+   * Handle stage result: no-match → feedback prompt and re-send,
    * transition → close container and advance FSM.
    */
   private async handleStageResult(
@@ -2161,10 +2158,9 @@ PAYLOAD FORMATS:
           break;
         }
 
-        const resolvedStagePrompt = resolveStagePrompt(stageConfig);
         const initialPrompt =
           nextInitialPrompt ||
-          `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
+          `${stageConfig.prompt ?? ''}\n${commonRules}${planContent}`;
         nextInitialPrompt = null;
         const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
         nextEphemeralSystemPrompt = null;
@@ -2179,11 +2175,7 @@ PAYLOAD FORMATS:
         this.activeHandles.set(stageName, handle);
 
         logger.info(
-          {
-            stage: stageName,
-            promptIds: resolvedStagePrompt.promptIds,
-            promptHash: resolvedStagePrompt.promptHash,
-          },
+          { stage: stageName },
           'Stage container spawned (on-demand)',
         );
         logger.info({ stage: stageName }, 'Entering stage');
@@ -2200,7 +2192,7 @@ PAYLOAD FORMATS:
           }
 
           if (!isFirstTurn) {
-            const prompt = `${resolvedStagePrompt.text}\n${commonRules}${planContent}`;
+            const prompt = `${stageConfig.prompt ?? ''}\n${commonRules}${planContent}`;
             sendToStage(handle, prompt);
           }
           isFirstTurn = false;
@@ -2584,29 +2576,19 @@ export function loadPipelineConfig(
         return null;
       }
 
-      if (
-        stage.prompts !== undefined &&
-        (!Array.isArray(stage.prompts) ||
-          stage.prompts.some((promptId) => typeof promptId !== 'string'))
-      ) {
+      const stageAny = stage as unknown as Record<string, unknown>;
+      if (stageAny.prompts !== undefined) {
         logger.error(
-          { groupFolder, stage: stage.name, prompts: stage.prompts },
-          'Invalid prompts field (must be an array of prompt DB ids)',
+          { groupFolder, stage: stage.name },
+          'Stage "prompts" is no longer supported; use inline "prompt" or agents/<name>.md',
         );
         return null;
       }
 
-      if (
-        stage.prompt_append !== undefined &&
-        typeof stage.prompt_append !== 'string'
-      ) {
+      if (stageAny.prompt_append !== undefined) {
         logger.error(
-          {
-            groupFolder,
-            stage: stage.name,
-            prompt_append: stage.prompt_append,
-          },
-          'Invalid prompt_append field (must be a string)',
+          { groupFolder, stage: stage.name },
+          'Stage "prompt_append" is no longer supported; include the text in "prompt"',
         );
         return null;
       }
@@ -2647,15 +2629,10 @@ export function loadPipelineConfig(
         return null;
       }
 
-      if (
-        !stage.command &&
-        !stage.prompt &&
-        !stage.prompt_append &&
-        (!stage.prompts || stage.prompts.length === 0)
-      ) {
+      if (!stage.command && !stage.prompt) {
         logger.error(
           { groupFolder, stage: stage.name },
-          'Agent stage must define prompt, prompts, or prompt_append',
+          'Agent stage must define prompt',
         );
         return null;
       }

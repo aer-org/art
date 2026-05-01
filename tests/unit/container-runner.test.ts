@@ -11,7 +11,6 @@ vi.mock('../../src/config.js', () => ({
   CONTAINER_IMAGE: 'aer-art-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
-  CREDENTIAL_PROXY_PORT: 3001,
   DATA_DIR: '/tmp/aer-art-test-data',
   GROUPS_DIR: '/tmp/aer-art-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min

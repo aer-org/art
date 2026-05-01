@@ -2,7 +2,7 @@
 
 This document describes every configurable field in `__art__/PIPELINE.json`.
 
-> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions are now `{ marker?, next, template?, count?, joinPolicy?, afterTimeout? }`. `next` is always required and names the downstream node in the current scope (or `null` to end the current scope). `marker` is required unless `afterTimeout: true`. If `template` is present, the template is spawned first and then returns to `next`. Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
+> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions are now `{ marker?, next, template?, count?, countFrom?, substitutionsFrom?, joinPolicy?, outcome?, afterTimeout?, prompt? }`. `next` is always required and names the downstream node in the current scope (or `null` to end the current scope). `marker` is required unless `afterTimeout: true`. If `template` is present, the template is spawned first and then returns to `next`. Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
 
 ## Top-Level
 
@@ -318,7 +318,7 @@ Names appear in logs, the `insertedStages` section of `PIPELINE_STATE.json`, and
 
 ### Substitutions
 
-Template fields get `{{insertId}}` and `{{index}}` substitution at stitch-time, applied to `prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`.
+Template fields get `{{insertId}}` and `{{index}}` substitution at stitch-time, applied to `prompt`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`.
 
 - `{{insertId}}` — unique per inserted copy (e.g., `review__revert-tpl0`)
 - `{{index}}` — lane index in parallel stitch (0..N-1). `0` for single stitch.
