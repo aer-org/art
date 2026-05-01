@@ -20,6 +20,9 @@ import {
   loadPipelineConfig,
   pipelineTagFromPath,
   PipelineRunner,
+  type PipelineConfig,
+  type PipelineStage,
+  type PipelineTransition,
 } from './pipeline-runner.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -102,12 +105,13 @@ export async function runPipeline(opts: {
     console.log(text);
   };
 
-  let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
-  if (!pipelineConfig) {
+  const loadedConfig = loadPipelineConfig(group.folder, undefined, pipeline);
+  if (!loadedConfig) {
     console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
     proxyServer?.close();
     process.exit(1);
   }
+  let pipelineConfig: PipelineConfig = loadedConfig;
 
   // Resolve registry agent refs (stage.agent = "name:tag") → populate prompt,
   // mcp, and — if the agent points at a dockerfile — build a locally-canonical
@@ -205,17 +209,23 @@ export async function runPipeline(opts: {
       process.exit(1);
     }
     // Replace transitions so the stage terminates on completion
-    const isolatedStage = {
+    const isolatedTransitions: PipelineTransition[] = stageConfig.command
+      ? [
+          { marker: 'STAGE_COMPLETE', next: null },
+          { marker: 'STAGE_ERROR', next: null },
+        ]
+      : [
+          { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
+          {
+            marker: 'STAGE_ERROR',
+            next: null,
+            outcome: 'error',
+            prompt: 'Stage failed',
+          },
+        ];
+    const isolatedStage: PipelineStage = {
       ...stageConfig,
-      transitions: stageConfig.command
-        ? [
-            { marker: 'STAGE_COMPLETE', next: null },
-            { marker: 'STAGE_ERROR', next: null },
-          ]
-        : [
-            { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
-            { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
-          ],
+      transitions: isolatedTransitions,
     };
     pipelineConfig = { stages: [isolatedStage] };
     console.log(`\n🔧 Running single stage: ${stage}`);

@@ -50,7 +50,7 @@ A host-side FSM (Finite State Machine) that orchestrates multi-stage container e
 Load PIPELINE.json → determine entry stage
   → spawn stage container → deliver prompt via IPC
   → stream agent output → parse markers → decide transition
-  → next stage / retry / terminate
+  → next stage / terminate
 ```
 
 ### Stage Markers and Transitions
@@ -64,7 +64,7 @@ Agents embed markers in their output to trigger stage transitions:
 | `[STAGE_ERROR_CODE: code]`   | Failed with error code               |
 
 Each stage's `transitions` array defines marker → target stage mappings.
-Transitions with `retry: true` stay in the same stage; others advance to the next.
+Transitions advance to another stage or end the current scope. If no marker matches, the runner sends feedback and keeps the current container session active.
 
 ### Agent Mode vs Command Mode
 
@@ -228,7 +228,6 @@ Stores image key → spec mappings in `~/.config/aer-art/images.json`.
 | `src/image-registry.ts`            | Image registry CRUD                              |
 | `src/cli/default-stage-presets.ts` | Default `art init` scaffold stage presets        |
 | `src/mount-security.ts`            | Mount allowlist and blocked-pattern enforcement  |
-| `src/mount-validation.ts`          | Mount path validation utilities                  |
 | `src/group-folder.ts`              | Workspace path resolution and traversal defense  |
 | `src/config.ts`                    | Paths, intervals, image registry path            |
 | `src/env.ts`                       | Environment variable handling                    |

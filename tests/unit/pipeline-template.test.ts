@@ -169,6 +169,41 @@ describe('validatePipelineTemplate', () => {
     ).toThrow(/unknown stage/);
   });
 
+  it('rejects legacy prompt DB fields', () => {
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              prompts: ['db_id_1'],
+              mounts: {},
+              transitions: [{ marker: 'OK', next: null }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/prompts/);
+
+    expect(() =>
+      validatePipelineTemplate(
+        {
+          stages: [
+            {
+              name: 's1',
+              prompt: 'Base prompt',
+              prompt_append: 'extra',
+              mounts: {},
+              transitions: [{ marker: 'OK', next: null }],
+            },
+          ],
+        },
+        'tpl',
+      ),
+    ).toThrow(/prompt_append/);
+  });
+
   it('rejects authored array next', () => {
     expect(() =>
       validatePipelineTemplate(

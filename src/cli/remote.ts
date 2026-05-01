@@ -1,7 +1,6 @@
 import {
   loadRemotes,
   saveRemotes,
-  getRemote,
   deleteRemoteCredentials,
 } from '../remote-config.js';
 

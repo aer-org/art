@@ -26,8 +26,6 @@ import type { PipelineTemplate } from './pipeline-template.js';
 
 export const STITCH_SUBSTITUTION_FIELDS: readonly string[] = [
   'prompt',
-  'prompts',
-  'prompt_append',
   'mounts',
   'hostMounts',
   'env',
