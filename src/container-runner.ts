@@ -103,7 +103,7 @@ function resolveProvider(
 ): AgentProvider {
   if (inputProvider) return inputProvider;
   if (group.containerConfig?.provider) return group.containerConfig.provider;
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
 function getProviderHomeDirName(provider: AgentProvider): '.claude' | '.codex' {
@@ -363,7 +363,7 @@ export function buildContainerArgs(
   runId?: string,
   privileged = false,
   env?: Record<string, string>,
-  provider: AgentProvider = 'claude',
+  provider: AgentProvider = 'codex',
 ): string[] {
   const rt = getRuntime();
   const args: string[] = ['run'];

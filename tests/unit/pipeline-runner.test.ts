@@ -233,9 +233,11 @@ import {
   type PipelineConfig,
   type PipelineState,
 } from '../../src/pipeline-runner.js';
+import { buildContainerArgs } from '../../src/container-runner.js';
 import * as mcpRegistry from '../../src/mcp-registry.js';
 import type { RegisteredGroup } from '../../src/types.js';
 
+const mockBuildContainerArgs = vi.mocked(buildContainerArgs);
 const mockLoadMcpRegistry = vi.mocked(mcpRegistry.loadMcpRegistry);
 const mockResolveStageMcpServers = vi.mocked(
   mcpRegistry.resolveStageMcpServers,
@@ -1434,6 +1436,94 @@ describe('Command mode stage', () => {
     const result = await runPromise;
     expect(result).toBe('success');
     expect(spawn).toHaveBeenCalled();
+  }, 15000);
+
+  it('passes Codex as the default provider to command container args', async () => {
+    const previousProvider = process.env.ART_AGENT_PROVIDER;
+    delete process.env.ART_AGENT_PROVIDER;
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'provider-default',
+          prompt: 'Check default provider',
+          command: 'make build',
+          mounts: {},
+          transitions: [{ marker: 'STAGE_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+
+    try {
+      const runner = new PipelineRunner(
+        group,
+        'test@g.us',
+        config,
+        async () => {},
+        () => {},
+        groupDir,
+      );
+
+      const runPromise = runner.run();
+      await new Promise((r) => setTimeout(r, 50));
+      fakeProc!.stdout.push('done\n');
+      fakeProc!.stdout.push(null);
+      fakeProc!.emit('close', 0);
+
+      expect(await runPromise).toBe('success');
+      expect(mockBuildContainerArgs.mock.calls[0]?.[10]).toBe('codex');
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env.ART_AGENT_PROVIDER;
+      } else {
+        process.env.ART_AGENT_PROVIDER = previousProvider;
+      }
+    }
+  }, 15000);
+
+  it('passes Claude provider to command container args when selected', async () => {
+    const previousProvider = process.env.ART_AGENT_PROVIDER;
+    process.env.ART_AGENT_PROVIDER = 'claude';
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'provider-claude',
+          prompt: 'Check selected provider',
+          command: 'make build',
+          mounts: {},
+          transitions: [{ marker: 'STAGE_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+
+    try {
+      const runner = new PipelineRunner(
+        group,
+        'test@g.us',
+        config,
+        async () => {},
+        () => {},
+        groupDir,
+      );
+
+      const runPromise = runner.run();
+      await new Promise((r) => setTimeout(r, 50));
+      fakeProc!.stdout.push('done\n');
+      fakeProc!.stdout.push(null);
+      fakeProc!.emit('close', 0);
+
+      expect(await runPromise).toBe('success');
+      expect(mockBuildContainerArgs.mock.calls[0]?.[10]).toBe('claude');
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env.ART_AGENT_PROVIDER;
+      } else {
+        process.env.ART_AGENT_PROVIDER = previousProvider;
+      }
+    }
   }, 15000);
 
   it('prefixes each streamed stdout line in TUI mode', async () => {

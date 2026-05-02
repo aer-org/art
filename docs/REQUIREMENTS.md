@@ -71,7 +71,7 @@ Containers never see real API keys. A host-side HTTP proxy intercepts all Anthro
 
 ### Stage Modes
 
-- **Agent mode** (default): Claude agent receives a prompt and works autonomously
+- **Agent mode** (default): Codex receives a prompt and works autonomously
 - **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout. Useful for deterministic steps like linting, building, or running test suites.
 
 ### Resume on Interrupt
@@ -120,7 +120,7 @@ Installs to `~/.art`, creates `art` symlink, requires Node.js ≥ 20.
 
 ### Skills
 
-- `/setup` — Install dependencies, configure container runtime, Claude authentication
+- `/setup` — Install dependencies, configure container runtime, provider authentication
 - `/debug` — Container issues, logs, troubleshooting
 - `/update-aer-art` — Pull upstream changes, merge with customizations
 
