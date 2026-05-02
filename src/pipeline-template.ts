@@ -20,7 +20,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { resolveAgentRefs } from './agent-ref.js';
-import type { PipelineStage, PipelineTransition } from './pipeline-runner.js';
+import type { PipelineStage, PipelineTransition } from './pipeline-types.js';
 
 export interface PipelineTemplate {
   name: string;
