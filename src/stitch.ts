@@ -21,7 +21,7 @@ import type {
   PipelineConfig,
   PipelineStage,
   PipelineTransition,
-} from './pipeline-runner.js';
+} from './pipeline-types.js';
 import type { PipelineTemplate } from './pipeline-template.js';
 
 export const STITCH_SUBSTITUTION_FIELDS: readonly string[] = [

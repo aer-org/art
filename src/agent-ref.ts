@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import type { PipelineStage } from './pipeline-runner.js';
+import type { PipelineStage } from './pipeline-types.js';
 
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
