@@ -187,7 +187,7 @@ export declare class PipelineRunner {
      */
     private buildCommonRules;
     /**
-     * Validate plan, initialize git if needed, write manifest, create log stream.
+     * Validate plan, write manifest, create log stream.
      * Returns null on validation failure.
      */
     private initRun;

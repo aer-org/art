@@ -2,7 +2,7 @@
  * Container Runner for AerArt
  * Spawns agent execution in containers and handles IPC
  */
-import { exec, execSync, spawn } from 'child_process';
+import { exec, spawn } from 'child_process';
 import fs from 'fs';
 /**
  * Prefix each line in a chunk with `[stageName] `.
@@ -289,22 +289,6 @@ export function buildContainerArgs(mounts, containerName, devices = [], gpu = fa
         if (resolveCodexAuthMode() === 'host-managed') {
             args.push('-e', `ART_CODEX_AUTH_PROXY_URL=http://${rt.hostGateway}:${getCodexAuthProxyPort()}`);
         }
-    }
-    // Pass host git identity so containers can commit without extra config
-    try {
-        const gitName = execSync('git config --global user.name', {
-            encoding: 'utf-8',
-        }).trim();
-        const gitEmail = execSync('git config --global user.email', {
-            encoding: 'utf-8',
-        }).trim();
-        if (gitName)
-            args.push('-e', `GIT_AUTHOR_NAME=${gitName}`, '-e', `GIT_COMMITTER_NAME=${gitName}`);
-        if (gitEmail)
-            args.push('-e', `GIT_AUTHOR_EMAIL=${gitEmail}`, '-e', `GIT_COMMITTER_EMAIL=${gitEmail}`);
-    }
-    catch {
-        // No global git config — containers will need their own
     }
     // Runtime-specific args for host gateway resolution
     args.push(...hostGatewayArgs());
