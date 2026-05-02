@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isValidGroupFolder,
+  registerExternalGroupFolder,
   resolveGroupFolderPath,
   resolveGroupIpcPath,
 } from '../../src/group-folder.js';
@@ -39,5 +40,18 @@ describe('group folder validation', () => {
   it('throws for unsafe folder names', () => {
     expect(() => resolveGroupFolderPath('../../etc')).toThrow();
     expect(() => resolveGroupIpcPath('/tmp')).toThrow();
+  });
+
+  it('inherits external mapping for virtual sub-groups', () => {
+    const artDir = path.resolve('/tmp', 'art-test-project', '__art__');
+    registerExternalGroupFolder('art-test-project', artDir);
+
+    expect(resolveGroupFolderPath('art-test-project')).toBe(artDir);
+    expect(resolveGroupFolderPath('art-test-project__pipeline_build')).toBe(
+      path.join(artDir, '.stages', 'pipeline_build'),
+    );
+    expect(
+      resolveGroupFolderPath('art-test-project__abc123__pipeline_build'),
+    ).toBe(path.join(artDir, '.stages', 'abc123__pipeline_build'));
   });
 });
