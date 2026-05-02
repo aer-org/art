@@ -1,15 +1,17 @@
 import readline from 'readline';
 
 import { RegistryApi } from '../registry-api.js';
-import { RegistryError, saveCredentials } from '../registry-client.js';
+import {
+  DEFAULT_REGISTRY_SERVER,
+  RegistryError,
+  saveCredentials,
+} from '../registry-client.js';
 import {
   resolveRemote,
   saveRemoteCredentials,
   loadRemotes,
   getDefaultRemote,
 } from '../remote-config.js';
-
-const DEFAULT_SERVER = 'https://aerclaw.com';
 
 function promptText(question: string): Promise<string> {
   const rl = readline.createInterface({
@@ -82,7 +84,7 @@ export async function login(args: string[]): Promise<void> {
     serverUrl = resolved.remote.url;
   } else {
     const def = getDefaultRemote();
-    serverUrl = def?.remote.url ?? DEFAULT_SERVER;
+    serverUrl = def?.remote.url ?? DEFAULT_REGISTRY_SERVER;
   }
 
   if (tokenMode) {
@@ -157,7 +159,7 @@ export async function signup(args: string[]): Promise<void> {
     serverUrl = resolved.remote.url;
   } else {
     const def = getDefaultRemote();
-    serverUrl = def?.remote.url ?? DEFAULT_SERVER;
+    serverUrl = def?.remote.url ?? DEFAULT_REGISTRY_SERVER;
   }
 
   const username = await promptText('Username: ');

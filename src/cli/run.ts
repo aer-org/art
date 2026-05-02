@@ -251,10 +251,11 @@ export async function run(
 
       // No local Dockerfile — check art registry
       try {
-        const { resolveRemoteWithAuth } = await import('../remote-config.js');
+        const { resolveRegistryReadAccess } =
+          await import('../registry-access.js');
         const { RegistryApi } = await import('../registry-api.js');
-        const { url, token } = resolveRemoteWithAuth();
-        const api = new RegistryApi(url, token);
+        const access = resolveRegistryReadAccess();
+        const api = new RegistryApi(access.server, access.token);
         const check = await api.checkDockerfile(imageName);
         if (check.exists) {
           console.error(
@@ -264,7 +265,7 @@ export async function run(
           process.exit(1);
         }
       } catch {
-        // No remote configured or unreachable — skip registry check
+        // Registry unavailable or requires auth — skip check and fall back to image pull.
       }
 
       // Docker Hub fallback
