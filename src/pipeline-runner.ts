@@ -12,7 +12,7 @@ import readline from 'readline';
 
 import { spawn } from 'child_process';
 
-import { CONTAINER_IMAGE, DATA_DIR } from './config.js';
+import { CONTAINER_IMAGE, getDataDir } from './config.js';
 import {
   buildContainerArgs,
   ContainerOutput,
@@ -442,7 +442,7 @@ export class PipelineRunner {
       'conversations',
     ]);
 
-    const emptyDir = path.join(DATA_DIR, 'empty');
+    const emptyDir = path.join(getDataDir(), 'empty');
     fs.mkdirSync(emptyDir, { recursive: true });
 
     // Stage mounts (e.g. "src": "rw" → /workspace/src)

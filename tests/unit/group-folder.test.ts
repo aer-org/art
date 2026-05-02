@@ -2,6 +2,7 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
+import { setDataDir } from '../../src/config.js';
 import {
   isValidGroupFolder,
   registerExternalGroupFolder,
@@ -23,18 +24,18 @@ describe('group folder validation', () => {
     expect(isValidGroupFolder('')).toBe(false);
   });
 
-  it('resolves safe paths under groups directory', () => {
-    const resolved = resolveGroupFolderPath('family-chat');
-    expect(resolved.endsWith(`${path.sep}groups${path.sep}family-chat`)).toBe(
-      true,
+  it('throws when resolving an unregistered group folder', () => {
+    expect(() => resolveGroupFolderPath('never-registered')).toThrow(
+      /No external mapping registered/,
     );
   });
 
-  it('resolves safe paths under data ipc directory', () => {
+  it('resolves IPC paths under the configured data directory', () => {
+    setDataDir('/tmp/aer-art-test-data');
     const resolved = resolveGroupIpcPath('family-chat');
-    expect(
-      resolved.endsWith(`${path.sep}data${path.sep}ipc${path.sep}family-chat`),
-    ).toBe(true);
+    expect(resolved).toBe(
+      path.join('/tmp/aer-art-test-data', 'ipc', 'family-chat'),
+    );
   });
 
   it('throws for unsafe folder names', () => {
