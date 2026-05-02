@@ -4,7 +4,7 @@
 
 > **Alpha release** — expect rough edges. We're iterating fast and would love your feedback.
 
-[![tokens](repo-tokens/badge.svg)](repo-tokens/) <!-- token-count --><a href="https://github.com/aer-org/art/tree/main/repo-tokens">83.3k tokens · 42% of context window</a><!-- /token-count -->
+[![tokens](repo-tokens/badge.svg)](repo-tokens/) <!-- token-count --><a href="https://github.com/aer-org/art/tree/main/repo-tokens">82.9k tokens · 41% of context window</a><!-- /token-count -->
 
 Turn any existing project into a self-improving pipeline. Draw your own harness for agentic loops.
 
