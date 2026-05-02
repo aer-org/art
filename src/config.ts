@@ -1,9 +1,22 @@
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-// Absolute paths needed for container mounts
-let PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
+
+// Package install root — derived from this file's location at runtime.
+// dist/config.js → up two = package root. Source-mode (ts-node) lands at
+// src/config.ts → up two = same package root. Used only for shipped assets
+// like `container/build.sh`, `container/skills/`, `container/agent-runner/src/`.
+const PACKAGE_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+);
+
+export function getPackageAssetPath(...subpath: string[]): string {
+  return path.resolve(PACKAGE_ROOT, ...subpath);
+}
 
 export const ART_DIR_NAME = '__art__';
 
@@ -26,27 +39,21 @@ export const MCP_REGISTRY_PATH = path.join(
   'aer-art',
   'mcp-registry.json',
 );
-export let STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
-export let GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
-export let DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
-
-/**
- * Reconfigure path roots for art CLI mode.
- * engineRoot = AerArt install dir (for DB, store, groups)
- */
-export function setEngineRoot(engineRoot: string): void {
-  PROJECT_ROOT = engineRoot;
-  STORE_DIR = path.resolve(engineRoot, 'store');
-  GROUPS_DIR = path.resolve(engineRoot, 'groups');
-  DATA_DIR = path.resolve(engineRoot, 'data');
-}
+// Runtime data root — must be configured via setDataDir() before use.
+// In CLI mode this is set to <projectDir>/__art__/.tmp by setupEngine().
+let _DATA_DIR: string | null = null;
 
 export function setDataDir(dir: string): void {
-  DATA_DIR = path.resolve(dir);
+  _DATA_DIR = path.resolve(dir);
 }
 
-export function getProjectRoot(): string {
-  return PROJECT_ROOT;
+export function getDataDir(): string {
+  if (_DATA_DIR === null) {
+    throw new Error(
+      'DATA_DIR not configured. Call setDataDir() before reading it.',
+    );
+  }
+  return _DATA_DIR;
 }
 
 export const CONTAINER_IMAGE =
