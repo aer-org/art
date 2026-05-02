@@ -118,18 +118,11 @@ export async function runPipeline(opts: {
   // image tag so independent machines converge on the same image name.
   const stagesWithRefs = pipelineConfig.stages.filter((s) => s.agent);
   if (stagesWithRefs.length > 0) {
-    const { RegistryClient, loadCredentials, canonicalImageTag } =
+    const { RegistryClient, RegistryError, canonicalImageTag } =
       await import('./registry-client.js');
-    const creds = loadCredentials();
-    if (!creds) {
-      console.error(
-        "Pipeline references registry agents but no credentials found. Run 'art login'.",
-      );
-      proxyServer?.close();
-      codexAuthProxyServer?.close();
-      process.exit(1);
-    }
-    const client = new RegistryClient(creds);
+    const { resolveRegistryReadAccess } = await import('./registry-access.js');
+    const registryAccess = resolveRegistryReadAccess();
+    const client = new RegistryClient(registryAccess);
     const runtimeBin = (await import('./container-runtime.js')).getRuntime()
       .bin;
     const buildRoot = path.join(os.homedir(), '.cache', 'aer-art', 'builds');
@@ -187,6 +180,19 @@ export async function runPipeline(opts: {
           }`,
         );
       } catch (e) {
+        if (
+          !registryAccess.authenticated &&
+          e instanceof RegistryError &&
+          (e.status === 401 || e.status === 403)
+        ) {
+          console.error(
+            `Registry agent '${ref}' for stage '${stage.name}' requires authentication. Run 'art login' to access private registry agents.`,
+          );
+          proxyServer?.close();
+          codexAuthProxyServer?.close();
+          process.exit(1);
+        }
+
         console.error(
           `Failed to resolve '${ref}' for stage '${stage.name}': ${(e as Error).message}`,
         );

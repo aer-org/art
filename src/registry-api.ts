@@ -34,7 +34,7 @@ export interface BundleResponse {
 export class RegistryApi {
   constructor(
     private baseUrl: string,
-    private token: string,
+    private token?: string,
   ) {}
 
   private async request<T>(
@@ -42,12 +42,15 @@ export class RegistryApi {
     opts?: { method?: string; body?: unknown },
   ): Promise<T> {
     const url = new URL(route, this.baseUrl).toString();
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    if (this.token) {
+      headers.authorization = `Bearer ${this.token}`;
+    }
     const init: RequestInit = {
       method: opts?.method ?? 'GET',
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        'content-type': 'application/json',
-      },
+      headers,
     };
     if (opts?.body) init.body = JSON.stringify(opts.body);
 
