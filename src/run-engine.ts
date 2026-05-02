@@ -16,7 +16,11 @@ import {
   getProxyBindHost,
   initRuntime,
 } from './container-runtime.js';
-import { loadPipelineConfig } from './pipeline-config.js';
+import {
+  formatPipelineConfigLoadError,
+  getLastPipelineConfigLoadError,
+  loadPipelineConfig,
+} from './pipeline-config.js';
 import { PipelineRunner } from './pipeline-runner.js';
 import { pipelineTagFromPath } from './pipeline-state.js';
 import type {
@@ -107,7 +111,12 @@ export async function runPipeline(opts: {
 
   const loadedConfig = loadPipelineConfig(group.folder, undefined, pipeline);
   if (!loadedConfig) {
-    console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
+    console.error(
+      formatPipelineConfigLoadError(
+        getLastPipelineConfigLoadError(),
+        pipeline ?? 'PIPELINE.json',
+      ),
+    );
     proxyServer?.close();
     process.exit(1);
   }
