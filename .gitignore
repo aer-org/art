@@ -1,8 +1,8 @@
 # Dependencies
 node_modules/
 .npm-cache/
-# Build output (tracked for npm install from GitHub)
-# dist/
+# Build output
+dist/
 
 # Local data & auth
 store/

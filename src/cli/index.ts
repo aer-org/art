@@ -101,7 +101,7 @@ async function main(): Promise<void> {
       console.log(`aer-art — AI agent pipeline runner
 
 Usage:
-  art init [dir]              Create __art__/ scaffold and PIPELINE.json
+  art init [dir]              Create __art__/ scaffold and empty PIPELINE.json
   art run [dir]               Start the agent pipeline engine
   art signup                  Create a new account
   art login                   Sign in with username/password

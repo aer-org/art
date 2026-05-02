@@ -15,13 +15,11 @@ export interface PipelineTransition {
   prompt?: string; // Description for the agent on when to use this marker
 }
 
-export type StageKind = 'agent' | 'command';
 export type TransitionOutcome = 'success' | 'error';
 export type JoinPolicy = 'all_success' | 'any_success' | 'all_settled';
 
 export interface PipelineStage {
   name: string;
-  kind?: StageKind; // Explicit stage kind. Default: inferred (command if `command` set, else agent).
   agent?: string; // Registry ref like "builder:latest". Resolved to prompt/mcp at run start.
   prompt?: string;
   image?: string; // Registry key (agent mode) or image name (command mode)
@@ -40,22 +38,12 @@ export interface PipelineStage {
   hostMounts?: AdditionalMount[]; // Host path mounts validated against allowlist
   mcpAccess?: string[]; // External MCP registry refs available to this stage
   resumeSession?: boolean; // false = always start fresh session. default true = resume
-  fan_in?: 'all'; // Fan-in mode: waits for all predecessors. Reserved for future alternatives.
   join?: {
     policy: JoinPolicy;
     expectedCopies: number;
     copyPrefixes: string[];
   }; // Runtime-generated join stage metadata. Not allowed in authored config.
   transitions: PipelineTransition[];
-}
-
-/**
- * Resolve the effective stage kind - explicit `kind` wins, otherwise infer
- * from presence of `command`.
- */
-export function resolveStageKind(stage: PipelineStage): StageKind {
-  if (stage.kind) return stage.kind;
-  return stage.command ? 'command' : 'agent';
 }
 
 export interface PipelineConfig {

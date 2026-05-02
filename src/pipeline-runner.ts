@@ -68,10 +68,8 @@ export type {
   PipelineConfig,
   PipelineStage,
   PipelineTransition,
-  StageKind,
   TransitionOutcome,
 } from './pipeline-types.js';
-export { resolveStageKind } from './pipeline-types.js';
 export type { PipelineState } from './pipeline-state.js';
 export {
   assertValidScopeId,
@@ -1169,26 +1167,19 @@ PAYLOAD FORMATS:
   }
 
   /**
-   * Validate plan, write manifest, create log stream.
+   * Write manifest and create log stream.
    * Returns null on validation failure.
    */
   private async initRun(): Promise<{
-    planContent: string;
     stagesByName: Map<string, PipelineStage>;
     pipelineLogStream: fs.WriteStream;
   } | null> {
-    const planPath = path.join(this.bundleDir, 'plan', 'PLAN.md');
-    const planContent = fs.existsSync(planPath)
-      ? fs.readFileSync(planPath, 'utf-8')
-      : '';
-
     // Write initial manifest
     writeRunManifest(this.stateDir, this.manifest);
     logger.info(
       {
         group: this.group.name,
         runId: this.runId,
-        planLen: planContent.length,
         stageCount: this.config.stages.length,
       },
       'Pipeline starting',
@@ -1222,8 +1213,7 @@ PAYLOAD FORMATS:
       stagesByName.set(s.name, s);
     }
 
-    const planSuffix = planContent ? `\n\n## Plan\n\n${planContent}` : '';
-    return { planContent: planSuffix, stagesByName, pipelineLogStream };
+    return { stagesByName, pipelineLogStream };
   }
 
   /**
@@ -1487,7 +1477,6 @@ PAYLOAD FORMATS:
       stageStartTime: number;
       completedStages: string[];
       commonRules: string;
-      planContent: string;
       stagesByName: Map<string, PipelineStage>;
       containerRespawnCount: number;
       maxContainerRespawns: number;
@@ -1509,7 +1498,6 @@ PAYLOAD FORMATS:
       stageStartTime,
       completedStages,
       commonRules,
-      planContent,
       stagesByName,
     } = ctx;
 
@@ -1572,7 +1560,7 @@ PAYLOAD FORMATS:
       return {
         stageResolved: true,
         nextStageName: currentStageName,
-        nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}${planContent}`,
+        nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}`,
         stageOutcome: null,
         lastResult: null,
       };
@@ -1689,7 +1677,7 @@ PAYLOAD FORMATS:
       if (isResumedTarget) {
         nextEphemeralSystemPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}`;
       } else {
-        nextInitialPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}${planContent}`;
+        nextInitialPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}`;
       }
     }
 
@@ -1804,7 +1792,6 @@ PAYLOAD FORMATS:
     stageName: string,
     stagesByName: Map<string, PipelineStage>,
     completedStages: string[],
-    planContent: string,
     pipelineLogStream: fs.WriteStream,
     initialPromptOverride?: string | null,
     ephemeralSystemPromptOverride?: string | null,
@@ -1881,8 +1868,7 @@ PAYLOAD FORMATS:
         }
 
         const initialPrompt =
-          nextInitialPrompt ||
-          `${stageConfig.prompt ?? ''}\n${commonRules}${planContent}`;
+          nextInitialPrompt || `${stageConfig.prompt ?? ''}\n${commonRules}`;
         nextInitialPrompt = null;
         const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
         nextEphemeralSystemPrompt = null;
@@ -1914,7 +1900,7 @@ PAYLOAD FORMATS:
           }
 
           if (!isFirstTurn) {
-            const prompt = `${stageConfig.prompt ?? ''}\n${commonRules}${planContent}`;
+            const prompt = `${stageConfig.prompt ?? ''}\n${commonRules}`;
             sendToStage(handle, prompt);
           }
           isFirstTurn = false;
@@ -1943,7 +1929,6 @@ PAYLOAD FORMATS:
             stageStartTime,
             completedStages,
             commonRules,
-            planContent,
             stagesByName,
             containerRespawnCount,
             maxContainerRespawns: MAX_CONTAINER_RESPAWNS,
@@ -2003,7 +1988,7 @@ PAYLOAD FORMATS:
     const init = await this.initRun();
     if (!init) return 'error';
 
-    const { planContent, stagesByName, pipelineLogStream } = init;
+    const { stagesByName, pipelineLogStream } = init;
     const { initialStages, completedStages } =
       await this.resolveEntryStage(stagesByName);
 
@@ -2066,7 +2051,6 @@ PAYLOAD FORMATS:
         entry.name,
         stagesByName,
         completedStages,
-        planContent,
         pipelineLogStream,
         entry.initialPrompt,
         entry.ephemeralSystemPrompt,
@@ -2095,7 +2079,7 @@ PAYLOAD FORMATS:
     };
 
     // Helper: check readiness for a gated stage. Runtime-generated join stages
-    // use persisted settlement accounting; authored fan_in stages still use
+    // use persisted settlement accounting; multi-predecessor stages use
     // predecessor-based gating.
     const isStageReady = (stageName: string): boolean => {
       const stage = stagesByName.get(stageName);
@@ -2143,6 +2127,7 @@ PAYLOAD FORMATS:
       if (this.aborted) break;
 
       // Launch any deferred pending stages (e.g. chat stages waiting for pool to drain)
+      // To think... -> only used in chat stage? -> we need to make the chat system with IPC;
       if (pendingStages.length > 0 && running.size === 0) {
         const deferred = [...pendingStages];
         pendingStages = [];
