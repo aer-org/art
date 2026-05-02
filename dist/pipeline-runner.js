@@ -1046,6 +1046,16 @@ PAYLOAD FORMATS:
             this.activations = new Map(Object.entries(existingState.activations ?? {}));
             this.completions = new Map(Object.entries(existingState.completions ?? {}));
             this.restoreJoinSettlements(existingState.joinSettlements);
+            // Restore dynamically-inserted stages (from earlier stitch operations)
+            if (existingState.insertedStages &&
+                existingState.insertedStages.length > 0) {
+                this.config = {
+                    ...this.config,
+                    stages: [...this.config.stages, ...existingState.insertedStages],
+                };
+                assertNoNameCollision(this.config);
+                // baseStageCount already reflects the pre-resume count; don't update
+            }
             return { initialStages, completedStages };
         }
         this.restoreJoinSettlements(undefined);

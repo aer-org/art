@@ -41,6 +41,21 @@ export function resolveGroupFolderPath(folder) {
     const external = externalFolders.get(folder);
     if (external)
         return external;
+    // Inherit parent's external mapping for virtual sub-groups (e.g.
+    // "art-myapp__pipeline_build"), so per-stage artifacts (conversations,
+    // .state/logs) live under the project's __art__/ rather than GROUPS_DIR
+    // (which is the engine install location and may be read-only when
+    // installed as an npm package).
+    for (const [parent, parentPath] of externalFolders) {
+        if (folder.startsWith(`${parent}__`)) {
+            assertValidGroupFolder(folder);
+            const suffix = folder.slice(parent.length + 2);
+            const stagesBase = path.resolve(parentPath, '.stages');
+            const resolved = path.resolve(stagesBase, suffix);
+            ensureWithinBase(stagesBase, resolved);
+            return resolved;
+        }
+    }
     assertValidGroupFolder(folder);
     const groupPath = path.resolve(GROUPS_DIR, folder);
     ensureWithinBase(GROUPS_DIR, groupPath);
