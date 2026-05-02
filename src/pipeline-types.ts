@@ -20,7 +20,7 @@ export type JoinPolicy = 'all_success' | 'any_success' | 'all_settled';
 
 export interface PipelineStage {
   name: string;
-  agent?: string; // Registry ref like "builder:latest". Resolved to prompt/mcp at run start.
+  agent?: string; // Local agents/<name>.md prompt ref. Resolved while loading config.
   prompt?: string;
   image?: string; // Registry key (agent mode) or image name (command mode)
   command?: string; // Shell command mode (runs sh -c, no agent)

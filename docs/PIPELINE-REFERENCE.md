@@ -39,7 +39,8 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | Field         | Type                                   | Required | Default     | Description                                                                                                                                        |
 | ------------- | -------------------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`        | `string`                               | Yes      | —           | Unique stage identifier                                                                                                                            |
-| `prompt`      | `string`                               | Yes      | —           | System prompt sent to the agent. Describes what this stage should do                                                                               |
+| `prompt`      | `string`                               | Yes*     | —           | System prompt sent to the agent. Describes what this stage should do                                                                               |
+| `agent`       | `string`                               | Yes*     | —           | Local prompt file name under `agents/<name>.md`. Use either `prompt` or `agent`, not both                                                          |
 | `image`       | `string`                               | No       | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry)                                           |
 | `command`     | `string`                               | No       | `null`      | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
 | `timeout`     | `number`                               | No       | inherited   | Command mode only. Maximum runtime in milliseconds before the command is terminated. Overrides the group/container timeout for this stage.         |
@@ -50,6 +51,8 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | `hostMounts`  | `AdditionalMount[]`                    | No       | `[]`        | Host path mounts for this stage. Validated against the mount allowlist. See [Host Mounts](#host-mounts)                                            |
 | `mcpAccess`   | `string[]`                             | No       | `[]`        | External MCP registry refs available to this stage. See [External MCP Access](#external-mcp-access)                                                |
 | `transitions` | `PipelineTransition[]`                 | Yes      | —           | How to move to the next stage based on agent output. See [Transitions](#transitions)                                                               |
+
+*Agent stages require either `prompt` or `agent`. Command stages use `command` instead.
 
 ## Mounts
 

@@ -35,5 +35,6 @@ export function resolveAgentRefs(
     }
 
     stage.prompt = fs.readFileSync(agentPath, 'utf-8');
+    delete stage.agent;
   }
 }
