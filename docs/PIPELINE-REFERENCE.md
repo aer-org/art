@@ -2,7 +2,7 @@
 
 This document describes every configurable field in `__art__/PIPELINE.json`.
 
-> **Breaking schema change (stitch):** `kind: "dynamic-fanout"`, transition `retry`, transition `next_dynamic`, and `fan_in: "dynamic"` are removed. Transitions are now `{ marker?, next, template?, count?, countFrom?, substitutionsFrom?, joinPolicy?, outcome?, afterTimeout?, prompt? }`. `next` is always required and names the downstream node in the current scope (or `null` to end the current scope). `marker` is required unless `afterTimeout: true`. If `template` is present, the template is spawned first and then returns to `next`. Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
+> **Breaking schema change (stitch):** stage `kind`, stage `fan_in`, transition `retry`, and transition `next_dynamic` are removed. Command mode is inferred from `command`; multi-predecessor fan-in is automatic. Transitions are now `{ marker?, next, template?, count?, countFrom?, substitutionsFrom?, joinPolicy?, outcome?, afterTimeout?, prompt? }`. `next` is always required and names the downstream node in the current scope (or `null` to end the current scope). `marker` is required unless `afterTimeout: true`. If `template` is present, the template is spawned first and then returns to `next`. Pipelines must be acyclic DAGs. Legacy `PIPELINE_STATE.*.json` files are not supported — delete to reset.
 
 ## Top-Level
 
@@ -23,11 +23,11 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 ```json
 {
   "name": "build",
-  "prompt": "Read PLAN.md and implement the described changes.",
+  "prompt": "Implement the described changes.",
   "image": "default",
   "command": null,
   "timeout": null,
-  "mounts": { "plan": "ro", "src": "rw", "project": "ro" },
+  "mounts": { "src": "rw", "project": "ro" },
   "mcpAccess": ["sqlite.read"],
   "devices": [],
   "runAsRoot": false,
@@ -39,7 +39,6 @@ This document describes every configurable field in `__art__/PIPELINE.json`.
 | Field         | Type                                   | Required | Default     | Description                                                                                                                                        |
 | ------------- | -------------------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`        | `string`                               | Yes      | —           | Unique stage identifier                                                                                                                            |
-| `kind`        | `"agent" \| "command"`                 | No       | inferred    | Explicit stage kind. If omitted, inferred: `command` when `command` is set, else `agent`.                                                          |
 | `prompt`      | `string`                               | Yes      | —           | System prompt sent to the agent. Describes what this stage should do                                                                               |
 | `image`       | `string`                               | No       | `"default"` | Image registry key (agent mode) or full image name (command mode). See [Image Registry](#image-registry)                                           |
 | `command`     | `string`                               | No       | `null`      | If set, runs this shell command via `sh -c` instead of spawning an agent. Output markers are parsed from stdout. See [Command Mode](#command-mode) |
@@ -58,7 +57,6 @@ Mounts control what each stage can access. Keys are directory names inside `__ar
 
 ```json
 "mounts": {
-  "plan": "ro",
   "src": "rw",
   "tests": "rw",
   "outputs": "rw",
@@ -118,7 +116,6 @@ This mounts only `<groupDir>/cov_per_section/S-01/` at `/workspace/cov_per_secti
 
 | Mount key              | Container path                                                 |
 | ---------------------- | -------------------------------------------------------------- |
-| `plan`                 | `/workspace/plan`                                              |
 | `src`                  | `/workspace/src`                                               |
 | `outputs`              | `/workspace/outputs`                                           |
 | `project`              | `/workspace/project`                                           |
@@ -206,8 +203,8 @@ In `PIPELINE.json`, reference the registry keys:
 ```json
 {
   "name": "build",
-  "prompt": "Read PLAN.md and update the DB state after each completed step.",
-  "mounts": { "plan": "ro", "src": "rw", "project": "ro" },
+  "prompt": "Update the DB state after each completed step.",
+  "mounts": { "src": "rw", "project": "ro" },
   "mcpAccess": ["sqlite.read", "sqlite.write"],
   "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }]
 }
@@ -428,9 +425,8 @@ If `image` is omitted, the `"default"` registry entry is used.
   "stages": [
     {
       "name": "build",
-      "prompt": "Read PLAN.md and implement the described changes in src/.",
+      "prompt": "Implement the described changes in src/.",
       "mounts": {
-        "plan": "ro",
         "src": "rw",
         "outputs": "rw",
         "project": "ro",

@@ -27,10 +27,11 @@ npm install -g @aer-org/art
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 ```
 
-Initialize a project once, then run it:
+Initialize a project, define a pipeline, then run it:
 
 ```bash
 art init /my/project
+# edit /my/project/__art__/PIPELINE.json
 art run /my/project
 ```
 
@@ -74,7 +75,7 @@ art run .  # requires NVIDIA Ampere+ GPU
 art init /my/project
 ```
 
-ART creates a minimal `__art__/` scaffold with a default pipeline and the files that pipeline expects.
+ART creates a minimal `__art__/` scaffold with an empty `PIPELINE.json`; add stages before running it.
 
 **2. Run it:**
 
@@ -89,9 +90,8 @@ my-project/
 ├── src/, data/, ...                # Your project (read-only by default)
 └── __art__/                        # All ART artifacts
     ├── PIPELINE.json               # Pipeline definition
-    ├── PLAN.md                     # What you want built
-    ├── src/                        # Agent-written code
-    ├── outputs/                    # Run outputs
+    ├── agents/                     # Optional reusable agent prompts
+    ├── templates/                  # Optional reusable sub-graphs
     ├── logs/                       # Per-stage logs
     └── runs/                       # Run history manifests
 ```
@@ -104,11 +104,11 @@ Edit `__art__/PIPELINE.json` and the files under `__art__/` directly if you want
 
 A pipeline is a list of stages connected by transitions. Each stage runs in its own container and communicates via **output markers**.
 
-Here's what the **default template** looks like. ART understands stages, transitions, mounts, and markers from `PIPELINE.json`.
+For example, a pipeline can build, test, review, and record history. ART understands stages, transitions, mounts, and markers from `PIPELINE.json`.
 
 ```
     ┌──────────┐
-    │  BUILD   │ ← reads PLAN.md, writes code to src/
+    │  BUILD   │ ← writes code or artifacts
     └────┬─────┘
          │ [STAGE_COMPLETE]
          ▼
@@ -159,7 +159,7 @@ ART is designed to reduce accidental access and constrain agent execution, but i
 ## CLI Reference
 
 ```bash
-art init <path>                 # Create __art__/ scaffold and default PIPELINE.json
+art init <path>                 # Create __art__/ scaffold and empty PIPELINE.json
 art run <path>                  # Execute pipeline (default provider: Claude)
 art run --codex <path>          # Execute pipeline with Codex
 art run --claude <path>         # Execute pipeline with Claude Code

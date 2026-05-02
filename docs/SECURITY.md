@@ -52,7 +52,7 @@ The project root is mounted read-only. Writable paths the agent needs (`__art__/
 
 **Per-Stage Mount Policies:**
 
-Each stage declares which `__art__/` subdirectories are rw, ro, or hidden (not mounted). The default `art init` scaffold encodes these policies up front, and authored `PIPELINE.json` files can override them. This provides adversarial separation — build agents cannot see test scripts, test agents cannot see plans.
+Each stage declares which `__art__/` subdirectories are rw, ro, or hidden (not mounted). Authored `PIPELINE.json` files encode these policies explicitly. This provides adversarial separation — for example, a build stage can be kept from seeing test scripts.
 
 ### 3. Credential Isolation (Auth Boundary)
 
@@ -77,8 +77,7 @@ Real API credentials **never enter containers**. Instead, the host runs an HTTP 
 Each pipeline stage runs in its own ephemeral container with independent mount configuration:
 
 - **Per-stage mounts**: Each stage declares which `__art__/` subdirectories are rw, ro, or hidden
-- **Adversarial separation**: Build agents cannot see test scripts; test agents cannot see plans
-- **Default scaffold stages** encode mount policies up front (overridable in `PIPELINE.json`)
+- **Adversarial separation**: stages only see directories their mount policy exposes
 - **Command mode** stages (`sh -c`) get the same mount isolation as agent-mode stages
 
 ### 5. Run ID Container Cleanup

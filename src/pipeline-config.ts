@@ -56,19 +56,15 @@ export function loadPipelineConfig(
     const stageNames = new Set(config.stages.map((s) => s.name));
     for (const stage of config.stages) {
       const isCommandStage = typeof stage.command === 'string';
-      if (
-        stage.kind !== undefined &&
-        stage.kind !== 'agent' &&
-        stage.kind !== 'command'
-      ) {
+      const stageAny = stage as unknown as Record<string, unknown>;
+      if (stageAny.kind !== undefined) {
         logger.error(
-          { groupFolder, stage: stage.name, kind: stage.kind },
-          'Invalid stage kind (must be "agent" or "command")',
+          { groupFolder, stage: stage.name, kind: stageAny.kind },
+          'Stage "kind" is no longer supported; omit it and set "command" for command stages',
         );
         return null;
       }
 
-      const stageAny = stage as unknown as Record<string, unknown>;
       if (stageAny.prompts !== undefined) {
         logger.error(
           { groupFolder, stage: stage.name },
@@ -150,10 +146,10 @@ export function loadPipelineConfig(
         }
       }
 
-      if (stage.fan_in !== undefined && stage.fan_in !== 'all') {
+      if (stageAny.fan_in !== undefined) {
         logger.error(
-          { groupFolder, stage: stage.name, fan_in: stage.fan_in },
-          'Invalid fan_in value (must be "all")',
+          { groupFolder, stage: stage.name, fan_in: stageAny.fan_in },
+          'Stage "fan_in" is no longer supported; multi-predecessor fan-in is automatic',
         );
         return null;
       }

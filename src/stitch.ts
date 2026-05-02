@@ -488,7 +488,6 @@ function buildJoinStage(
 ): PipelineStage {
   return {
     name,
-    kind: 'command',
     mounts: {},
     join: {
       policy: joinPolicy,

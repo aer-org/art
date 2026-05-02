@@ -116,8 +116,8 @@ The E2E suite installs the package globally via `npm pack → npm install -g` to
 | 3   | Single command pipeline           |  Yes   | No  | `echo '[STAGE_COMPLETE]'` → exit 0, state=success                        |
 | 4   | Multi-stage command pipeline      |  Yes   | No  | 3 stages (a→b→c) complete in order                                       |
 | 5   | Agent-mode pipeline               |  Yes   | Yes | Claude API call → `[STAGE_COMPLETE]` marker                              |
-| 6   | Init scaffold                     |   No   | No  | `art init` → PLAN.md created                                             |
-| 7   | Init + Run full flow              |  Yes   | Yes | `art init` → overwrite PLAN.md → `art run` succeeds                      |
+| 6   | Init scaffold                     |   No   | No  | `art init` → empty `PIPELINE.json` + authoring dirs                      |
+| 7   | Init + Run full flow              |  Yes   | Yes | `art init` → write explicit pipeline → `art run` succeeds                |
 
 - Command-mode tests (#3-4) use `--skip-preflight` to bypass Claude CLI/auth checks.
 - API-dependent tests (#5-7) auto-skip when `ANTHROPIC_API_KEY` is absent.
@@ -287,7 +287,7 @@ Steps: checkout → build via `./container/build.sh` → smoke test (TypeScript 
 
 ### E2E tests
 
-1. Add fixtures to `tests/e2e/fixtures/` with `__art__/PIPELINE.json` and `__art__/plan/PLAN.md`.
+1. Add fixtures to `tests/e2e/fixtures/` with `__art__/PIPELINE.json`.
 2. Add test cases in `tests/e2e/pipeline.e2e.test.ts`.
 3. Use `--skip-preflight` for tests that don't need Claude API.
 4. Guard API-dependent tests with `describe.skipIf(!hasApiKey)`.
