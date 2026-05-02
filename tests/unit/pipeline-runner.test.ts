@@ -720,8 +720,6 @@ describe('PipelineRunner FSM', () => {
     // Create required directories
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
 
     // Create IPC dirs for pipeline stages
     for (const stageName of ['implement', 'verify']) {
@@ -767,6 +765,48 @@ describe('PipelineRunner FSM', () => {
 
     const result = await runner.run();
     expect(result).toBe('success');
+  }, 15000);
+
+  it('does not append plan/PLAN.md to stage prompts', async () => {
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'implement',
+          prompt: 'Implement the feature',
+          mounts: {},
+          transitions: [{ marker: 'IMPL_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'plan', 'PLAN.md'),
+      'SECRET PLAN CONTENT',
+    );
+    enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    const call = vi
+      .mocked(runContainerAgent)
+      .mock.calls.find(
+        (c) => (c[0] as { name: string }).name === 'pipeline-implement',
+      );
+    expect(call).toBeDefined();
+    const prompt = (call![1] as { prompt: string }).prompt;
+    expect(prompt).toContain('Implement the feature');
+    expect(prompt).not.toContain('SECRET PLAN CONTENT');
   }, 15000);
 
   it('payload from implement is included in verify prompt', async () => {
@@ -1001,8 +1041,6 @@ describe('Stitch integration', () => {
     groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
     fs.mkdirSync(path.join(groupDir, 'templates'), { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
   });
 
   afterEach(() => {
@@ -1338,8 +1376,6 @@ describe('Command mode stage', () => {
 
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
   });
 
   afterEach(() => {
@@ -1693,7 +1729,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('rejects fan_in: "dynamic"', () => {
+  it('rejects removed fan_in field', () => {
     const config = {
       stages: [
         {
@@ -1712,7 +1748,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('rejects kind: "dynamic-fanout"', () => {
+  it('rejects removed kind field', () => {
     const config = {
       stages: [
         {
@@ -2274,8 +2310,6 @@ describe('generalized sub-path mounts', () => {
     group = makeTestGroup();
     groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
     stageOutputQueues.clear();
     vi.clearAllMocks();
   });

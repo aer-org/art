@@ -249,11 +249,15 @@ describe('Init scaffold', () => {
 
     expect(result.code).toBe(0);
 
-    const planPath = path.join(fixtureDir, '__art__', 'plan', 'PLAN.md');
-    expect(fs.existsSync(planPath)).toBe(true);
-
-    const planContent = fs.readFileSync(planPath, 'utf-8');
-    expect(planContent.length).toBeGreaterThan(0);
+    const artDir = path.join(fixtureDir, '__art__');
+    const pipelinePath = path.join(artDir, 'PIPELINE.json');
+    const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8')) as {
+      stages: unknown[];
+    };
+    expect(pipeline.stages).toEqual([]);
+    expect(fs.existsSync(path.join(artDir, 'agents'))).toBe(true);
+    expect(fs.existsSync(path.join(artDir, 'templates'))).toBe(true);
+    expect(fs.existsSync(path.join(artDir, 'plan'))).toBe(false);
   });
 });
 
@@ -274,10 +278,24 @@ describe.skipIf(!hasDocker || !hasApiKey)('Init + Run full flow @api', () => {
     const initResult = runArt(['init', '.'], fixtureDir, undefined, 120_000);
     expect(initResult.code).toBe(0);
 
-    const planPath = path.join(fixtureDir, '__art__', 'plan', 'PLAN.md');
+    const pipelinePath = path.join(fixtureDir, '__art__', 'PIPELINE.json');
     fs.writeFileSync(
-      planPath,
-      'Just return [STAGE_COMPLETE]. Do nothing else.\n',
+      pipelinePath,
+      JSON.stringify(
+        {
+          stages: [
+            {
+              name: 'done',
+              prompt: 'Just return [STAGE_COMPLETE]. Do nothing else.',
+              mounts: {},
+              transitions: [{ marker: '[STAGE_COMPLETE]', next: null }],
+            },
+          ],
+          entryStage: 'done',
+        },
+        null,
+        2,
+      ) + '\n',
     );
 
     const runResult = runArt(['run', '.'], fixtureDir, undefined, 600_000);

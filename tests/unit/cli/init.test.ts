@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe('scaffoldArtDir', () => {
-  it('creates the default pipeline scaffold in tests/unit-compatible layout', () => {
+  it('creates a minimal pipeline authoring scaffold', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'art-init-test-'));
     tmpRoots.push(projectDir);
 
@@ -24,42 +24,16 @@ describe('scaffoldArtDir', () => {
     const artDir = path.join(projectDir, '__art__');
     const pipelinePath = path.join(artDir, 'PIPELINE.json');
     const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8')) as {
-      entryStage: string;
-      stages: Array<{
-        name: string;
-        transitions: Array<{ marker: string; next: string | null }>;
-      }>;
+      stages: unknown[];
     };
 
-    expect(pipeline.entryStage).toBe('build');
-    expect(pipeline.stages.map((stage) => stage.name)).toEqual([
-      'build',
-      'test',
-      'review',
-      'history',
-    ]);
-    expect(
-      pipeline.stages
-        .map(
-          (stage) =>
-            stage.transitions.find(
-              (transition) => transition.marker === '[STAGE_COMPLETE]',
-            )?.next,
-        )
-        .slice(0, 4),
-    ).toEqual(['test', 'review', 'history', null]);
+    expect(pipeline.stages).toEqual([]);
 
-    for (const dir of [
-      'plan',
-      'src',
-      'logs',
-      'metrics',
-      'insights',
-      'memory',
-      'outputs',
-      'tests',
-    ]) {
+    for (const dir of ['agents', 'templates', 'logs']) {
       expect(fs.existsSync(path.join(artDir, dir))).toBe(true);
+    }
+    for (const dir of ['plan', 'metrics', 'insights', 'memory', 'outputs']) {
+      expect(fs.existsSync(path.join(artDir, dir))).toBe(false);
     }
   });
 });

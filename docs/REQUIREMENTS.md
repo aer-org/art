@@ -22,7 +22,7 @@ Instead of application-level permission systems trying to prevent agents from ac
 
 ### Plan First, Then Execute
 
-`art init` creates a minimal scaffold, and `art run` executes it through a pipeline where the plan is read-only by default. Each stage gets only the permissions it needs.
+`art init` creates a minimal scaffold, and `art run` executes the authored pipeline. Each stage gets only the permissions it needs.
 
 ### Customization = Code Changes
 
@@ -66,7 +66,7 @@ Containers never see real API keys. A host-side HTTP proxy intercepts all Anthro
 
 ### Two CLI Commands
 
-- `art init <path>` — Create `__art__/` if needed and write a default `PIPELINE.json`.
+- `art init <path>` — Create `__art__/` if needed and write an empty `PIPELINE.json`.
 - `art run <path>` — Executes the pipeline. Each stage runs sequentially in its own container. Completed stages are checkpointed for resume on interrupt.
 
 ### Stage Modes
@@ -92,7 +92,7 @@ Stages can declare an `exclusive` key. Stages sharing the same key never run con
 
 | Command | Purpose |
 |---------|---------|
-| `art init [dir]` | Create scaffold and default pipeline files |
+| `art init [dir]` | Create scaffold and empty pipeline file |
 | `art run [dir]` | Execute pipeline — sequential stage containers |
 
 ### Authentication

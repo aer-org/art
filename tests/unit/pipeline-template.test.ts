@@ -255,7 +255,7 @@ describe('validatePipelineTemplate', () => {
     ).toThrow(/next_dynamic/);
   });
 
-  it('rejects fan_in dynamic', () => {
+  it('rejects removed fan_in field', () => {
     expect(() =>
       validatePipelineTemplate(
         {
@@ -273,7 +273,7 @@ describe('validatePipelineTemplate', () => {
     ).toThrow(/fan_in/);
   });
 
-  it('rejects dynamic-fanout kind', () => {
+  it('rejects removed kind field', () => {
     expect(() =>
       validatePipelineTemplate(
         {
@@ -288,7 +288,7 @@ describe('validatePipelineTemplate', () => {
         },
         'tpl',
       ),
-    ).toThrow(/invalid kind/);
+    ).toThrow(/kind/);
   });
 
   it('rejects non-positive count', () => {

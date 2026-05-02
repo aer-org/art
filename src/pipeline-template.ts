@@ -181,13 +181,9 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
     validateTransitionShape(t, stage.name, templateName);
     if (t.afterTimeout) afterTimeoutTransitions++;
   }
-  if (
-    stage.kind !== undefined &&
-    stage.kind !== 'agent' &&
-    stage.kind !== 'command'
-  ) {
+  if (stageAny.kind !== undefined) {
     throw new Error(
-      `Template "${templateName}": stage "${stage.name}" has invalid kind "${String(stage.kind)}" (must be "agent" or "command")`,
+      `Template "${templateName}": stage "${stage.name}" uses unsupported "kind" field; omit it and set "command" for command stages`,
     );
   }
   if (stage.timeout !== undefined) {
@@ -202,9 +198,9 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       );
     }
   }
-  if (stage.fan_in !== undefined && stage.fan_in !== 'all') {
+  if (stageAny.fan_in !== undefined) {
     throw new Error(
-      `Template "${templateName}": stage "${stage.name}" has invalid fan_in "${String(stage.fan_in)}" (must be "all")`,
+      `Template "${templateName}": stage "${stage.name}" uses unsupported "fan_in" field; multi-predecessor fan-in is automatic`,
     );
   }
   if (stage.join !== undefined) {
