@@ -126,4 +126,31 @@ describe('pipeline config load diagnostics', () => {
     expect(loadPipelineConfig('test', validDir)).not.toBeNull();
     expect(getLastPipelineConfigLoadError()).toBeNull();
   });
+
+  it('resolves local agent prompts without leaving a registry ref behind', () => {
+    const dir = makeTmpDir();
+    fs.mkdirSync(path.join(dir, 'agents'));
+    fs.writeFileSync(
+      path.join(dir, 'agents', 'summarize.md'),
+      'Local summary prompt',
+    );
+    fs.writeFileSync(
+      path.join(dir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            name: 'summarize',
+            agent: 'summarize',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config = loadPipelineConfig('test', dir);
+
+    expect(config?.stages[0].prompt).toBe('Local summary prompt');
+    expect(config?.stages[0].agent).toBeUndefined();
+    expect(getLastPipelineConfigLoadError()).toBeNull();
+  });
 });
