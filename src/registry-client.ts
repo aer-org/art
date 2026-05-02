@@ -6,6 +6,8 @@ const CONFIG_DIR = path.join(os.homedir(), '.config', 'aer-art');
 const CACHE_DIR = path.join(os.homedir(), '.cache', 'aer-art');
 const CREDENTIALS_PATH = path.join(CONFIG_DIR, 'credentials.json');
 
+export const DEFAULT_REGISTRY_SERVER = 'https://aerclaw.com';
+
 export interface Credentials {
   server: string;
   token: string;
@@ -127,12 +129,16 @@ export class RegistryError extends Error {
 }
 
 export class RegistryClient {
-  constructor(private creds: Credentials) {}
+  constructor(private creds: { server: string; token?: string }) {}
 
   private async request<T>(route: string): Promise<T> {
     const url = new URL(route, this.creds.server).toString();
+    const headers: Record<string, string> = {};
+    if (this.creds.token) {
+      headers.authorization = `Bearer ${this.creds.token}`;
+    }
     const res = await fetch(url, {
-      headers: { authorization: `Bearer ${this.creds.token}` },
+      headers,
     });
     if (!res.ok) {
       let detail = `${res.status} ${res.statusText}`;
