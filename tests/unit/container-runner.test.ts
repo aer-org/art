@@ -140,6 +140,7 @@ vi.mock('child_process', async () => {
 });
 
 import {
+  buildContainerArgs,
   runContainerAgent,
   ContainerOutput,
 } from '../../src/container-runner.js';
@@ -269,6 +270,48 @@ describe('container-runner MCP config generation', () => {
   beforeEach(() => {
     fakeProc = createFakeProcess();
     vi.clearAllMocks();
+  });
+
+  it('defaults container agent provider to Codex', async () => {
+    const fsModule = await import('fs');
+    const mockedFs = vi.mocked(fsModule.default);
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    const configCall = mockedFs.writeFileSync.mock.calls.find(
+      ([filePath]) =>
+        filePath ===
+        '/tmp/aer-art-test-data/sessions/test-group/.codex/config.toml',
+    );
+    expect(configCall).toBeDefined();
+    expect(
+      mockedFs.writeFileSync.mock.calls.some(
+        ([filePath]) =>
+          filePath ===
+          '/tmp/aer-art-test-data/sessions/test-group/.claude/settings.json',
+      ),
+    ).toBe(false);
+
+    fakeProc.emit('close', 0);
+    await resultPromise;
+  });
+
+  it('defaults container args provider to Codex', () => {
+    const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
+    delete process.env.ART_CODEX_AUTH_MODE;
+
+    try {
+      const args = buildContainerArgs([], 'art-test-default-provider');
+
+      expect(args).toContain('ART_CODEX_AUTH_MODE=passthrough');
+      expect(args.join(' ')).not.toContain('ANTHROPIC_BASE_URL=');
+    } finally {
+      if (previousAuthMode === undefined) {
+        delete process.env.ART_CODEX_AUTH_MODE;
+      } else {
+        process.env.ART_CODEX_AUTH_MODE = previousAuthMode;
+      }
+    }
   });
 
   it('writes stage-local Codex config.toml with external MCP servers', async () => {

@@ -115,11 +115,11 @@ The E2E suite installs the package globally via `npm pack → npm install -g` to
 | 2   | Container image build             |  Yes   | No  | `art-agent:latest` exists or builds successfully                         |
 | 3   | Single command pipeline           |  Yes   | No  | `echo '[STAGE_COMPLETE]'` → exit 0, state=success                        |
 | 4   | Multi-stage command pipeline      |  Yes   | No  | 3 stages (a→b→c) complete in order                                       |
-| 5   | Agent-mode pipeline               |  Yes   | Yes | Claude API call → `[STAGE_COMPLETE]` marker                              |
+| 5   | Agent-mode pipeline               |  Yes   | Yes | `--claude` API call → `[STAGE_COMPLETE]` marker                           |
 | 6   | Init scaffold                     |   No   | No  | `art init` → empty `PIPELINE.json` + authoring dirs                      |
-| 7   | Init + Run full flow              |  Yes   | Yes | `art init` → write explicit pipeline → `art run` succeeds                |
+| 7   | Init + Run full flow              |  Yes   | Yes | `art init` → write explicit pipeline → `art run --claude` succeeds       |
 
-- Command-mode tests (#3-4) use `--skip-preflight` to bypass Claude CLI/auth checks.
+- Command-mode tests (#3-4) use `--skip-preflight` to bypass local provider CLI/auth checks.
 - API-dependent tests (#5-7) auto-skip when `ANTHROPIC_API_KEY` is absent.
 
 ### Test helpers (`tests/e2e/helpers.ts`)
@@ -256,7 +256,7 @@ Runs on push/PR to `main`/`dev`. Three parallel jobs:
 | Push to main (merge) | `secrets.ANTHROPIC_API_KEY` | #1-7 (full suite)                       |
 | Manual dispatch      | `secrets.ANTHROPIC_API_KEY` | #1-7 (full suite)                       |
 
-Steps: checkout → build → Docker image cache/build → install Claude CLI → `npm run test:e2e`.
+Steps: checkout → build → Docker image cache/build → install Claude CLI → `npm run test:e2e`. API-dependent E2E tests pass `--claude` explicitly because Codex is the default runtime provider.
 
 ### `.github/workflows/container-build.yml`
 
@@ -289,5 +289,5 @@ Steps: checkout → build via `./container/build.sh` → smoke test (TypeScript 
 
 1. Add fixtures to `tests/e2e/fixtures/` with `__art__/PIPELINE.json`.
 2. Add test cases in `tests/e2e/pipeline.e2e.test.ts`.
-3. Use `--skip-preflight` for tests that don't need Claude API.
+3. Use `--skip-preflight` for tests that don't need provider API access.
 4. Guard API-dependent tests with `describe.skipIf(!hasApiKey)`.
