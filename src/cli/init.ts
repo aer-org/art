@@ -56,7 +56,7 @@ export function scaffoldArtDir(projectDir: string): void {
   // .gitignore
   fs.writeFileSync(
     path.join(artDir, '.gitignore'),
-    'logs/\nsessions/\nPIPELINE_STATE*.json\n.tmp/\n',
+    'logs/\nsessions/\nPIPELINE_STATE*.json\n.tmp/\n.stages/\n',
   );
 
   console.log(`  ${ART_DIR_NAME}/ created with default pipeline.`);
