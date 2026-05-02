@@ -11,7 +11,9 @@ import { setCodexAuthProxyPort, setCredentialProxyPort } from './config.js';
 import { startCodexAuthProxy } from './codex-auth-proxy.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { ensureContainerRuntimeRunning, getProxyBindHost, initRuntime, } from './container-runtime.js';
-import { loadPipelineConfig, pipelineTagFromPath, PipelineRunner, } from './pipeline-runner.js';
+import { loadPipelineConfig } from './pipeline-config.js';
+import { PipelineRunner } from './pipeline-runner.js';
+import { pipelineTagFromPath } from './pipeline-state.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 function resolveProvider() {
@@ -75,12 +77,13 @@ export async function runPipeline(opts) {
     const notify = async (text) => {
         console.log(text);
     };
-    let pipelineConfig = loadPipelineConfig(group.folder, undefined, pipeline);
-    if (!pipelineConfig) {
+    const loadedConfig = loadPipelineConfig(group.folder, undefined, pipeline);
+    if (!loadedConfig) {
         console.error(`No ${pipeline ?? 'PIPELINE.json'} found`);
         proxyServer?.close();
         process.exit(1);
     }
+    let pipelineConfig = loadedConfig;
     // Resolve registry agent refs (stage.agent = "name:tag") → populate prompt,
     // mcp, and — if the agent points at a dockerfile — build a locally-canonical
     // image tag so independent machines converge on the same image name.
@@ -155,17 +158,23 @@ export async function runPipeline(opts) {
             process.exit(1);
         }
         // Replace transitions so the stage terminates on completion
+        const isolatedTransitions = stageConfig.command
+            ? [
+                { marker: 'STAGE_COMPLETE', next: null },
+                { marker: 'STAGE_ERROR', next: null },
+            ]
+            : [
+                { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
+                {
+                    marker: 'STAGE_ERROR',
+                    next: null,
+                    outcome: 'error',
+                    prompt: 'Stage failed',
+                },
+            ];
         const isolatedStage = {
             ...stageConfig,
-            transitions: stageConfig.command
-                ? [
-                    { marker: 'STAGE_COMPLETE', next: null },
-                    { marker: 'STAGE_ERROR', next: null },
-                ]
-                : [
-                    { marker: 'STAGE_COMPLETE', next: null, prompt: 'Stage completed' },
-                    { marker: 'STAGE_ERROR', retry: true, prompt: 'Recoverable error' },
-                ],
+            transitions: isolatedTransitions,
         };
         pipelineConfig = { stages: [isolatedStage] };
         console.log(`\n🔧 Running single stage: ${stage}`);

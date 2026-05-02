@@ -1,7 +1,5 @@
 export const STITCH_SUBSTITUTION_FIELDS = [
     'prompt',
-    'prompts',
-    'prompt_append',
     'mounts',
     'hostMounts',
     'env',

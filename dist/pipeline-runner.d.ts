@@ -1,124 +1,12 @@
-import { type SubstitutionMap } from './stitch.js';
-import { AdditionalMount, RegisteredGroup } from './types.js';
-export interface PipelineTransition {
-    marker?: string;
-    next?: string | string[] | null;
-    template?: string;
-    count?: number;
-    countFrom?: 'payload';
-    substitutionsFrom?: 'payload';
-    joinPolicy?: JoinPolicy;
-    outcome?: TransitionOutcome;
-    afterTimeout?: boolean;
-    prompt?: string;
-}
-export type StageKind = 'agent' | 'command';
-export type TransitionOutcome = 'success' | 'error';
-export type JoinPolicy = 'all_success' | 'any_success' | 'all_settled';
-export interface PipelineStage {
-    name: string;
-    kind?: StageKind;
-    agent?: string;
-    prompt?: string;
-    prompts?: string[];
-    prompt_append?: string;
-    image?: string;
-    command?: string;
-    successMarker?: string;
-    errorMarker?: string;
-    timeout?: number;
-    chat?: boolean;
-    mounts: Record<string, 'ro' | 'rw' | null | undefined>;
-    devices?: string[];
-    gpu?: boolean;
-    runAsRoot?: boolean;
-    privileged?: boolean;
-    env?: Record<string, string>;
-    exclusive?: string;
-    hostMounts?: AdditionalMount[];
-    mcpAccess?: string[];
-    resumeSession?: boolean;
-    fan_in?: 'all';
-    join?: {
-        policy: JoinPolicy;
-        expectedCopies: number;
-        copyPrefixes: string[];
-    };
-    transitions: PipelineTransition[];
-}
-/**
- * Resolve the effective stage kind — explicit `kind` wins, otherwise infer
- * from presence of `command`.
- */
-export declare function resolveStageKind(stage: PipelineStage): StageKind;
-export interface PipelineConfig {
-    stages: PipelineStage[];
-    entryStage?: string;
-}
-export type StitchDirective = {
-    mode: 'single';
-    subs?: SubstitutionMap;
-} | {
-    mode: 'parallel';
-    count: number;
-    perCopySubs?: SubstitutionMap[];
-};
-/**
- * Pure helper: given a matched transition and the payload captured from the
- * agent's marker, return the StitchDirective that performStitch should use.
- * Throws with a descriptive message on any invalid payload shape.
- *
- * Callers must pass `payload` only when the transition has `countFrom:
- * "payload"`; otherwise the argument is ignored. The caller catches thrown
- * errors and surfaces them as STAGE_ERROR outcomes.
- */
-export declare function resolveStitchInputs(t: PipelineTransition, payload: string | null): StitchDirective;
-export interface PipelineState {
-    version?: 3;
-    currentStage: string | string[] | null;
-    completedStages: string[];
-    lastUpdated: string;
-    status: 'running' | 'error' | 'success';
-    activations?: Record<string, number>;
-    completions?: Record<string, number>;
-    insertedStages?: PipelineStage[];
-    joinSettlements?: Record<string, Record<string, 'success' | 'error'>>;
-}
-export declare function assertValidScopeId(scopeId: string): void;
-/**
- * Derive a short tag from a custom pipeline file path.
- * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
- *      undefined (default PIPELINE.json) → undefined
- */
-export declare function pipelineTagFromPath(pipelinePath: string | undefined): string | undefined;
-export declare function savePipelineState(stateDir: string, state: PipelineState, tag?: string, scopeId?: string): void;
-export declare function loadPipelineState(stateDir: string, tag?: string, scopeId?: string): PipelineState | null;
-interface StageMarkerResult {
-    matched: PipelineTransition | null;
-    payload: string | null;
-}
-/**
- * Parse stage markers dynamically from the stage's transitions array.
- *
- * Supported forms (first match wins across transitions):
- *   [MARKER]                                          — no payload
- *   [MARKER: short inline payload]                    — single-line payload
- *   [MARKER]
- *   ---PAYLOAD_START---
- *   free-form multi-line payload (any chars incl. ])
- *   ---PAYLOAD_END---                                 — fenced payload
- *
- * The fenced form is preferred for anything non-trivial. Payload must not
- * contain the literal sentinel `---PAYLOAD_END---` (non-greedy match stops
- * at the first occurrence).
- *
- * Defensive unwrap: if a fenced payload body is *solely* an inline form of
- * the same marker (`[MARKER]` or `[MARKER: value]`), the inner value (or
- * null) is returned. This protects against agents double-wrapping the
- * marker — emitting inline syntax inside the fence — which would otherwise
- * leak literal brackets into downstream dispatchers.
- */
-export declare function parseStageMarkers(resultTexts: string[], transitions: PipelineTransition[]): StageMarkerResult;
+import { type PipelineConfig } from './pipeline-types.js';
+import { RegisteredGroup } from './types.js';
+export type { JoinPolicy, PipelineConfig, PipelineStage, PipelineTransition, StageKind, TransitionOutcome, } from './pipeline-types.js';
+export { resolveStageKind } from './pipeline-types.js';
+export type { PipelineState } from './pipeline-state.js';
+export { assertValidScopeId, loadPipelineState, pipelineTagFromPath, savePipelineState, } from './pipeline-state.js';
+export type { StitchDirective } from './pipeline-transitions.js';
+export { parseStageMarkers, resolveStitchInputs, } from './pipeline-transitions.js';
+export { loadPipelineConfig } from './pipeline-config.js';
 export declare class PipelineRunner {
     private group;
     private chatJid;
@@ -196,7 +84,7 @@ export declare class PipelineRunner {
      */
     private static nextTargets;
     /**
-     * Build predecessor map: for each stage, which stages have non-retry
+     * Build predecessor map: for each stage, which stages have primary
      * transitions pointing to it?
      */
     private buildPredecessorMap;
@@ -217,7 +105,7 @@ export declare class PipelineRunner {
      */
     private resolveEntryStage;
     /**
-     * Handle stage result: no-match → retry prompt, retry → re-send,
+     * Handle stage result: no-match → feedback prompt and re-send,
      * transition → close container and advance FSM.
      */
     private handleStageResult;
@@ -238,14 +126,4 @@ export declare class PipelineRunner {
      */
     run(): Promise<'success' | 'error'>;
 }
-/**
- * Load and validate a pipeline config.
- * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
- *   groupFolder/groupDir are ignored and the file is loaded directly.
- * Bundle-relative assets (agents/, templates/) resolve from the directory
- * containing the pipeline file (bundleDir).
- * Returns null if the file doesn't exist.
- */
-export declare function loadPipelineConfig(groupFolder: string, groupDir?: string, pipelinePath?: string): PipelineConfig | null;
-export {};
 //# sourceMappingURL=pipeline-runner.d.ts.map

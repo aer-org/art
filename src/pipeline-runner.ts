@@ -31,195 +31,63 @@ import {
 } from './run-manifest.js';
 import {
   formatStageMcpAccessSummary,
-  loadMcpRegistry,
   resolveStageMcpServers,
-  type ExternalMcpRegistry,
 } from './mcp-registry.js';
-import { resolveAgentRefs } from './agent-ref.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
 import {
-  assertConfigAcyclic,
   assertNoNameCollision,
   stitchParallel,
   stitchSingle,
-  RESERVED_SUBSTITUTION_KEYS,
-  type SubstitutionMap,
 } from './stitch.js';
-import { AdditionalMount, RegisteredGroup } from './types.js';
+import {
+  type JoinPolicy,
+  type PipelineConfig,
+  type PipelineStage,
+  type PipelineTransition,
+  type TransitionOutcome,
+} from './pipeline-types.js';
+import {
+  assertValidScopeId,
+  loadPipelineState,
+  savePipelineState,
+  type PipelineState,
+} from './pipeline-state.js';
+import {
+  parseStageMarkers,
+  primaryTransition,
+  resolveStitchInputs,
+  transitionDisplayName,
+  transitionOutcome,
+  type StageMarkerResult,
+  type StitchDirective,
+} from './pipeline-transitions.js';
+import { RegisteredGroup } from './types.js';
+
+export type {
+  JoinPolicy,
+  PipelineConfig,
+  PipelineStage,
+  PipelineTransition,
+  StageKind,
+  TransitionOutcome,
+} from './pipeline-types.js';
+export { resolveStageKind } from './pipeline-types.js';
+export type { PipelineState } from './pipeline-state.js';
+export {
+  assertValidScopeId,
+  loadPipelineState,
+  pipelineTagFromPath,
+  savePipelineState,
+} from './pipeline-state.js';
+export type { StitchDirective } from './pipeline-transitions.js';
+export {
+  parseStageMarkers,
+  resolveStitchInputs,
+} from './pipeline-transitions.js';
+export { loadPipelineConfig } from './pipeline-config.js';
 
 function resolveProvider(): 'claude' | 'codex' {
   return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
-}
-
-// --- Pipeline JSON Schema ---
-
-export interface PipelineTransition {
-  marker?: string; // Marker name (e.g. "STAGE_COMPLETE"). Required unless `afterTimeout` is true.
-  next?: string | string[] | null; // Downstream stage in the current scope, or null to end the current scope. Arrays are runtime-only fan-out targets.
-  template?: string; // Template name to stitch before continuing to `next`.
-  count?: number; // With `template`: insert N copies in parallel + synthesized join. Requires `template`. Mutually exclusive with `countFrom`.
-  countFrom?: 'payload'; // Derive lane count from marker payload (JSON array length). Requires `template`. Mutually exclusive with `count`.
-  substitutionsFrom?: 'payload'; // Per-lane substitution map comes from payload[i] object fields. Requires `countFrom: "payload"`.
-  joinPolicy?: JoinPolicy; // With `template`: how the spawned copies decide whether to continue to `next`.
-  outcome?: TransitionOutcome; // Optional explicit outcome classification for this transition.
-  afterTimeout?: boolean; // Command mode only: fire this transition only after the command is terminated for timeout.
-  prompt?: string; // Description for the agent on when to use this marker
-}
-
-export type StageKind = 'agent' | 'command';
-export type TransitionOutcome = 'success' | 'error';
-export type JoinPolicy = 'all_success' | 'any_success' | 'all_settled';
-
-export interface PipelineStage {
-  name: string;
-  kind?: StageKind; // Explicit stage kind. Default: inferred (command if `command` set, else agent).
-  agent?: string; // Registry ref like "builder:latest". Resolved to prompt/mcp at run start.
-  prompt?: string;
-  image?: string; // Registry key (agent mode) or image name (command mode)
-  command?: string; // Shell command mode (runs sh -c, no agent)
-  successMarker?: string; // Command mode: stdout substring that indicates success → STAGE_COMPLETE
-  errorMarker?: string; // Command mode: stdout substring that indicates failure → STAGE_ERROR (resolves immediately)
-  timeout?: number; // Command mode only: max runtime in milliseconds before the process is terminated.
-  chat?: boolean; // Interactive chatting stage (agent + user conversation via stdin)
-  mounts: Record<string, 'ro' | 'rw' | null | undefined>;
-  devices?: string[];
-  gpu?: boolean;
-  runAsRoot?: boolean;
-  privileged?: boolean; // Run container with --privileged flag
-  env?: Record<string, string>; // Environment variables passed to container
-  exclusive?: string;
-  hostMounts?: AdditionalMount[]; // Host path mounts validated against allowlist
-  mcpAccess?: string[]; // External MCP registry refs available to this stage
-  resumeSession?: boolean; // false = always start fresh session. default true = resume
-  fan_in?: 'all'; // Fan-in mode: waits for all predecessors. Reserved for future alternatives.
-  join?: {
-    policy: JoinPolicy;
-    expectedCopies: number;
-    copyPrefixes: string[];
-  }; // Runtime-generated join stage metadata. Not allowed in authored config.
-  transitions: PipelineTransition[];
-}
-
-/**
- * Resolve the effective stage kind — explicit `kind` wins, otherwise infer
- * from presence of `command`.
- */
-export function resolveStageKind(stage: PipelineStage): StageKind {
-  if (stage.kind) return stage.kind;
-  return stage.command ? 'command' : 'agent';
-}
-
-function transitionOutcome(transition: PipelineTransition): TransitionOutcome {
-  if (transition.outcome) return transition.outcome;
-  if (transition.afterTimeout) return 'error';
-  return transition.marker?.includes('ERROR') ? 'error' : 'success';
-}
-
-function transitionDisplayName(transition: PipelineTransition): string {
-  if (transition.afterTimeout) return 'afterTimeout';
-  return transition.marker ?? 'transition';
-}
-
-function primaryTransition(
-  stage: Pick<PipelineStage, 'transitions'>,
-): PipelineTransition | undefined {
-  return stage.transitions.find((t) => !t.afterTimeout) ?? stage.transitions[0];
-}
-
-export interface PipelineConfig {
-  stages: PipelineStage[];
-  entryStage?: string;
-}
-
-// --- Stitch directive (result of resolving a transition into stitch inputs) ---
-
-export type StitchDirective =
-  | { mode: 'single'; subs?: SubstitutionMap }
-  | {
-      mode: 'parallel';
-      count: number;
-      perCopySubs?: SubstitutionMap[];
-    };
-
-/**
- * Pure helper: given a matched transition and the payload captured from the
- * agent's marker, return the StitchDirective that performStitch should use.
- * Throws with a descriptive message on any invalid payload shape.
- *
- * Callers must pass `payload` only when the transition has `countFrom:
- * "payload"`; otherwise the argument is ignored. The caller catches thrown
- * errors and surfaces them as STAGE_ERROR outcomes.
- */
-export function resolveStitchInputs(
-  t: PipelineTransition,
-  payload: string | null,
-): StitchDirective {
-  // Static count path — unchanged from pre-payload behavior.
-  if (t.countFrom === undefined) {
-    if (t.count !== undefined && t.count > 1) {
-      return { mode: 'parallel', count: t.count };
-    }
-    return { mode: 'single' };
-  }
-
-  // Dynamic (payload-driven) path.
-  if (payload === null || payload.length === 0) {
-    throw new Error(
-      'countFrom: "payload" requires the agent to emit a fenced ---PAYLOAD_START---...---PAYLOAD_END--- block after the marker',
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch (err) {
-    throw new Error(`Payload is not valid JSON: ${(err as Error).message}`);
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error('Payload must be a JSON array');
-  }
-  if (parsed.length === 0) {
-    throw new Error('Payload array must be non-empty');
-  }
-  const wantSubs = t.substitutionsFrom === 'payload';
-  const perCopySubs: SubstitutionMap[] = [];
-  for (let i = 0; i < parsed.length; i++) {
-    const el = parsed[i];
-    if (el === null || typeof el !== 'object' || Array.isArray(el)) {
-      throw new Error(
-        `Payload element [${i}] must be a flat JSON object (got ${el === null ? 'null' : Array.isArray(el) ? 'array' : typeof el})`,
-      );
-    }
-    const subs: SubstitutionMap = {};
-    for (const [key, value] of Object.entries(el)) {
-      if ((RESERVED_SUBSTITUTION_KEYS as readonly string[]).includes(key)) {
-        throw new Error(
-          `Payload element [${i}] uses reserved key "${key}" (reserved: ${RESERVED_SUBSTITUTION_KEYS.join(', ')})`,
-        );
-      }
-      if (
-        typeof value !== 'string' &&
-        typeof value !== 'number' &&
-        typeof value !== 'boolean'
-      ) {
-        throw new Error(
-          `Payload element [${i}] field "${key}" must be string/number/boolean (got ${typeof value})`,
-        );
-      }
-      subs[key] = value;
-    }
-    perCopySubs.push(subs);
-  }
-  if (perCopySubs.length === 1) {
-    return {
-      mode: 'single',
-      subs: wantSubs ? perCopySubs[0] : undefined,
-    };
-  }
-  return {
-    mode: 'parallel',
-    count: perCopySubs.length,
-    perCopySubs: wantSubs ? perCopySubs : undefined,
-  };
 }
 
 // --- Exclusive stage lock ---
@@ -261,111 +129,7 @@ function getExclusiveLock(key: string): ExclusiveLock {
   return lock;
 }
 
-// --- Pipeline State Tracking ---
-
-export interface PipelineState {
-  version?: 3; // Required on save; load rejects older state files.
-  currentStage: string | string[] | null;
-  completedStages: string[];
-  lastUpdated: string;
-  status: 'running' | 'error' | 'success';
-  activations?: Record<string, number>; // Per-stage activation count for fan-in accounting.
-  completions?: Record<string, number>; // Per-stage completion count for fan-in accounting.
-  insertedStages?: PipelineStage[]; // Dynamically inserted stages (from runtime stitch). Merged into config on resume.
-  joinSettlements?: Record<string, Record<string, 'success' | 'error'>>; // Per join-stage copy outcomes keyed by copy index.
-}
-
-const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
-
-// scopeId constrains nested child-runner paths so parent and sibling runners
-// don't collide on PIPELINE_STATE / sessions / IPC / logs. Short alphanumeric
-// keeps the derived virtual sub-folder under the group-folder length cap.
-const SCOPE_ID_PATTERN = /^[A-Za-z0-9_-]{1,16}$/;
-
-export function assertValidScopeId(scopeId: string): void {
-  if (!SCOPE_ID_PATTERN.test(scopeId)) {
-    throw new Error(
-      `Invalid scopeId "${scopeId}" — must match ${SCOPE_ID_PATTERN}`,
-    );
-  }
-}
-
-/**
- * Derive the state file name for a given pipeline tag and optional scopeId.
- * - no tag, no scope            → 'PIPELINE_STATE.json' (backward compatible)
- * - tag only                    → 'PIPELINE_STATE.<tag>.json'
- * - scope only                  → 'PIPELINE_STATE.<scope>.json'
- * - scope + tag                 → 'PIPELINE_STATE.<scope>.<tag>.json'
- */
-function pipelineStateFileName(tag?: string, scopeId?: string): string {
-  const parts: string[] = [];
-  if (scopeId) parts.push(scopeId);
-  if (tag && tag !== 'PIPELINE') parts.push(tag);
-  if (parts.length === 0) return PIPELINE_STATE_FILE;
-  return `PIPELINE_STATE.${parts.join('.')}.json`;
-}
-
-/**
- * Derive a short tag from a custom pipeline file path.
- * e.g. '/abs/path/to/my-pipeline.json' → 'my-pipeline'
- *      undefined (default PIPELINE.json) → undefined
- */
-export function pipelineTagFromPath(
-  pipelinePath: string | undefined,
-): string | undefined {
-  if (!pipelinePath) return undefined;
-  const base = path.basename(pipelinePath, '.json');
-  if (base === 'PIPELINE') return undefined;
-  return base;
-}
-
-export function savePipelineState(
-  stateDir: string,
-  state: PipelineState,
-  tag?: string,
-  scopeId?: string,
-): void {
-  fs.mkdirSync(stateDir, { recursive: true });
-  const filepath = path.join(stateDir, pipelineStateFileName(tag, scopeId));
-  const stateOut: PipelineState = { ...state, version: 3 };
-  atomicWrite(filepath, JSON.stringify(stateOut, null, 2));
-}
-
-export function loadPipelineState(
-  stateDir: string,
-  tag?: string,
-  scopeId?: string,
-): PipelineState | null {
-  const filepath = path.join(stateDir, pipelineStateFileName(tag, scopeId));
-  let raw: string;
-  try {
-    raw = fs.readFileSync(filepath, 'utf-8');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
-  }
-  let parsed: PipelineState & { pendingFanoutPayloads?: unknown };
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `Pipeline state file ${filepath} is not valid JSON: ${(err as Error).message}`,
-    );
-  }
-  if (parsed.version !== 3 || parsed.pendingFanoutPayloads !== undefined) {
-    throw new Error(
-      `Pipeline state file ${filepath} is from an older pipeline-state version — delete it to reset (rm "${filepath}")`,
-    );
-  }
-  return parsed;
-}
-
 // --- Internal types ---
-
-interface StageMarkerResult {
-  matched: PipelineTransition | null;
-  payload: string | null;
-}
 
 interface StageHandle {
   name: string;
@@ -379,59 +143,6 @@ interface StageHandle {
   resultTexts: string[];
 }
 
-/**
- * Parse stage markers dynamically from the stage's transitions array.
- *
- * Supported forms (first match wins across transitions):
- *   [MARKER]                                          — no payload
- *   [MARKER: short inline payload]                    — single-line payload
- *   [MARKER]
- *   ---PAYLOAD_START---
- *   free-form multi-line payload (any chars incl. ])
- *   ---PAYLOAD_END---                                 — fenced payload
- *
- * The fenced form is preferred for anything non-trivial. Payload must not
- * contain the literal sentinel `---PAYLOAD_END---` (non-greedy match stops
- * at the first occurrence).
- *
- * Defensive unwrap: if a fenced payload body is *solely* an inline form of
- * the same marker (`[MARKER]` or `[MARKER: value]`), the inner value (or
- * null) is returned. This protects against agents double-wrapping the
- * marker — emitting inline syntax inside the fence — which would otherwise
- * leak literal brackets into downstream dispatchers.
- */
-export function parseStageMarkers(
-  resultTexts: string[],
-  transitions: PipelineTransition[],
-): StageMarkerResult {
-  const combined = resultTexts.join('\n');
-  for (const transition of transitions) {
-    if (transition.afterTimeout || !transition.marker) continue;
-    const markerName = escapeRegExp(transition.marker);
-    // Fenced payload: [MARKER] followed by ---PAYLOAD_START---...---PAYLOAD_END---
-    const fencedRegex = new RegExp(
-      `\\[${markerName}\\][ \\t]*\\r?\\n[ \\t]*---PAYLOAD_START---[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*---PAYLOAD_END---`,
-    );
-    const fencedMatch = fencedRegex.exec(combined);
-    if (fencedMatch) {
-      const payload = fencedMatch[1];
-      const unwrapRegex = new RegExp(`^\\[${markerName}(?::\\s*(.+?))?\\]$`);
-      const unwrap = unwrapRegex.exec(payload.trim());
-      if (unwrap) {
-        return { matched: transition, payload: unwrap[1] ?? null };
-      }
-      return { matched: transition, payload };
-    }
-    // Inline / no payload: [MARKER] or [MARKER: payload]
-    const regex = new RegExp(`\\[${markerName}(?::\\s*(.+?))?\\]`);
-    const match = regex.exec(combined);
-    if (match) {
-      return { matched: transition, payload: match[1] ?? null };
-    }
-  }
-  return { matched: null, payload: null };
-}
-
 function readUserInput(promptText: string): Promise<string> {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -443,10 +154,6 @@ function readUserInput(promptText: string): Promise<string> {
       resolve(answer);
     });
   });
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function createDeferred(): {
@@ -1686,6 +1393,21 @@ PAYLOAD FORMATS:
       existingState.completedStages.length > 0
     ) {
       const completedStages = [...existingState.completedStages];
+      // Restore dynamically-inserted stages (from earlier stitch operations)
+      // BEFORE resolving currentStage so stagesByName can find them.
+      if (
+        existingState.insertedStages &&
+        existingState.insertedStages.length > 0
+      ) {
+        this.config = {
+          ...this.config,
+          stages: [...this.config.stages, ...existingState.insertedStages],
+        };
+        assertNoNameCollision(this.config);
+        for (const s of existingState.insertedStages) {
+          stagesByName.set(s.name, s);
+        }
+      }
       // Resume from currentStage directly — it captures exactly what was
       // running at interruption, handling cyclic and fan-out cases correctly.
       let initialStages: string[];
@@ -1727,18 +1449,6 @@ PAYLOAD FORMATS:
         Object.entries(existingState.completions ?? {}),
       );
       this.restoreJoinSettlements(existingState.joinSettlements);
-      // Restore dynamically-inserted stages (from earlier stitch operations)
-      if (
-        existingState.insertedStages &&
-        existingState.insertedStages.length > 0
-      ) {
-        this.config = {
-          ...this.config,
-          stages: [...this.config.stages, ...existingState.insertedStages],
-        };
-        assertNoNameCollision(this.config);
-        // baseStageCount already reflects the pre-resume count; don't update
-      }
       return { initialStages, completedStages };
     }
 
@@ -2517,386 +2227,5 @@ PAYLOAD FORMATS:
 
     await this.finalizeRun(completedStages, lastResult, pipelineLogStream);
     return lastResult;
-  }
-}
-
-/**
- * Load and validate a pipeline config.
- * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
- *   groupFolder/groupDir are ignored and the file is loaded directly.
- * Bundle-relative assets (agents/, templates/) resolve from the directory
- * containing the pipeline file (bundleDir).
- * Returns null if the file doesn't exist.
- */
-export function loadPipelineConfig(
-  groupFolder: string,
-  groupDir?: string,
-  pipelinePath?: string,
-): PipelineConfig | null {
-  const dir = groupDir ?? resolveGroupFolderPath(groupFolder);
-  if (!pipelinePath) {
-    pipelinePath = path.join(dir, 'PIPELINE.json');
-  }
-
-  const bundleDir = path.dirname(pipelinePath);
-
-  if (!fs.existsSync(pipelinePath)) {
-    return null;
-  }
-
-  try {
-    const raw = fs.readFileSync(pipelinePath, 'utf-8');
-    const config: PipelineConfig = JSON.parse(raw);
-    let mcpRegistry: ExternalMcpRegistry | undefined;
-
-    // Resolve agent refs (agents/*.md) relative to bundle dir
-    if (Array.isArray(config.stages)) {
-      resolveAgentRefs(config.stages, bundleDir);
-    }
-
-    // Basic validation
-    if (!Array.isArray(config.stages) || config.stages.length === 0) {
-      logger.warn({ groupFolder }, 'PIPELINE.json has no stages');
-      return null;
-    }
-
-    // Validate stage names and transitions
-    const stageNames = new Set(config.stages.map((s) => s.name));
-    for (const stage of config.stages) {
-      const isCommandStage = typeof stage.command === 'string';
-      if (
-        stage.kind !== undefined &&
-        stage.kind !== 'agent' &&
-        stage.kind !== 'command'
-      ) {
-        logger.error(
-          { groupFolder, stage: stage.name, kind: stage.kind },
-          'Invalid stage kind (must be "agent" or "command")',
-        );
-        return null;
-      }
-
-      const stageAny = stage as unknown as Record<string, unknown>;
-      if (stageAny.prompts !== undefined) {
-        logger.error(
-          { groupFolder, stage: stage.name },
-          'Stage "prompts" is no longer supported; use inline "prompt" or agents/<name>.md',
-        );
-        return null;
-      }
-
-      if (stageAny.prompt_append !== undefined) {
-        logger.error(
-          { groupFolder, stage: stage.name },
-          'Stage "prompt_append" is no longer supported; include the text in "prompt"',
-        );
-        return null;
-      }
-
-      if (stage.prompt !== undefined && typeof stage.prompt !== 'string') {
-        logger.error(
-          { groupFolder, stage: stage.name, prompt: stage.prompt },
-          'Invalid prompt field (must be a string)',
-        );
-        return null;
-      }
-      if (stage.timeout !== undefined) {
-        if (!Number.isFinite(stage.timeout) || stage.timeout <= 0) {
-          logger.error(
-            { groupFolder, stage: stage.name, timeout: stage.timeout },
-            'Invalid timeout field (must be a positive number of milliseconds)',
-          );
-          return null;
-        }
-        if (!isCommandStage) {
-          logger.error(
-            { groupFolder, stage: stage.name },
-            'Stage "timeout" is only supported for command stages',
-          );
-          return null;
-        }
-      }
-
-      if (
-        stage.mcpAccess !== undefined &&
-        (!Array.isArray(stage.mcpAccess) ||
-          stage.mcpAccess.some((ref) => typeof ref !== 'string'))
-      ) {
-        logger.error(
-          { groupFolder, stage: stage.name, mcpAccess: stage.mcpAccess },
-          'Invalid mcpAccess field (must be an array of registry ref strings)',
-        );
-        return null;
-      }
-
-      if (!stage.command && !stage.prompt) {
-        logger.error(
-          { groupFolder, stage: stage.name },
-          'Agent stage must define prompt',
-        );
-        return null;
-      }
-
-      if (isCommandStage && stage.mcpAccess && stage.mcpAccess.length > 0) {
-        logger.error(
-          { groupFolder, stage: stage.name },
-          'Command stages cannot declare mcpAccess',
-        );
-        return null;
-      }
-
-      if (stage.mcpAccess && stage.mcpAccess.length > 0) {
-        try {
-          mcpRegistry ??= loadMcpRegistry();
-          resolveStageMcpServers(stage.mcpAccess, { registry: mcpRegistry });
-        } catch (err) {
-          logger.error(
-            { groupFolder, stage: stage.name, err },
-            'Invalid mcpAccess configuration',
-          );
-          return null;
-        }
-      }
-
-      if (stage.fan_in !== undefined && stage.fan_in !== 'all') {
-        logger.error(
-          { groupFolder, stage: stage.name, fan_in: stage.fan_in },
-          'Invalid fan_in value (must be "all")',
-        );
-        return null;
-      }
-
-      if (stage.join !== undefined) {
-        logger.error(
-          { groupFolder, stage: stage.name },
-          'Runtime "join" metadata cannot be authored in PIPELINE.json',
-        );
-        return null;
-      }
-
-      let afterTimeoutTransitions = 0;
-      for (const t of stage.transitions) {
-        const tAny = t as unknown as Record<string, unknown>;
-        const transitionName = t.afterTimeout
-          ? 'afterTimeout'
-          : (t.marker ?? '<missing-marker>');
-        if (tAny.retry !== undefined) {
-          logger.error(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "retry" is no longer supported',
-          );
-          return null;
-        }
-        if (tAny.next_dynamic !== undefined) {
-          logger.error(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "next_dynamic" is no longer supported',
-          );
-          return null;
-        }
-        if (
-          t.afterTimeout !== undefined &&
-          typeof t.afterTimeout !== 'boolean'
-        ) {
-          logger.error(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "afterTimeout" must be a boolean',
-          );
-          return null;
-        }
-        if (t.afterTimeout) {
-          afterTimeoutTransitions++;
-          if (!isCommandStage) {
-            logger.error(
-              { groupFolder, stage: stage.name },
-              'Transition "afterTimeout" is only supported for command stages',
-            );
-            return null;
-          }
-          if (t.marker !== undefined) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: t.marker },
-              'Transition "afterTimeout" cannot be combined with "marker"',
-            );
-            return null;
-          }
-          if (t.countFrom !== undefined || t.substitutionsFrom !== undefined) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "afterTimeout" does not support payload-driven fanout fields',
-            );
-            return null;
-          }
-        } else if (typeof t.marker !== 'string' || t.marker.length === 0) {
-          logger.error(
-            { groupFolder, stage: stage.name },
-            'Transition "marker" is required unless "afterTimeout" is true',
-          );
-          return null;
-        }
-        if (Array.isArray(t.next)) {
-          logger.error(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "next" must be a string or null — multi-target arrays are produced only by parallel stitch at runtime',
-          );
-          return null;
-        }
-        if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
-          logger.error(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "next" is required (use null to end the current scope)',
-          );
-          return null;
-        }
-        if (t.next !== null && typeof t.next !== 'string') {
-          logger.error(
-            {
-              groupFolder,
-              stage: stage.name,
-              marker: transitionName,
-              next: t.next,
-            },
-            'Transition "next" must be a string or null',
-          );
-          return null;
-        }
-        const hasNextString = typeof t.next === 'string';
-        const hasTemplate = t.template !== undefined;
-        if (hasTemplate) {
-          if (typeof t.template !== 'string' || t.template.length === 0) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "template" must be a non-empty string',
-            );
-            return null;
-          }
-        }
-        if (t.count !== undefined) {
-          if (!Number.isInteger(t.count) || (t.count as number) < 1) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "count" must be a positive integer',
-            );
-            return null;
-          }
-          if (!hasTemplate) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "count" requires "template"',
-            );
-            return null;
-          }
-        }
-        if (t.countFrom !== undefined) {
-          if (t.countFrom !== 'payload') {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "countFrom" only accepts "payload"',
-            );
-            return null;
-          }
-          if (!hasTemplate) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "countFrom" requires "template"',
-            );
-            return null;
-          }
-          if (t.count !== undefined) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition must have either "count" or "countFrom", not both',
-            );
-            return null;
-          }
-        }
-        if (t.substitutionsFrom !== undefined) {
-          if (t.substitutionsFrom !== 'payload') {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "substitutionsFrom" only accepts "payload"',
-            );
-            return null;
-          }
-          if (t.countFrom !== 'payload') {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "substitutionsFrom" requires "countFrom: \\"payload\\""',
-            );
-            return null;
-          }
-        }
-        if (t.joinPolicy !== undefined) {
-          if (
-            t.joinPolicy !== 'all_success' &&
-            t.joinPolicy !== 'any_success' &&
-            t.joinPolicy !== 'all_settled'
-          ) {
-            logger.error(
-              {
-                groupFolder,
-                stage: stage.name,
-                marker: transitionName,
-                joinPolicy: t.joinPolicy,
-              },
-              'Transition "joinPolicy" must be one of "all_success", "any_success", or "all_settled"',
-            );
-            return null;
-          }
-          if (!hasTemplate) {
-            logger.error(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "joinPolicy" requires "template"',
-            );
-            return null;
-          }
-        }
-        if (
-          t.outcome !== undefined &&
-          t.outcome !== 'success' &&
-          t.outcome !== 'error'
-        ) {
-          logger.error(
-            {
-              groupFolder,
-              stage: stage.name,
-              marker: transitionName,
-              outcome: t.outcome,
-            },
-            'Transition "outcome" must be "success" or "error"',
-          );
-          return null;
-        }
-        if (hasNextString && !stageNames.has(t.next as string)) {
-          logger.error(
-            { groupFolder, stage: stage.name, target: t.next },
-            'Transition "next" must reference an existing stage in this pipeline',
-          );
-          return null;
-        }
-      }
-      if (afterTimeoutTransitions > 1) {
-        logger.error(
-          { groupFolder, stage: stage.name },
-          'At most one transition may declare "afterTimeout: true"',
-        );
-        return null;
-      }
-    }
-
-    try {
-      assertConfigAcyclic(config);
-    } catch (err) {
-      logger.error(
-        { groupFolder, err: (err as Error).message },
-        'PIPELINE.json contains a cycle — pipelines must be DAGs',
-      );
-      return null;
-    }
-
-    return config;
-  } catch (err) {
-    logger.error({ groupFolder, err }, 'Failed to parse PIPELINE.json');
-    return null;
   }
 }

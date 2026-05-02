@@ -121,6 +121,13 @@ function validateStageShape(stage, templateName) {
     if (!Array.isArray(stage.transitions)) {
         throw new Error(`Template "${templateName}": stage "${stage.name}" missing "transitions" array`);
     }
+    const stageAny = stage;
+    if (stageAny.prompts !== undefined) {
+        throw new Error(`Template "${templateName}": stage "${stage.name}" uses unsupported "prompts" field; use inline "prompt" or agents/<name>.md`);
+    }
+    if (stageAny.prompt_append !== undefined) {
+        throw new Error(`Template "${templateName}": stage "${stage.name}" uses unsupported "prompt_append" field; include the text in "prompt"`);
+    }
     let afterTimeoutTransitions = 0;
     for (const t of stage.transitions) {
         validateTransitionShape(t, stage.name, templateName);

@@ -73,12 +73,6 @@ export declare function getHostGateway(): string;
  * udocker: 127.0.0.1 (no network isolation).
  */
 export declare function getProxyBindHost(): string;
-/** @deprecated Use getRuntimeBin() */
-export declare const CONTAINER_RUNTIME_BIN = "docker";
-/** @deprecated Use getHostGateway() */
-export declare const CONTAINER_HOST_GATEWAY = "host.docker.internal";
-/** @deprecated Use getProxyBindHost() */
-export declare const PROXY_BIND_HOST: string;
 /** CLI args for the container to resolve the host gateway. */
 export declare function hostGatewayArgs(): string[];
 /** Returns CLI args for a readonly bind mount (with SELinux :z if needed). */

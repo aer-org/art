@@ -90,7 +90,6 @@ function appendCodexMcpServerConfig(lines, server) {
 function buildVolumeMounts(group, isMain, provider) {
     const mounts = [];
     const projectRoot = process.cwd();
-    const groupDir = resolveGroupFolderPath(group.folder);
     if (isMain) {
         // Main gets the project root read-only. Writable paths the agent needs
         // (IPC, .claude/) are mounted separately below.
@@ -650,22 +649,16 @@ export async function runContainerAgent(group, input, onProcess, onOutput, logSt
                 });
                 return;
             }
-            // Legacy mode: parse the last output marker pair from accumulated stdout
+            // Non-streaming mode: parse the output marker pair from accumulated stdout.
             try {
-                // Extract JSON between sentinel markers for robust parsing
                 const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
                 const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
-                let jsonLine;
-                if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-                    jsonLine = stdout
-                        .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-                        .trim();
+                if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+                    throw new Error('Container output did not include output markers');
                 }
-                else {
-                    // Fallback: last non-empty line (backwards compatibility)
-                    const lines = stdout.trim().split('\n');
-                    jsonLine = lines[lines.length - 1];
-                }
+                const jsonLine = stdout
+                    .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+                    .trim();
                 const output = JSON.parse(jsonLine);
                 logger.info({
                     group: group.name,

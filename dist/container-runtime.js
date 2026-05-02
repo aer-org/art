@@ -487,31 +487,6 @@ export function getProxyBindHost() {
     return detectProxyBindHost(getRuntime());
 }
 // ---------------------------------------------------------------------------
-// Backward-compatible exports (deprecated — use getters above)
-// ---------------------------------------------------------------------------
-/** @deprecated Use getRuntimeBin() */
-export const CONTAINER_RUNTIME_BIN = 'docker';
-/** @deprecated Use getHostGateway() */
-export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
-/** @deprecated Use getProxyBindHost() */
-export const PROXY_BIND_HOST = process.env.CREDENTIAL_PROXY_HOST ||
-    (() => {
-        // At module load time, runtime may not be initialized yet.
-        // Fall back to legacy detection for backward compatibility.
-        if (os.platform() === 'darwin')
-            return '127.0.0.1';
-        if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop'))
-            return '127.0.0.1';
-        const ifaces = os.networkInterfaces();
-        const docker0 = ifaces['docker0'];
-        if (docker0) {
-            const ipv4 = docker0.find((a) => a.family === 'IPv4');
-            if (ipv4)
-                return ipv4.address;
-        }
-        return '0.0.0.0';
-    })();
-// ---------------------------------------------------------------------------
 // Runtime-aware utility functions
 // ---------------------------------------------------------------------------
 /** CLI args for the container to resolve the host gateway. */

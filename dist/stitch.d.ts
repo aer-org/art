@@ -16,7 +16,7 @@
  *     continues to the authored downstream `next` or ends the pipeline with
  *     an error.
  */
-import type { JoinPolicy, PipelineConfig, PipelineStage } from './pipeline-runner.js';
+import type { JoinPolicy, PipelineConfig, PipelineStage } from './pipeline-types.js';
 import type { PipelineTemplate } from './pipeline-template.js';
 export declare const STITCH_SUBSTITUTION_FIELDS: readonly string[];
 export declare const RESERVED_SUBSTITUTION_KEYS: readonly ["index", "insertId"];

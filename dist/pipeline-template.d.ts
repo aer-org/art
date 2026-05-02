@@ -1,4 +1,4 @@
-import type { PipelineStage } from './pipeline-runner.js';
+import type { PipelineStage } from './pipeline-types.js';
 export interface PipelineTemplate {
     name: string;
     entry: string;

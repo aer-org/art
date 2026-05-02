@@ -2,36 +2,15 @@ import path from 'path';
 import { loadBundleMeta, readBundleFiles, classifyFile } from '../bundle.js';
 function parseArgs(args) {
     let dir = '.';
-    let verbose = false;
     for (let i = 0; i < args.length; i++) {
-        if (args[i] === '--verbose' || args[i] === '-v') {
-            verbose = true;
-        }
-        else if (!args[i].startsWith('--')) {
+        if (!args[i].startsWith('--')) {
             dir = args[i];
         }
     }
-    return { dir, verbose };
-}
-function lineDiff(original, current) {
-    const origLines = original.split('\n');
-    const currLines = current.split('\n');
-    const origSet = new Set(origLines);
-    const currSet = new Set(currLines);
-    let added = 0;
-    let removed = 0;
-    for (const line of currLines) {
-        if (!origSet.has(line))
-            added++;
-    }
-    for (const line of origLines) {
-        if (!currSet.has(line))
-            removed++;
-    }
-    return { added, removed };
+    return { dir };
 }
 export async function diff(args) {
-    const { dir: rawDir, verbose } = parseArgs(args);
+    const { dir: rawDir } = parseArgs(args);
     const dir = path.resolve(rawDir);
     const meta = loadBundleMeta(dir);
     if (!meta) {
