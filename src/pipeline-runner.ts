@@ -85,7 +85,7 @@ export {
 export { loadPipelineConfig } from './pipeline-config.js';
 
 function resolveProvider(): 'claude' | 'codex' {
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
 // --- Exclusive stage lock ---
@@ -848,6 +848,7 @@ export class PipelineRunner {
       this.runId,
       privileged,
       stageConfig.env,
+      resolveProvider(),
     );
     containerArgs.push('-c', stageConfig.command!);
 

@@ -32,7 +32,7 @@ import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
 function resolveProvider(): 'claude' | 'codex' {
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
 function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {

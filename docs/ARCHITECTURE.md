@@ -68,7 +68,7 @@ Transitions advance to another stage or end the current scope. If no marker matc
 
 ### Agent Mode vs Command Mode
 
-- **Agent mode**: Claude agent receives a prompt and executes (default)
+- **Agent mode**: Codex receives a prompt and executes by default; `--claude` selects Claude Code
 - **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout
 
 ### Resume on Interrupt

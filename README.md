@@ -37,10 +37,10 @@ art run /my/project
 
 Requires **Node.js ≥ 20** and **Docker** (or Podman).
 
-Use `--codex` to run with Codex, or `--claude` to force Claude Code:
+Codex is the default provider. Use `--claude` to force Claude Code:
 
 ```bash
-art run --codex /my/project
+art run --claude /my/project
 ```
 
 ## Quick example demo: [autoresearch](https://github.com/karpathy/autoresearch) as a pipeline
@@ -83,7 +83,7 @@ ART creates a minimal `__art__/` scaffold with an empty `PIPELINE.json`; add sta
 art run /my/project
 ```
 
-Each stage runs a Claude agent in its own Docker container. Your project is read-only by default — specific files get write access only where needed. Everything lands in `__art__/`:
+Each stage runs an agent in its own Docker container. Your project is read-only by default — specific files get write access only where needed. Everything lands in `__art__/`:
 
 ```
 my-project/
@@ -129,7 +129,7 @@ For example, a pipeline can build, test, review, and record history. ART underst
 
 ### Stage modes
 
-- **Agent mode** (default): Claude agent receives a prompt and works autonomously
+- **Agent mode** (default): Codex receives a prompt and works autonomously
 - **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout
 
 ### Transitions and retries
@@ -160,8 +160,8 @@ ART is designed to reduce accidental access and constrain agent execution, but i
 
 ```bash
 art init <path>                 # Create __art__/ scaffold and empty PIPELINE.json
-art run <path>                  # Execute pipeline (default provider: Claude)
-art run --codex <path>          # Execute pipeline with Codex
+art run <path>                  # Execute pipeline (default provider: Codex)
+art run --codex <path>          # Execute pipeline with Codex (same as default)
 art run --claude <path>         # Execute pipeline with Claude Code
 art run --skip-preflight <path> # Skip local CLI/auth preflight (command-mode only)
 ```

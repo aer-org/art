@@ -7,10 +7,10 @@ import { ensureAuth, hasCodexCliAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
 
 function resolveProvider(): 'claude' | 'codex' {
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
-function preflight(opts?: { skipClaudeCli?: boolean }): void {
+function preflight(opts?: { skipProviderCli?: boolean }): void {
   const errors: string[] = [];
   const provider = resolveProvider();
 
@@ -40,7 +40,7 @@ function preflight(opts?: { skipClaudeCli?: boolean }): void {
     );
   }
 
-  if (!opts?.skipClaudeCli) {
+  if (!opts?.skipProviderCli) {
     if (provider === 'codex') {
       try {
         execSync('codex --version', { stdio: 'pipe', timeout: 5000 });
@@ -91,7 +91,7 @@ export async function run(
   targetDir: string,
   opts?: { skipPreflight?: boolean; stage?: string; pipeline?: string },
 ): Promise<void> {
-  preflight({ skipClaudeCli: opts?.skipPreflight });
+  preflight({ skipProviderCli: opts?.skipPreflight });
 
   const projectDir = path.resolve(targetDir);
   const artDirName = '__art__';
@@ -115,7 +115,7 @@ export async function run(
   // Generate run ID for this execution
   const runId = generateRunId();
 
-  // Ensure Claude authentication is available (before any engine imports)
+  // Ensure provider authentication is available (before any engine imports)
   if (opts?.skipPreflight) {
     // Set placeholder so credential proxy can start without real auth
     if (

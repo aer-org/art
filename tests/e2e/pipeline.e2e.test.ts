@@ -221,7 +221,12 @@ describe.skipIf(!hasDocker || !hasApiKey)('Agent-mode pipeline @api', () => {
   });
 
   it('completes agent pipeline with Claude API call', () => {
-    const result = runArt(['run', '.'], fixtureDir, undefined, 600_000);
+    const result = runArt(
+      ['run', '--claude', '.'],
+      fixtureDir,
+      undefined,
+      600_000,
+    );
 
     expect(result.code).toBe(0);
 
@@ -298,7 +303,12 @@ describe.skipIf(!hasDocker || !hasApiKey)('Init + Run full flow @api', () => {
       ) + '\n',
     );
 
-    const runResult = runArt(['run', '.'], fixtureDir, undefined, 600_000);
+    const runResult = runArt(
+      ['run', '--claude', '.'],
+      fixtureDir,
+      undefined,
+      600_000,
+    );
     expect(runResult.code).toBe(0);
 
     const state = readPipelineState(path.join(fixtureDir, '__art__', '.state'));

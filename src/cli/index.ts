@@ -102,7 +102,8 @@ async function main(): Promise<void> {
 
 Usage:
   art init [dir]              Create __art__/ scaffold and empty PIPELINE.json
-  art run [dir]               Start the agent pipeline engine
+  art run [dir]               Start the agent pipeline engine with Codex
+  art run --claude [dir]      Start the agent pipeline engine with Claude Code
   art signup                  Create a new account
   art login                   Sign in with username/password
   art login --token           Sign in with a raw token

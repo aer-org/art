@@ -41,7 +41,7 @@ export function hasCodexCliAuth(): boolean {
 }
 
 function resolveProvider(): 'claude' | 'codex' {
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
 /**
