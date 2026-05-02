@@ -30,9 +30,8 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   getCredentialProxyPort,
-  getProjectRoot,
-  DATA_DIR,
-  GROUPS_DIR,
+  getDataDir,
+  getPackageAssetPath,
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
@@ -198,21 +197,9 @@ function buildVolumeMounts(
     }
   }
 
-  // Global memory directory (read-only, shared across all groups)
-  if (!isMain) {
-    const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
-      mounts.push({
-        hostPath: globalDir,
-        containerPath: '/workspace/global',
-        readonly: true,
-      });
-    }
-  }
-
   // Per-group provider sessions directory (isolated from other groups)
   const groupSessionsDir = path.join(
-    DATA_DIR,
+    getDataDir(),
     'sessions',
     group.folder,
     getProviderHomeDirName(provider),
@@ -240,7 +227,7 @@ function buildVolumeMounts(
     );
 
     // Sync skills from container/skills/ into each group's .claude/skills/
-    const skillsSrc = path.join(getProjectRoot(), 'container', 'skills');
+    const skillsSrc = getPackageAssetPath('container', 'skills');
     const skillsDst = path.join(groupSessionsDir, 'skills');
     if (fs.existsSync(skillsSrc)) {
       for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -297,14 +284,13 @@ function buildVolumeMounts(
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
-  const agentRunnerSrc = path.join(
-    getProjectRoot(),
+  const agentRunnerSrc = getPackageAssetPath(
     'container',
     'agent-runner',
     'src',
   );
   const groupAgentRunnerDir = path.join(
-    DATA_DIR,
+    getDataDir(),
     'sessions',
     group.folder,
     'agent-runner-src',
@@ -327,7 +313,7 @@ function buildVolumeMounts(
   // 2. Skips stdin cat — agent-runner reads input from IPC file instead
   if (getRuntime().kind === 'udocker') {
     const patchedEntrypoint = path.join(
-      DATA_DIR,
+      getDataDir(),
       'sessions',
       group.folder,
       'entrypoint.sh',

@@ -10,12 +10,12 @@ vi.mock('../../src/config.js', () => ({
   CONTAINER_IMAGE: 'art-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000,
-  DATA_DIR: '/tmp/aer-art-test-data',
-  GROUPS_DIR: '/tmp/aer-art-test-groups',
   IDLE_TIMEOUT: 1800000,
   MCP_REGISTRY_PATH: '/tmp/aer-art-test-mcp-registry.json',
   TIMEZONE: 'America/Los_Angeles',
-  getProjectRoot: () => '/tmp/aer-art-test-root',
+  getDataDir: () => '/tmp/aer-art-test-data',
+  getPackageAssetPath: (...parts: string[]) =>
+    ['/tmp/aer-art-test-root', ...parts].join('/'),
   getCredentialProxyPort: () => 3001,
 }));
 
