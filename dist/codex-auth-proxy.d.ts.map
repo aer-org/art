@@ -1,1 +1,0 @@
-{"version":3,"file":"codex-auth-proxy.d.ts","sourceRoot":"","sources":["../src/codex-auth-proxy.ts"],"names":[],"mappings":"AACA,OAAO,EAAgB,MAAM,EAAE,MAAM,MAAM,CAAC;AAkC5C,wBAAgB,mBAAmB,CACjC,IAAI,EAAE,MAAM,EACZ,IAAI,SAAc,GACjB,OAAO,CAAC;IAAE,MAAM,EAAE,MAAM,CAAC;IAAC,IAAI,EAAE,MAAM,CAAA;CAAE,CAAC,CA0C3C"}
