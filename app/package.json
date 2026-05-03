@@ -1,0 +1,26 @@
+{
+  "name": "@aer-org/art-debug-app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Localhost debug UI for AerArt pipelines",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:policy": "node --experimental-strip-types --test server/debugger-sandbox.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.121",
+    "@fastify/static": "^7.0.4",
+    "chokidar": "^3.6.0",
+    "fastify": "^4.28.1",
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "typescript": "^5.6.0"
+  }
+}
