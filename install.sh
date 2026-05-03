@@ -49,15 +49,12 @@ main() {
     git clone --branch "$BRANCH" --depth 1 --quiet "$REPO" "$INSTALL_DIR"
   fi
 
-  # Install dependencies (skip optional native modules that may fail)
+  # Install dependencies and build from source. The generated dist/ tree is not
+  # tracked in git, so GitHub installs compile it locally.
   cd "$INSTALL_DIR"
-  npm install --omit=dev --ignore-scripts --no-optional 2>/dev/null || npm install --omit=dev --ignore-scripts 2>/dev/null
-
-  # Ensure dist/ exists (shipped prebuilt in the repo)
-  if [ ! -f "dist/cli/index.js" ]; then
-    echo "Error: dist/cli/index.js not found. Build may be missing from the branch." >&2
-    exit 1
-  fi
+  npm install --ignore-scripts --no-optional 2>/dev/null || npm install --ignore-scripts 2>/dev/null
+  npm run build
+  npm prune --omit=dev --ignore-scripts --no-optional 2>/dev/null || npm prune --omit=dev --ignore-scripts 2>/dev/null
 
   # Make entry point executable
   chmod +x dist/cli/index.js
