@@ -231,6 +231,7 @@ import {
   resolveStitchInputs,
   type PipelineTransition,
   type PipelineConfig,
+  type PipelineStage,
   type PipelineState,
 } from '../../src/pipeline-runner.js';
 import { buildContainerArgs } from '../../src/container-runner.js';
@@ -1119,6 +1120,142 @@ describe('Stitch integration', () => {
         `pipeline-start__${templateName}0__do`,
     );
     expect(stitchedCalls.length).toBe(1);
+  }, 15000);
+
+  it('resume restores nested stitched lane frontier without re-running completed stages', async () => {
+    const lane = (idx: number) => `init__fmax-lane${idx}__lane-setup`;
+    const innerWork = (idx: number) => `${lane(idx)}__inner0__work`;
+    const innerJoin = (idx: number) => `${lane(idx)}__inner__join`;
+    const topJoin = 'init__fmax-lane__join';
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: 'fmax-lane',
+              next: 'summarize',
+              count: 3,
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+    const runtimeStages: PipelineStage[] = [
+      {
+        ...config.stages[0],
+        transitions: [{ marker: 'READY', next: [lane(0), lane(1), lane(2)] }],
+      },
+      config.stages[1],
+      ...[0, 1, 2].flatMap((idx): PipelineStage[] => [
+        {
+          name: lane(idx),
+          prompt: `lane ${idx}`,
+          mounts: {},
+          transitions: [{ marker: 'INNER', next: innerWork(idx) }],
+        },
+        {
+          name: innerWork(idx),
+          prompt: `inner work ${idx}`,
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: innerJoin(idx) }],
+        },
+        {
+          name: innerJoin(idx),
+          mounts: {},
+          join: {
+            policy: 'all_success',
+            expectedCopies: 1,
+            copyPrefixes: [`${lane(idx)}__inner0__`],
+          },
+          transitions: [{ marker: 'STAGE_COMPLETE', next: topJoin }],
+        },
+      ]),
+      {
+        name: topJoin,
+        mounts: {},
+        join: {
+          policy: 'all_success',
+          expectedCopies: 3,
+          copyPrefixes: [
+            'init__fmax-lane0__',
+            'init__fmax-lane1__',
+            'init__fmax-lane2__',
+          ],
+        },
+        transitions: [{ marker: 'STAGE_COMPLETE', next: 'summarize' }],
+      },
+    ];
+
+    savePipelineState(path.join(groupDir, '.state'), {
+      currentStage: [innerWork(1), innerWork(2), topJoin],
+      completedStages: [
+        'init',
+        lane(0),
+        lane(1),
+        lane(2),
+        innerWork(0),
+        innerJoin(0),
+      ],
+      runtimeStages,
+      insertedStages: runtimeStages.slice(config.stages.length),
+      runningStages: [innerWork(1), innerWork(2)],
+      waitingStages: [{ name: topJoin }],
+      joinSettlements: {
+        [innerJoin(0)]: { '0': 'success' },
+        [topJoin]: { '0': 'success' },
+      },
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    ensureIpc(innerWork(1));
+    ensureIpc(innerWork(2));
+    ensureIpc('summarize');
+    enqueueStageOutput(innerWork(1), [{ result: '[DONE]' }]);
+    enqueueStageOutput(innerWork(2), [{ result: '[DONE]' }]);
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    const spawnedNames = calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).not.toContain('pipeline-init');
+    expect(spawnedNames).not.toContain(`pipeline-${lane(0)}`);
+    expect(spawnedNames).not.toContain(`pipeline-${innerWork(0)}`);
+    expect(spawnedNames).toEqual(
+      expect.arrayContaining([
+        `pipeline-${innerWork(1)}`,
+        `pipeline-${innerWork(2)}`,
+        'pipeline-summarize',
+      ]),
+    );
+
+    const state = loadPipelineState(path.join(groupDir, '.state'));
+    expect(state?.status).toBe('success');
+    expect(state?.runtimeStages?.map((s) => s.name).sort()).toEqual(
+      runtimeStages.map((s) => s.name).sort(),
+    );
   }, 15000);
 
   it('nested stitch + parallel join — three levels deep then fan-out of 3 lanes', async () => {
