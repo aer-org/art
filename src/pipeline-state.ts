@@ -3,6 +3,12 @@ import path from 'path';
 
 import type { PipelineStage } from './pipeline-types.js';
 
+export interface PipelineStageQueueEntry {
+  name: string;
+  initialPrompt?: string | null;
+  ephemeralSystemPrompt?: string | null;
+}
+
 export interface PipelineState {
   version?: 3; // Required on save; load rejects older state files.
   currentStage: string | string[] | null;
@@ -11,8 +17,13 @@ export interface PipelineState {
   status: 'running' | 'error' | 'success';
   activations?: Record<string, number>; // Per-stage activation count for fan-in accounting.
   completions?: Record<string, number>; // Per-stage completion count for fan-in accounting.
+  runtimeStages?: PipelineStage[]; // Complete runtime graph after all stitches and rewrites.
   insertedStages?: PipelineStage[]; // Dynamically inserted stages (from runtime stitch). Merged into config on resume.
   joinSettlements?: Record<string, Record<string, 'success' | 'error'>>; // Per join-stage copy outcomes keyed by copy index.
+  runningStages?: string[]; // Stages active when the last durable scheduler snapshot was written.
+  pendingStages?: PipelineStageQueueEntry[]; // Runnable stages not yet launched, including handoff prompts.
+  waitingStages?: PipelineStageQueueEntry[]; // Fan-in/join waiters, including handoff prompts.
+  stageSessions?: Record<string, string>; // Last known provider session per stage.
 }
 
 const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
