@@ -21,7 +21,6 @@ import {
   loadPipelineConfig,
 } from './pipeline-config.js';
 import { PipelineRunner } from './pipeline-runner.js';
-import { pipelineTagFromPath } from './pipeline-state.js';
 import type {
   PipelineConfig,
   PipelineStage,
@@ -46,9 +45,8 @@ export async function runPipeline(opts: {
   runId: string;
   artDir: string;
   stage?: string;
-  pipeline?: string;
 }): Promise<void> {
-  const { group, runId, artDir, stage, pipeline } = opts;
+  const { group, runId, artDir, stage } = opts;
 
   // Initialize container runtime
   await initRuntime();
@@ -108,12 +106,12 @@ export async function runPipeline(opts: {
     console.log(text);
   };
 
-  const loadedConfig = loadPipelineConfig(group.folder, undefined, pipeline);
+  const loadedConfig = loadPipelineConfig(group.folder);
   if (!loadedConfig) {
     console.error(
       formatPipelineConfigLoadError(
         getLastPipelineConfigLoadError(),
-        pipeline ?? 'PIPELINE.json',
+        'PIPELINE.json',
       ),
     );
     proxyServer?.close();
@@ -157,7 +155,6 @@ export async function runPipeline(opts: {
 
   logger.info({ stageCount: pipelineConfig.stages.length }, 'Pipeline mode');
 
-  const bundleDir = pipeline ? path.dirname(path.resolve(pipeline)) : artDir;
   const runner = new PipelineRunner(
     group,
     chatJid,
@@ -166,9 +163,8 @@ export async function runPipeline(opts: {
     onProcess,
     undefined,
     runId,
-    pipelineTagFromPath(pipeline),
     undefined,
-    bundleDir,
+    artDir,
   );
   activeRunners.push(runner);
   const result = await runner.run();

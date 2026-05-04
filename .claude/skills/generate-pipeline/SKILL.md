@@ -30,7 +30,7 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a **
 - **`art pull`**: Downloads from registry, extracts inline prompts to `agents/*.md`, writes stripped `pipeline.json`, and records hashes in `.art-bundle.json`.
 - **`art diff`**: Shows what changed locally since last pull/push.
 - **`art fork` / `art promote`**: Copy shared agents into user scope, or promote user agents to shared scope.
-- **`art run`**: Runs a local project pipeline. With `art run <project> --pipeline <bundle>/pipeline.json`, bundle-relative `agent` refs resolve from `<bundle>/agents/`.
+- **`art run`**: Runs a local project pipeline. The pipeline file at `<project>/__art__/PIPELINE.json` is loaded; bundle-relative `agent` refs resolve from `<project>/__art__/agents/`.
 
 ---
 

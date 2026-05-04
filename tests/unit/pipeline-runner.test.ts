@@ -648,7 +648,6 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
           () => {},
           tmpDir,
           undefined,
-          undefined,
           'has/slash',
         ),
     ).toThrow(/Invalid scopeId/);
@@ -661,7 +660,6 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
           async () => {},
           () => {},
           tmpDir,
-          undefined,
           undefined,
           'x'.repeat(17),
         ),

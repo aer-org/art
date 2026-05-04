@@ -45,20 +45,6 @@ function pipelineStateFileName(tag?: string, scopeId?: string): string {
   return `PIPELINE_STATE.${parts.join('.')}.json`;
 }
 
-/**
- * Derive a short tag from a custom pipeline file path.
- * e.g. '/abs/path/to/my-pipeline.json' -> 'my-pipeline'
- *      undefined (default PIPELINE.json) -> undefined
- */
-export function pipelineTagFromPath(
-  pipelinePath: string | undefined,
-): string | undefined {
-  if (!pipelinePath) return undefined;
-  const base = path.basename(pipelinePath, '.json');
-  if (base === 'PIPELINE') return undefined;
-  return base;
-}
-
 export function savePipelineState(
   stateDir: string,
   state: PipelineState,

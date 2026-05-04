@@ -74,7 +74,6 @@ export type { PipelineState } from './pipeline-state.js';
 export {
   assertValidScopeId,
   loadPipelineState,
-  pipelineTagFromPath,
   savePipelineState,
 } from './pipeline-state.js';
 export type { StitchDirective } from './pipeline-transitions.js';
@@ -211,7 +210,6 @@ export class PipelineRunner {
   private stateDir: string;
   private bundleDir: string;
   private runId: string;
-  private pipelineTag: string | undefined;
   private scopeId: string | undefined;
   private manifest: RunManifest;
   private aborted = false;
@@ -232,7 +230,6 @@ export class PipelineRunner {
     ) => void,
     groupDir?: string,
     runId?: string,
-    pipelineTag?: string,
     scopeId?: string,
     bundleDir?: string,
   ) {
@@ -246,7 +243,6 @@ export class PipelineRunner {
     this.stateDir = path.join(this.groupDir, '.state');
     this.bundleDir = bundleDir ?? this.groupDir;
     this.runId = runId ?? generateRunId();
-    this.pipelineTag = pipelineTag;
     if (scopeId !== undefined) assertValidScopeId(scopeId);
     this.scopeId = scopeId;
     this.manifest = {
@@ -327,7 +323,7 @@ export class PipelineRunner {
         insertedStages: this.config.stages.slice(this.baseStageCount),
         joinSettlements: this.serializeJoinSettlements(),
       },
-      this.pipelineTag,
+      undefined,
       this.scopeId,
     );
   }
@@ -1375,7 +1371,7 @@ PAYLOAD FORMATS:
     // Resume from last completed stage if pipeline was interrupted
     const existingState = loadPipelineState(
       this.stateDir,
-      this.pipelineTag,
+      undefined,
       this.scopeId,
     );
     if (
