@@ -41,14 +41,10 @@ async function main(): Promise<void> {
       const skipPreflight = runFlags.includes('--skip-preflight');
       const stageIdx = args.indexOf('--stage');
       const stageName = stageIdx !== -1 ? args[stageIdx + 1] : undefined;
-      const pipelineIdx = args.indexOf('--pipeline');
-      const pipelineFile =
-        pipelineIdx !== -1 ? args[pipelineIdx + 1] : undefined;
       const { run } = await import('./run.js');
       await run(runPositional[0] || '.', {
         skipPreflight,
         stage: stageName,
-        pipeline: pipelineFile,
       });
       break;
     }

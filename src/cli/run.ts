@@ -89,7 +89,7 @@ async function askConfirmation(prompt: string): Promise<boolean> {
 
 export async function run(
   targetDir: string,
-  opts?: { skipPreflight?: boolean; stage?: string; pipeline?: string },
+  opts?: { skipPreflight?: boolean; stage?: string },
 ): Promise<void> {
   preflight({ skipProviderCli: opts?.skipPreflight });
 
@@ -146,11 +146,8 @@ export async function run(
     await import('../image-registry.js');
   const { contentHash: computeHash } = await import('../bundle.js');
 
-  const pipelineOverride = opts?.pipeline
-    ? path.resolve(projectDir, opts.pipeline)
-    : undefined;
-  const bundleDir = pipelineOverride ? path.dirname(pipelineOverride) : artDir;
-  const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
+  const bundleDir = artDir;
+  const pipelineConfig = loadPipelineConfig('', artDir);
   if (pipelineConfig) {
     const rt = getRuntime();
     const registry = loadImageRegistry();
@@ -338,6 +335,5 @@ export async function run(
     runId,
     artDir,
     stage: opts?.stage,
-    pipeline: pipelineOverride,
   });
 }

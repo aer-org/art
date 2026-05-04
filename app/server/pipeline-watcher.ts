@@ -101,7 +101,7 @@ export class PipelineProject extends EventEmitter {
       [
         path.join(this.artDir, 'PIPELINE.json'),
         this.stateDir,
-        path.join(this.stateDir, 'PIPELINE_STATE*.json'),
+        path.join(this.stateDir, 'PIPELINE_STATE.json'),
         path.join(this.stateDir, 'runs'),
         path.join(this.stateDir, 'runs', 'run-*.json'),
         path.join(this.stateDir, 'logs'),
