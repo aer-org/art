@@ -40,3 +40,8 @@ agents-sdk-docs
 # Runtime output
 __art__/
 !examples/**/__art__/
+
+
+CLAUDE.md
+.claude/check-edit-path.sh
+.claude/settings.local.json
