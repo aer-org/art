@@ -22,6 +22,11 @@ export function resolveAgentRefs(
     if (!stage.agent) continue;
 
     if (!AGENT_NAME_PATTERN.test(stage.agent)) {
+      if (stage.agent.includes(':') || stage.agent.includes('/')) {
+        throw new Error(
+          `Stage "${stage.name}": agent "${stage.agent}" looks like a registry ref. Registry agent refs are currently disabled (remote pending). Use a local file at agents/<name>.md instead.`,
+        );
+      }
       throw new Error(
         `Stage "${stage.name}": agent name "${stage.agent}" must match ${AGENT_NAME_PATTERN}`,
       );

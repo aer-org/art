@@ -15,7 +15,6 @@ export function scaffoldArtDir(projectDir: string): void {
   // Authoring directories
   fs.mkdirSync(path.join(artDir, 'agents'), { recursive: true });
   fs.mkdirSync(path.join(artDir, 'templates'), { recursive: true });
-  fs.mkdirSync(path.join(artDir, 'logs'), { recursive: true });
 
   // Pipeline
   const pipeline = {
@@ -29,7 +28,7 @@ export function scaffoldArtDir(projectDir: string): void {
   // .gitignore
   fs.writeFileSync(
     path.join(artDir, '.gitignore'),
-    'logs/\nsessions/\nPIPELINE_STATE*.json\n.tmp/\n.stages/\n',
+    '.state/\n.tmp/\n.stages/\nsessions/\n',
   );
 
   console.log(`  ${ART_DIR_NAME}/ created.`);
