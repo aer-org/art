@@ -31,7 +31,7 @@ export async function setupEngine(opts: {
   // but set here as fallback so logger always routes to file)
   if (!process.env.ART_TUI_MODE) {
     process.env.ART_TUI_MODE = 'true';
-    process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
+    process.env.ART_TUI_LOG_DIR = path.join(artDir, '.state', 'logs');
   }
 
   const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
