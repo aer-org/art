@@ -246,27 +246,14 @@ export async function run(
         continue;
       }
 
-      // No local Dockerfile — check art registry
-      try {
-        const { resolveRegistryReadAccess } =
-          await import('../registry-access.js');
-        const { RegistryApi } = await import('../registry-api.js');
-        const access = resolveRegistryReadAccess();
-        const api = new RegistryApi(access.server, access.token);
-        const check = await api.checkDockerfile(imageName);
-        if (check.exists) {
-          console.error(
-            `\n  ✗ Image "${imageName}" not found locally, but a Dockerfile exists in the registry.`,
-          );
-          console.error(`    Run "art pull" to download it, then re-run.`);
-          process.exit(1);
-        }
-      } catch {
-        // Registry unavailable or requires auth — skip check and fall back to image pull.
-      }
-
-      // Docker Hub fallback
-      images.add(imageName);
+      // No local Dockerfile — agent images must be built from a local Dockerfile.
+      console.error(
+        `\n  ✗ Image "${imageName}" is not available locally and no Dockerfile was found at __art__/dockerfiles/${imageName}.Dockerfile.`,
+      );
+      console.error(
+        `    Add a Dockerfile at that path or use a pre-built image name resolvable by the container runtime.`,
+      );
+      process.exit(1);
     }
 
     // Phase 2: Pre-pull missing Docker images (Hub images + command stage images)
