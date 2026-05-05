@@ -158,6 +158,7 @@ class LocalCodexAppServerClient {
   private readonly pending = new Map<
     JsonRpcId,
     {
+      method: string;
       resolve: (value: unknown) => void;
       reject: (reason: Error) => void;
     }
@@ -183,11 +184,12 @@ class LocalCodexAppServerClient {
     this.proc = proc;
 
     proc.on('exit', (code, signal) => {
-      const err = new Error(
-        `codex app-server exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
-      );
       for (const pending of this.pending.values()) {
-        pending.reject(err);
+        pending.reject(
+          new Error(
+            `Codex app-server request "${pending.method}" failed: app-server exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+          ),
+        );
       }
       this.pending.clear();
       this.proc = null;
@@ -196,6 +198,10 @@ class LocalCodexAppServerClient {
     const lineReader = readline.createInterface({ input: proc.stdout });
     lineReader.on('line', (line) => {
       void this.handleInboundLine(line);
+    });
+    const stderrReader = readline.createInterface({ input: proc.stderr });
+    stderrReader.on('line', (line) => {
+      if (line.trim()) console.error(`[codex-app-server] ${line}`);
     });
   }
 
@@ -233,11 +239,15 @@ class LocalCodexAppServerClient {
     const payload = JSON.stringify(message);
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { method, resolve, reject });
       this.proc!.stdin.write(payload + '\n', 'utf8', (err) => {
         if (!err) return;
         this.pending.delete(id);
-        reject(err);
+        reject(
+          new Error(
+            `Codex app-server request "${method}" failed while writing stdin: ${err.message}`,
+          ),
+        );
       });
     });
   }
@@ -295,10 +305,14 @@ class LocalCodexAppServerClient {
 
     if (isErrorResponse(message)) {
       const pending = this.pending.get(message.id ?? -1);
-      const error = new Error(message.error.message);
-      if (!pending) throw error;
+      const messageText = message.error.message;
+      if (!pending) throw new Error(messageText);
       this.pending.delete(message.id ?? -1);
-      pending.reject(error);
+      pending.reject(
+        new Error(
+          `Codex app-server request "${pending.method}" failed: ${messageText}`,
+        ),
+      );
     }
   }
 
@@ -478,13 +492,33 @@ export class CodexEngine implements AgentEngine {
       }
       return notificationQueue.shift()!;
     };
+    const loginWithProxyAuth = async (): Promise<void> => {
+      const initialLogin = await readProxyLogin(proxyUrl, '/login');
+      try {
+        await client.loginWithExternalAuth(initialLogin);
+        return;
+      } catch (error) {
+        const initialError =
+          error instanceof Error ? error.message : String(error);
+        const refreshedLogin = await readProxyLogin(proxyUrl, '/refresh', {
+          reason: 'account_login_start_failed',
+          previousAccountId: initialLogin.chatgptAccountId,
+        });
+        try {
+          await client.loginWithExternalAuth(refreshedLogin);
+          return;
+        } catch (retryError) {
+          throw new Error(
+            `Codex app-server login failed after forced refresh: ${retryError instanceof Error ? retryError.message : String(retryError)} (initial failure: ${initialError})`,
+          );
+        }
+      }
+    };
 
     try {
       await client.start();
       await client.initialize();
-      await client.loginWithExternalAuth(
-        await readProxyLogin(proxyUrl, '/login'),
-      );
+      await loginWithProxyAuth();
 
       let threadId = input.sessionId;
       if (!threadId) {
