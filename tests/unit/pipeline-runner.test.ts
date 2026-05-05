@@ -1580,6 +1580,25 @@ describe('Stitch integration', () => {
       undefined,
       childNodeId,
     );
+    const staleUnrelatedScope = 'd_deadbeef00_0';
+    savePipelineState(
+      path.join(groupDir, '.state'),
+      {
+        currentStage: null,
+        completedStages: ['old-child'],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'success',
+      },
+      undefined,
+      staleUnrelatedScope,
+    );
+    fs.writeFileSync(
+      path.join(groupDir, '.state', 'PIPELINE_STATE.pipeline.json'),
+      JSON.stringify({ keep: true }),
+    );
 
     enqueueStageOutput('start', [{ result: '[GO]' }]);
     enqueueStageOutput(doStage, [{ result: '[DONE]' }]);
@@ -1605,6 +1624,20 @@ describe('Stitch integration', () => {
       `pipeline-${doStage}`,
       'pipeline-summarize',
     ]);
+    expect(
+      fs.existsSync(
+        path.join(
+          groupDir,
+          '.state',
+          `PIPELINE_STATE.${staleUnrelatedScope}.json`,
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      fs.existsSync(
+        path.join(groupDir, '.state', 'PIPELINE_STATE.pipeline.json'),
+      ),
+    ).toBe(true);
   }, 15000);
 
   it('releases the origin exclusive lock before running stitched child nodes', async () => {

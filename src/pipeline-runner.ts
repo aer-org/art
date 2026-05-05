@@ -46,6 +46,7 @@ import {
 } from './pipeline-types.js';
 import {
   assertValidScopeId,
+  deleteScopedPipelineStateFiles,
   loadPipelineState,
   savePipelineState,
   type PipelineStageQueueEntry,
@@ -89,6 +90,7 @@ export type {
 export type { PipelineState } from './pipeline-state.js';
 export {
   assertValidScopeId,
+  deleteScopedPipelineStateFiles,
   loadPipelineState,
   savePipelineState,
 } from './pipeline-state.js';
@@ -526,6 +528,15 @@ export class PipelineRunner {
     }
 
     this.dispatch.clear();
+    if (this.scopeId === undefined) {
+      const deleted = deleteScopedPipelineStateFiles(this.stateDir);
+      if (deleted > 0) {
+        logger.info(
+          { count: deleted },
+          'Deleted scoped pipeline state files before fresh root run',
+        );
+      }
+    }
     this.dispatch.ensureCurrentNode(this.scopeId, this.config);
     this.activations = new Map();
     this.completions = new Map();
