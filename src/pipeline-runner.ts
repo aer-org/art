@@ -7,7 +7,6 @@
  */
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import readline from 'readline';
 
 import { spawn } from 'child_process';
@@ -22,7 +21,7 @@ import {
 import { getRuntime } from './container-runtime.js';
 import { getImageForStage } from './image-registry.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
+import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   generateRunId,
@@ -36,11 +35,10 @@ import {
 import { loadPipelineTemplate } from './pipeline-template.js';
 import {
   assertNoNameCollision,
-  stitchParallel,
-  stitchSingle,
+  buildStitchInvocation,
+  type StitchInvocation,
 } from './stitch.js';
 import {
-  type JoinPolicy,
   type PipelineConfig,
   type PipelineStage,
   type PipelineTransition,
@@ -54,17 +52,34 @@ import {
   type PipelineState,
 } from './pipeline-state.js';
 import {
+  buildPredecessorMap,
+  fanInReady,
+  nextTargets,
+  normalizeStageEntries,
+  runNodeLocalScheduler,
+  stageEntries,
+  type SchedulerSnapshotOptions,
+} from './node-scheduler.js';
+import {
   parseStageMarkers,
   primaryTransition,
   resolveStitchInputs,
   transitionDisplayName,
   transitionOutcome,
   type StageMarkerResult,
-  type StitchDirective,
 } from './pipeline-transitions.js';
+import { createStageIpcEndpoint, type StageIpcEndpoint } from './stage-ipc.js';
+import {
+  resumeActiveTemplateDispatchBarriers,
+  runTemplateStitchInvocation,
+  TemplateDispatchState,
+  type TemplateDispatchRuntime,
+} from './template-dispatch.js';
 import { RegisteredGroup } from './types.js';
 
 export type {
+  PipelineDispatchBarrier,
+  PipelineDispatchNode,
   JoinPolicy,
   PipelineConfig,
   PipelineStage,
@@ -131,9 +146,9 @@ function getExclusiveLock(key: string): ExclusiveLock {
 
 interface StageHandle {
   name: string;
-  config: PipelineStage;
-  ipcInputDir: string;
+  ipc: StageIpcEndpoint;
   containerPromise: Promise<ContainerOutput>;
+  outboundPoller: NodeJS.Timeout | null;
   pendingResult: {
     promise: Promise<StageMarkerResult>;
     resolve: (r: StageMarkerResult) => void;
@@ -165,39 +180,6 @@ function createDeferred(): {
   return { promise, resolve };
 }
 
-/**
- * Atomic write: write to .tmp then rename for crash safety.
- */
-function atomicWrite(filepath: string, content: string): void {
-  const tmpPath = `${filepath}.tmp`;
-  fs.writeFileSync(tmpPath, content);
-  fs.renameSync(tmpPath, filepath);
-}
-
-/**
- * Send a message to a stage container via IPC input directory.
- */
-function sendToStage(handle: StageHandle, text: string): void {
-  const filename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.json`;
-  const filepath = path.join(handle.ipcInputDir, filename);
-  atomicWrite(filepath, JSON.stringify({ type: 'message', text }));
-  logger.debug(
-    { stage: handle.name, textLen: text.length },
-    'Sent IPC message to stage container',
-  );
-}
-
-/**
- * Send _close sentinel to a stage container.
- */
-function closeStage(handle: StageHandle): void {
-  try {
-    fs.writeFileSync(path.join(handle.ipcInputDir, '_close'), '');
-  } catch {
-    // Container may already be gone
-  }
-}
-
 export class PipelineRunner {
   private group: RegisteredGroup;
   private chatJid: string;
@@ -216,10 +198,12 @@ export class PipelineRunner {
   private aborted = false;
   private activeHandles = new Map<string, StageHandle>();
   private stageSessionIds = new Map<string, string>();
-  private joinSettlements = new Map<string, Map<string, TransitionOutcome>>();
+  private dispatch = new TemplateDispatchState();
   private activations = new Map<string, number>();
   private completions = new Map<string, number>();
-  private baseStageCount = 0;
+
+  // --- Public API ---
+
   constructor(
     group: RegisteredGroup,
     chatJid: string,
@@ -237,7 +221,6 @@ export class PipelineRunner {
     this.group = group;
     this.chatJid = chatJid;
     this.config = pipelineConfig;
-    this.baseStageCount = pipelineConfig.stages.length;
     this.notify = notify;
     this.onProcess = onProcess;
     this.groupDir = groupDir ?? resolveGroupFolderPath(this.group.folder);
@@ -255,53 +238,339 @@ export class PipelineRunner {
     };
   }
 
-  /**
-   * Compute the virtual sub-group folder for a stage container.
-   * When scopeId is set, embed it so sibling runners that spawn the same
-   * stage name get distinct IPC / sessions / conversations paths.
-   */
-  private stageSubFolder(stageName: string): string {
-    return this.scopeId
-      ? `${this.group.folder}__${this.scopeId}__pipeline_${stageName}`
-      : `${this.group.folder}__pipeline_${stageName}`;
-  }
-
-  /**
-   * Sub-paths must be relative, non-empty, and cannot contain ".." segments
-   * or start with a leading slash. Keeps the mount confined under its parent.
-   */
-  private isValidSubPath(subPath: string): boolean {
-    if (!subPath) return false;
-    if (subPath.startsWith('/')) return false;
-    const segments = subPath.split('/');
-    if (segments.some((s) => s === '' || s === '..' || s === '.')) return false;
-    return true;
-  }
-
   getRunId(): string {
     return this.runId;
   }
 
-  private serializeJoinSettlements(): Record<
-    string,
-    Record<string, TransitionOutcome>
-  > {
-    return Object.fromEntries(
-      [...this.joinSettlements.entries()].map(([joinStage, settlements]) => [
-        joinStage,
-        Object.fromEntries(settlements),
-      ]),
-    );
+  async abort(): Promise<void> {
+    this.aborted = true;
+    const handles = [...this.activeHandles.values()];
+    await Promise.all(handles.map((h) => this.closeAndWait(h)));
   }
 
-  private restoreJoinSettlements(
-    raw: Record<string, Record<string, TransitionOutcome>> | undefined,
-  ): void {
-    this.joinSettlements = new Map(
-      Object.entries(raw ?? {}).map(([joinStage, settlements]) => [
-        joinStage,
-        new Map(Object.entries(settlements)),
-      ]),
+  /**
+   * Run this dispatch node. The node-local scheduler owns fan-out/fan-in
+   * mechanics; this runner supplies stage execution and stitch dispatch hooks.
+   */
+  async run(): Promise<'success' | 'error'> {
+    const init = await this.initRun();
+    if (!init) return 'error';
+
+    const { stagesByName, pipelineLogStream } = init;
+    const {
+      initialStages,
+      waitingStages: restoredWaitingStages,
+      completedStages,
+    } = await this.resolveEntryStage(stagesByName);
+
+    return runNodeLocalScheduler({
+      initialStages,
+      restoredWaitingStages,
+      completedStages,
+      stagesByName,
+      isAborted: () => this.aborted,
+      isStageReady: (stageName, latestCompletedStages) =>
+        fanInReady(
+          stageName,
+          buildPredecessorMap(this.config.stages),
+          latestCompletedStages,
+        ),
+      runStage: (entry) =>
+        this.runSingleStage(
+          entry.name,
+          stagesByName,
+          completedStages,
+          pipelineLogStream,
+          entry.initialPrompt,
+          entry.ephemeralSystemPrompt,
+        ),
+      runStitchInvocation: (invocation, latestCompletedStages, saveState) =>
+        this.runStitchInvocation(invocation, latestCompletedStages, saveState),
+      resumeBlockedDispatch: (ctx) =>
+        resumeActiveTemplateDispatchBarriers(
+          this.templateDispatchRuntime(),
+          ctx,
+        ),
+      buildPayloadHandoff: (payload, finishedStage, targetName) =>
+        this.buildPayloadHandoff(
+          payload,
+          finishedStage,
+          targetName,
+          stagesByName,
+        ),
+      saveSnapshot: (snapshot) => {
+        this.saveRunnerState({
+          ...snapshot,
+          lastUpdated: new Date().toISOString(),
+          status: 'running',
+        });
+      },
+      recordActivation: (stageName) => {
+        this.activations.set(
+          stageName,
+          (this.activations.get(stageName) ?? 0) + 1,
+        );
+      },
+      recordCompletion: (stageName) => {
+        this.completions.set(
+          stageName,
+          (this.completions.get(stageName) ?? 0) + 1,
+        );
+      },
+      finalize: (latestCompletedStages, lastResult) =>
+        this.finalizeRun(latestCompletedStages, lastResult, pipelineLogStream),
+    });
+  }
+
+  // --- Run Setup And State ---
+
+  /**
+   * Write manifest and create log stream.
+   * Returns null on validation failure.
+   */
+  private async initRun(): Promise<{
+    stagesByName: Map<string, PipelineStage>;
+    pipelineLogStream: fs.WriteStream;
+  } | null> {
+    // Write initial manifest
+    writeRunManifest(this.stateDir, this.manifest);
+    logger.info(
+      {
+        group: this.group.name,
+        runId: this.runId,
+        stageCount: this.config.stages.length,
+      },
+      'Pipeline starting',
+    );
+
+    const stageNames = this.config.stages.map((s) => s.name).join(' → ');
+    await this.notifyBanner(`🚀 Pipeline starting. Stages: ${stageNames}`);
+
+    // Pipeline-wide log file
+    const logsDir = this.scopeId
+      ? path.join(this.stateDir, 'logs', this.scopeId)
+      : path.join(this.stateDir, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const pipelineLogFile = path.join(logsDir, `pipeline-${ts}.log`);
+    this.manifest.logFile = this.scopeId
+      ? `logs/${this.scopeId}/pipeline-${ts}.log`
+      : `logs/pipeline-${ts}.log`;
+    writeRunManifest(this.stateDir, this.manifest);
+    const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
+    pipelineLogStream.write(
+      `=== Pipeline Log ===\n` +
+        `Started: ${new Date().toISOString()}\n` +
+        `Group: ${this.group.name}\n` +
+        `Stages: ${stageNames}\n\n`,
+    );
+
+    // Build stage config lookup
+    const stagesByName = new Map<string, PipelineStage>();
+    for (const s of this.config.stages) {
+      stagesByName.set(s.name, s);
+    }
+
+    return { stagesByName, pipelineLogStream };
+  }
+
+  /**
+   * Determine entry stage and resume from previous state if applicable.
+   * Restores node-local scheduler state and active stitch barriers.
+   */
+  private async resolveEntryStage(
+    stagesByName: Map<string, PipelineStage>,
+  ): Promise<{
+    initialStages: PipelineStageQueueEntry[];
+    waitingStages: PipelineStageQueueEntry[];
+    completedStages: string[];
+  }> {
+    // Determine entry stage: explicit > heuristic (prefer nodes with outgoing edges) > stages[0]
+    const resolveEntry = (): string => {
+      if (this.config.entryStage && stagesByName.has(this.config.entryStage)) {
+        return this.config.entryStage;
+      }
+      const hasIncoming = new Set<string>();
+      const hasOutgoing = new Set<string>();
+      for (const s of this.config.stages) {
+        for (const t of s.transitions) {
+          const targets = nextTargets(t.next);
+          if (targets.length > 0) {
+            hasOutgoing.add(s.name);
+            for (const target of targets) hasIncoming.add(target);
+          }
+        }
+      }
+      const preferred = this.config.stages.find(
+        (s) => !hasIncoming.has(s.name) && hasOutgoing.has(s.name),
+      );
+      if (preferred) return preferred.name;
+      const fallback = this.config.stages.find((s) => !hasIncoming.has(s.name));
+      if (fallback) return fallback.name;
+      return this.config.stages[0].name;
+    };
+
+    // Resume from the last durable scheduler snapshot if the pipeline was
+    // interrupted. Newer snapshots persist the whole runtime frontier; older
+    // state files fall back to deriving a frontier from currentStage.
+    const existingState = loadPipelineState(
+      this.stateDir,
+      undefined,
+      this.scopeId,
+    );
+    if (existingState && existingState.status !== 'success') {
+      const completedStages = [...existingState.completedStages];
+      this.dispatch.restoreTree(
+        existingState.dispatchTree,
+        this.scopeId,
+        this.config,
+      );
+      this.dispatch.restoreBarriers(existingState.dispatchBarriers);
+      const selfNode =
+        existingState.dispatchTree?.[this.dispatch.currentNodeId(this.scopeId)];
+      if (selfNode?.config) {
+        this.config = selfNode.config;
+        assertNoNameCollision(this.config);
+        stagesByName.clear();
+        for (const stage of this.config.stages)
+          stagesByName.set(stage.name, stage);
+      }
+      this.activations = new Map(
+        Object.entries(existingState.activations ?? {}),
+      );
+      this.completions = new Map(
+        Object.entries(existingState.completions ?? {}),
+      );
+      this.dispatch.restoreActiveBarrierIds(existingState.activeBarrierIds);
+      this.stageSessionIds = new Map(
+        Object.entries(existingState.stageSessions ?? {}),
+      );
+
+      const restoredRunning = stageEntries(
+        existingState.runningStages ?? [],
+        stagesByName,
+        completedStages,
+      );
+      const restoredPending = normalizeStageEntries(
+        existingState.pendingStages,
+        stagesByName,
+        completedStages,
+      );
+      const restoredWaiting = normalizeStageEntries(
+        existingState.waitingStages,
+        stagesByName,
+        completedStages,
+      );
+
+      let initialStages: PipelineStageQueueEntry[] = [
+        ...restoredRunning,
+        ...restoredPending.filter(
+          (entry) => !restoredRunning.some((r) => r.name === entry.name),
+        ),
+      ];
+      const waitingStages = restoredWaiting;
+
+      // Legacy fallback: derive the frontier from currentStage when the
+      // scheduler-specific frontier fields are absent.
+      if (
+        initialStages.length === 0 &&
+        waitingStages.length === 0 &&
+        this.dispatch.activeBarrierCount() === 0 &&
+        existingState.currentStage
+      ) {
+        const current = Array.isArray(existingState.currentStage)
+          ? existingState.currentStage
+          : [existingState.currentStage];
+        initialStages = stageEntries(
+          current
+            .flatMap((name) => {
+              if (!stagesByName.has(name)) return [];
+              if (!completedStages.includes(name)) return [name];
+              const stage = stagesByName.get(name)!;
+              const primary = primaryTransition(stage);
+              return primary ? nextTargets(primary.next) : [];
+            })
+            .filter((s, index, items) => items.indexOf(s) === index)
+            .filter((s) => stagesByName.has(s)),
+          stagesByName,
+          completedStages,
+        );
+      } else if (
+        initialStages.length === 0 &&
+        waitingStages.length === 0 &&
+        this.dispatch.activeBarrierCount() === 0
+      ) {
+        // Pipeline finished with error (currentStage: null). Find the first
+        // unfinished stage as a best-effort legacy fallback.
+        const completedSet = new Set(completedStages);
+        const unfinished = this.config.stages
+          .filter((s) => !completedSet.has(s.name))
+          .map((s) => s.name);
+        initialStages = stageEntries(
+          unfinished.length > 0 ? [unfinished[0]] : [],
+          stagesByName,
+          completedStages,
+        );
+      }
+      if (
+        initialStages.length === 0 &&
+        waitingStages.length === 0 &&
+        this.dispatch.activeBarrierCount() === 0
+      ) {
+        initialStages = [{ name: resolveEntry() }];
+      }
+      const frontierNames = [
+        ...initialStages.map((s) => s.name),
+        ...waitingStages.map((s) => s.name),
+        ...this.dispatch.activeBarrierIdsArray().map((id) => `barrier:${id}`),
+      ];
+      await this.notifyBanner(
+        `🔄 Resuming from ${frontierNames.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`,
+      );
+      return { initialStages, waitingStages, completedStages };
+    }
+
+    this.dispatch.clear();
+    this.dispatch.ensureCurrentNode(this.scopeId, this.config);
+    this.activations = new Map();
+    this.completions = new Map();
+    this.stageSessionIds = new Map();
+    return {
+      initialStages: [{ name: resolveEntry() }],
+      waitingStages: [],
+      completedStages: [],
+    };
+  }
+
+  /**
+   * Save final pipeline state, close manifest and log stream.
+   */
+  private async finalizeRun(
+    completedStages: string[],
+    lastResult: 'success' | 'error',
+    pipelineLogStream: fs.WriteStream,
+  ): Promise<void> {
+    this.dispatch.markCurrentNodeSettled(this.scopeId, this.config, lastResult);
+    this.saveRunnerState({
+      currentStage: null,
+      completedStages,
+      lastUpdated: new Date().toISOString(),
+      status: lastResult,
+    });
+
+    this.manifest.endTime = new Date().toISOString();
+    this.manifest.status = lastResult;
+    writeRunManifest(this.stateDir, this.manifest);
+
+    pipelineLogStream.write(
+      `\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`,
+    );
+    pipelineLogStream.end();
+
+    await this.notifyBanner(
+      lastResult === 'success'
+        ? '🏁 Pipeline completed!'
+        : '❌ Pipeline terminated with errors.',
     );
   }
 
@@ -309,9 +578,9 @@ export class PipelineRunner {
     state: Omit<
       PipelineState,
       | 'version'
-      | 'runtimeStages'
-      | 'insertedStages'
-      | 'joinSettlements'
+      | 'dispatchTree'
+      | 'dispatchBarriers'
+      | 'activeBarrierIds'
       | 'activations'
       | 'completions'
       | 'stageSessions'
@@ -323,9 +592,9 @@ export class PipelineRunner {
         ...state,
         activations: Object.fromEntries(this.activations),
         completions: Object.fromEntries(this.completions),
-        runtimeStages: this.config.stages,
-        insertedStages: this.config.stages.slice(this.baseStageCount),
-        joinSettlements: this.serializeJoinSettlements(),
+        dispatchTree: this.dispatch.serializeTree(this.scopeId, this.config),
+        dispatchBarriers: this.dispatch.serializeBarriers(),
+        activeBarrierIds: this.dispatch.activeBarrierIdsArray(),
         stageSessions: Object.fromEntries(this.stageSessionIds),
       },
       undefined,
@@ -333,296 +602,589 @@ export class PipelineRunner {
     );
   }
 
-  private restoreRuntimeGraph(
+  // --- Stage Scheduling ---
+
+  /**
+   * Run a single stage to completion (spawn → turn loop → close).
+   * Self-contained: handles retries and container respawns internally.
+   */
+  private async runSingleStage(
+    stageName: string,
     stagesByName: Map<string, PipelineStage>,
-    existingState: PipelineState,
-  ): void {
-    if (existingState.runtimeStages && existingState.runtimeStages.length > 0) {
-      this.config = {
-        ...this.config,
-        stages: existingState.runtimeStages,
+    completedStages: string[],
+    pipelineLogStream: fs.WriteStream,
+    initialPromptOverride?: string | null,
+    ephemeralSystemPromptOverride?: string | null,
+  ): Promise<{
+    stageName: string;
+    nextStages: string | string[] | null;
+    nextInitialPrompt: string | null;
+    nextEphemeralSystemPrompt: string | null;
+    stitchInvocation: StitchInvocation | null;
+    stitchPayload: string | null;
+    result: 'success' | 'error' | null;
+  }> {
+    const stageConfig = stagesByName.get(stageName);
+    if (!stageConfig) {
+      logger.error({ stage: stageName }, 'Stage config not found');
+      return {
+        stageName,
+        nextStages: null,
+        nextInitialPrompt: null,
+        nextEphemeralSystemPrompt: null,
+        stitchInvocation: null,
+        stitchPayload: null,
+        result: 'error',
       };
-      assertNoNameCollision(this.config);
-      stagesByName.clear();
-      for (const stage of this.config.stages) {
-        stagesByName.set(stage.name, stage);
-      }
-      return;
     }
 
-    this.restoreInsertedStages(stagesByName, existingState.insertedStages);
-  }
-
-  private restoreInsertedStages(
-    stagesByName: Map<string, PipelineStage>,
-    insertedStages: PipelineStage[] | undefined,
-  ): void {
-    if (!insertedStages || insertedStages.length === 0) return;
-
-    this.config = {
-      ...this.config,
-      stages: [...this.config.stages, ...insertedStages],
-    };
-    assertNoNameCollision(this.config);
-    for (const stage of insertedStages) {
-      stagesByName.set(stage.name, stage);
-    }
-  }
-
-  private copyIndexForJoinArrival(
-    joinStage: PipelineStage,
-    finishedStage: string,
-  ): number | null {
-    const join = joinStage.join;
-    if (!join) return null;
-    const prefixes = join.copyPrefixes ?? [];
-    const index = prefixes.findIndex((prefix) =>
-      finishedStage.startsWith(prefix),
-    );
-    if (index >= 0) return index;
-    if (join.expectedCopies === 1) return 0;
-    return null;
-  }
-
-  private recordJoinSettlement(
-    joinStageName: string,
-    finishedStage: string,
-    outcome: TransitionOutcome | null,
-  ): void {
-    if (!outcome) return;
-    const joinStage = this.config.stages.find((s) => s.name === joinStageName);
-    if (!joinStage?.join) return;
-
-    const copyIndex = this.copyIndexForJoinArrival(joinStage, finishedStage);
-    if (copyIndex === null) {
-      logger.warn(
-        { joinStage: joinStageName, finishedStage },
-        'Join arrival did not match any copy prefix',
+    // Exclusive lock: wait for shared resource
+    let exclusiveLock: ExclusiveLock | null = null;
+    if (stageConfig.exclusive) {
+      exclusiveLock = getExclusiveLock(stageConfig.exclusive);
+      logger.info(
+        { stage: stageName, key: stageConfig.exclusive },
+        'Waiting for exclusive lock',
       );
-      return;
-    }
-
-    let settlements = this.joinSettlements.get(joinStageName);
-    if (!settlements) {
-      settlements = new Map<string, TransitionOutcome>();
-      this.joinSettlements.set(joinStageName, settlements);
-    }
-
-    const key = String(copyIndex);
-    if (settlements.has(key)) return;
-    settlements.set(key, outcome);
-  }
-
-  private isJoinReady(stageName: string): boolean {
-    const stage = this.config.stages.find((s) => s.name === stageName);
-    if (!stage?.join) return true;
-    const settled = this.joinSettlements.get(stageName);
-    return (settled?.size ?? 0) >= stage.join.expectedCopies;
-  }
-
-  private evaluateJoinOutcome(stage: PipelineStage): TransitionOutcome {
-    const join = stage.join;
-    if (!join) return 'success';
-
-    const settlements = this.joinSettlements.get(stage.name);
-    const values = [...(settlements?.values() ?? [])];
-    const successCount = values.filter((value) => value === 'success').length;
-
-    switch (join.policy) {
-      case 'all_success':
-        return successCount === join.expectedCopies ? 'success' : 'error';
-      case 'any_success':
-        return successCount > 0 ? 'success' : 'error';
-      case 'all_settled':
-        return 'success';
-    }
-  }
-
-  async abort(): Promise<void> {
-    this.aborted = true;
-    const handles = [...this.activeHandles.values()];
-    await Promise.all(handles.map((h) => this.closeAndWait(h)));
-  }
-
-  /** Send a visually prominent banner to TUI for stage transitions */
-  private async notifyBanner(text: string): Promise<void> {
-    if (process.env.ART_TUI_MODE) {
-      const line = '─'.repeat(50);
       await this.notify(
-        `\n\x1b[36m${line}\x1b[0m\n\x1b[1;36m${text}\x1b[0m\n\x1b[36m${line}\x1b[0m`,
+        `🔒 ${stageName}: waiting (${stageConfig.exclusive} lock)...`,
       );
-    } else {
-      await this.notify(text);
+      await exclusiveLock.acquire();
+      logger.info(
+        { stage: stageName, key: stageConfig.exclusive },
+        'Exclusive lock acquired',
+      );
     }
+
+    let nextStages: string | string[] | null = null;
+    let stageResult: 'success' | 'error' | null = null;
+    let outNextInitialPrompt: string | null = null;
+    let outNextEphemeralSystemPrompt: string | null = null;
+    let outStitchInvocation: StitchInvocation | null = null;
+    let outStitchPayload: string | null = null;
+
+    try {
+      const commonRules = this.buildCommonRules(stageConfig);
+      let nextInitialPrompt: string | null = initialPromptOverride ?? null;
+      // Ephemeral system-prompt append consumed only by the next spawn in this stage.
+      // Used when re-entering a resumed stage with a handoff payload from a predecessor.
+      let nextEphemeralSystemPrompt: string | null =
+        ephemeralSystemPromptOverride ?? null;
+      let containerRespawnCount = 0;
+      const MAX_CONTAINER_RESPAWNS = 3;
+      let turnCount = 0;
+      let currentStage: string | null = stageName;
+
+      while (currentStage === stageName) {
+        if (this.aborted) {
+          stageResult = 'error';
+          break;
+        }
+
+        const initialPrompt =
+          nextInitialPrompt || `${stageConfig.prompt ?? ''}\n${commonRules}`;
+        nextInitialPrompt = null;
+        const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
+        nextEphemeralSystemPrompt = null;
+
+        const stageStartTime = Date.now();
+        const handle = this.spawnStageContainer(
+          stageConfig,
+          initialPrompt,
+          pipelineLogStream,
+          ephemeralForSpawn,
+        );
+        this.activeHandles.set(stageName, handle);
+
+        logger.info(
+          { stage: stageName },
+          'Stage container spawned (on-demand)',
+        );
+        logger.info({ stage: stageName }, 'Entering stage');
+        await this.notifyBanner(`📌 Stage: ${stageName} starting`);
+
+        let isFirstTurn = true;
+        let stageResolved = false;
+
+        while (!stageResolved) {
+          turnCount++;
+
+          if (!handle.pendingResult) {
+            handle.pendingResult = createDeferred();
+          }
+
+          if (!isFirstTurn) {
+            const prompt = `${stageConfig.prompt ?? ''}\n${commonRules}`;
+            handle.ipc.sendToContainer(prompt);
+          }
+          isFirstTurn = false;
+
+          logger.debug(
+            { stage: stageName, turn: turnCount },
+            'Waiting for stage result',
+          );
+          await this.notify(
+            `🔧 [Turn ${turnCount}] ${stageName} in progress...`,
+          );
+
+          const result = await handle.pendingResult.promise;
+          handle.pendingResult = null;
+
+          logger.info(
+            { stage: stageName, turn: turnCount, result },
+            'Stage result received',
+          );
+
+          const outcome = await this.handleStageResult(result, {
+            handle,
+            stageConfig,
+            currentStageName: stageName,
+            turnCount,
+            stageStartTime,
+            completedStages,
+            commonRules,
+            stagesByName,
+            containerRespawnCount,
+            maxContainerRespawns: MAX_CONTAINER_RESPAWNS,
+          });
+
+          stageResolved = outcome.stageResolved;
+          if (outcome.stageResolved) {
+            if (outcome.nextStageName === stageName) {
+              // Container respawn — loop again with same stage
+              containerRespawnCount++;
+              nextInitialPrompt = outcome.nextInitialPrompt;
+              nextEphemeralSystemPrompt =
+                outcome.nextEphemeralSystemPrompt ?? null;
+              currentStage = stageName; // stay in outer while
+            } else {
+              // Advance to next stage(s) or end
+              nextStages = outcome.nextStageName;
+              outNextInitialPrompt = outcome.nextInitialPrompt;
+              outNextEphemeralSystemPrompt =
+                outcome.nextEphemeralSystemPrompt ?? null;
+              outStitchInvocation = outcome.stitchInvocation ?? null;
+              outStitchPayload = outcome.stitchPayload ?? null;
+              currentStage = null; // exit outer while
+              if (outcome.lastResult) {
+                stageResult = outcome.lastResult;
+              }
+            }
+          }
+        }
+      }
+    } finally {
+      this.activeHandles.delete(stageName);
+      if (exclusiveLock) {
+        exclusiveLock.release();
+        logger.info(
+          { stage: stageName, key: stageConfig.exclusive },
+          'Exclusive lock released',
+        );
+      }
+    }
+
+    return {
+      stageName,
+      nextStages,
+      nextInitialPrompt: outNextInitialPrompt,
+      nextEphemeralSystemPrompt: outNextEphemeralSystemPrompt,
+      stitchInvocation: outStitchInvocation,
+      stitchPayload: outStitchPayload,
+      result: stageResult,
+    };
   }
 
   /**
-   * Build all internal mounts for a stage: group mounts + project mount +
-   * __art__ shadow + project:* sub-path overrides.
-   * Shared by both agent mode and command mode.
+   * Handle stage result: no-match → feedback prompt and re-send,
+   * transition → close container and advance FSM.
    */
-  private buildStageMounts(
-    stageConfig: PipelineStage,
-  ): Array<{ hostPath: string; containerPath: string; readonly: boolean }> {
-    const mounts: Array<{
-      hostPath: string;
-      containerPath: string;
-      readonly: boolean;
-    }> = [];
+  private async handleStageResult(
+    result: StageMarkerResult,
+    ctx: {
+      handle: StageHandle;
+      stageConfig: PipelineStage;
+      currentStageName: string;
+      turnCount: number;
+      stageStartTime: number;
+      completedStages: string[];
+      commonRules: string;
+      stagesByName: Map<string, PipelineStage>;
+      containerRespawnCount: number;
+      maxContainerRespawns: number;
+    },
+  ): Promise<{
+    stageResolved: boolean;
+    nextStageName: string | string[] | null;
+    nextInitialPrompt: string | null;
+    nextEphemeralSystemPrompt?: string | null;
+    stitchInvocation?: StitchInvocation | null;
+    stitchPayload?: string | null;
+    lastResult: 'success' | 'error' | null;
+  }> {
+    const { matched, payload } = result;
+    const {
+      handle,
+      stageConfig,
+      currentStageName,
+      turnCount,
+      stageStartTime,
+      completedStages,
+      commonRules,
+      stagesByName,
+    } = ctx;
 
-    // Reserved keys that conflict with /workspace/* system paths
-    const RESERVED_KEYS = new Set([
-      'project',
-      'ipc',
-      'global',
-      'extra',
-      'conversations',
-    ]);
-
-    const emptyDir = path.join(getDataDir(), 'empty');
-    fs.mkdirSync(emptyDir, { recursive: true });
-
-    // Stage mounts (e.g. "src": "rw" → /workspace/src)
-    for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-      if (key.includes(':')) continue; // sub-path keys handled below
-      if (!policy) continue;
-      if (RESERVED_KEYS.has(key)) {
-        logger.warn(
-          { key },
-          `mount key "${key}" conflicts with reserved /workspace/${key} — skipped`,
-        );
-        continue;
+    if (!matched) {
+      if (stageConfig.chat) {
+        // Chatting stage: read user input and send to container
+        const userInput = await readUserInput('\n> ');
+        handle.pendingResult = createDeferred();
+        handle.ipc.sendToContainer(userInput);
+        return {
+          stageResolved: false,
+          nextStageName: null,
+          nextInitialPrompt: null,
+          lastResult: null,
+        };
       }
 
-      const hostDir = path.join(this.groupDir, key);
-      fs.mkdirSync(hostDir, { recursive: true });
-
-      mounts.push({
-        hostPath: hostDir,
-        containerPath: `/workspace/${key}`,
-        readonly: policy === 'ro',
-      });
-    }
-
-    // Project mount (parent of __art__/)
-    const projectPolicy = stageConfig.mounts['project'];
-    const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
-    const artDirName = path.basename(this.groupDir);
-    if (effectivePolicy) {
-      mounts.push({
-        hostPath: path.dirname(this.groupDir),
-        containerPath: '/workspace/project',
-        readonly: effectivePolicy === 'ro',
-      });
-
-      // Shadow __art__/ with empty dir
-      mounts.push({
-        hostPath: emptyDir,
-        containerPath: `/workspace/project/${artDirName}`,
-        readonly: true,
-      });
-    }
-
-    // Sub-path overrides. Syntax: "<key>:<subpath>" with value ro | rw | null.
-    // File-level bind mounts are not supported (Docker tracks inodes, git
-    // operations replace files with new inodes, making the bind mount stale).
-    for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
-      if (!key.includes(':')) continue;
-      const sepIdx = key.indexOf(':');
-      const parentKey = key.slice(0, sepIdx);
-      const subPath = key.slice(sepIdx + 1);
-
-      if (!this.isValidSubPath(subPath)) {
-        logger.warn({ key, subPath }, 'Invalid sub-path — skipped');
-        continue;
-      }
-      if (RESERVED_KEYS.has(parentKey) && parentKey !== 'project') {
-        logger.warn(
-          { parentKey, subPath },
-          `sub-mount parent "${parentKey}" conflicts with reserved /workspace/${parentKey} — skipped`,
-        );
-        continue;
-      }
-
-      let hostBase: string;
-      let containerBase: string;
-      let parentEffective: 'ro' | 'rw' | undefined;
-
-      if (parentKey === 'project') {
-        if (!effectivePolicy) continue;
-        if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
-          continue;
-        hostBase = path.dirname(this.groupDir);
-        containerBase = '/workspace/project';
-        parentEffective = effectivePolicy;
-      } else {
-        hostBase = path.join(this.groupDir, parentKey);
-        containerBase = `/workspace/${parentKey}`;
-        const pp = stageConfig.mounts[parentKey];
-        parentEffective = pp === 'ro' || pp === 'rw' ? pp : undefined;
-      }
-
-      const subHostPath = path.join(hostBase, subPath);
-      const isFile =
-        fs.existsSync(subHostPath) && fs.statSync(subHostPath).isFile();
-      if (isFile) {
-        logger.warn(
-          { key, subPath },
-          'File-level sub-mount ignored (only directories supported)',
-        );
-        continue;
-      }
-
-      const containerSubPath = `${containerBase}/${subPath}`;
-      if (subPolicy === null) {
-        // Only meaningful when parent is mounted — shadow that subtree.
-        if (parentEffective) {
-          mounts.push({
-            hostPath: emptyDir,
-            containerPath: containerSubPath,
-            readonly: true,
-          });
-        }
-        continue;
-      }
-      if (!subPolicy) continue;
-      if (parentEffective && subPolicy === parentEffective) continue;
-
-      // Direct or override mount. Create the host dir so the child can
-      // populate it even when the parent is absent.
-      fs.mkdirSync(subHostPath, { recursive: true });
-      mounts.push({
-        hostPath: subHostPath,
-        containerPath: containerSubPath,
-        readonly: subPolicy === 'ro',
-      });
-    }
-
-    // Host path mounts (validated against external allowlist)
-    if (stageConfig.hostMounts && stageConfig.hostMounts.length > 0) {
-      const validated = validateAdditionalMounts(
-        stageConfig.hostMounts,
-        `pipeline-${stageConfig.name}`,
-        this.group.isMain ?? false,
+      // No markers found — retry (autonomous mode)
+      logger.warn(
+        { stage: currentStageName, turn: turnCount },
+        'No stage markers found',
       );
-      mounts.push(...validated);
+      handle.pendingResult = createDeferred();
+      handle.ipc.sendToContainer(
+        `No stage markers found in the previous response. Continue working and emit the appropriate marker when done.\n\n${stageConfig.prompt}\n${commonRules}`,
+      );
+      return {
+        stageResolved: false,
+        nextStageName: null,
+        nextInitialPrompt: null,
+        lastResult: null,
+      };
+    }
+    const matchedLabel = transitionDisplayName(matched);
+
+    // Synthetic container exit/error — container is dead, must respawn in place.
+    if (matched.marker?.startsWith('_CONTAINER')) {
+      const errorDesc = payload || matched.marker;
+      await this.notify(
+        `⚠️ [Turn ${turnCount}] ${currentStageName} error: ${errorDesc}`,
+      );
+      if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
+        await this.notify(
+          `❌ [Turn ${turnCount}] ${currentStageName} container respawn limit exceeded (${ctx.maxContainerRespawns}) — stage failed`,
+        );
+        return {
+          stageResolved: true,
+          nextStageName: null,
+          nextInitialPrompt: null,
+          lastResult: 'error',
+        };
+      }
+      await this.notify(
+        `🔄 [Turn ${turnCount}] ${currentStageName} container respawn (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`,
+      );
+      return {
+        stageResolved: true,
+        nextStageName: currentStageName,
+        nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}`,
+        lastResult: null,
+      };
     }
 
-    // Conversations archive directory (agent-runner writes transcripts here)
-    const subFolder = this.stageSubFolder(stageConfig.name);
-    const convDir = path.join(
-      resolveGroupFolderPath(subFolder),
-      'conversations',
-    );
-    fs.mkdirSync(convDir, { recursive: true });
-    mounts.push({
-      hostPath: convDir,
-      containerPath: '/workspace/conversations',
-      readonly: false,
-    });
+    // Regular transition — move to next stage or end pipeline. Template
+    // transitions spawn child run nodes and wait on a parent-owned barrier
+    // instead of appending stages to this node's graph.
+    let targetName: string | string[] | null = matched.next ?? null;
+    let stitchInvocation: StitchInvocation | null = null;
+    if (matched.template) {
+      try {
+        const directive = resolveStitchInputs(matched, payload);
+        const transitionIdx = stageConfig.transitions.indexOf(matched);
+        const downstreamNext = Array.isArray(matched.next)
+          ? (() => {
+              throw new Error(
+                'Template transitions cannot carry authored multi-target "next" arrays',
+              );
+            })()
+          : (matched.next ?? null);
+        const template = loadPipelineTemplate(this.bundleDir, matched.template);
+        stitchInvocation = buildStitchInvocation({
+          originStage: stageConfig.name,
+          originTransitionIdx: transitionIdx,
+          template,
+          downstreamNext,
+          joinPolicy: matched.joinPolicy ?? 'all_success',
+          parentDispatchNodeId: this.dispatch.stageNodeId(
+            this.config,
+            this.scopeId,
+            stageConfig.name,
+          ),
+          mode: directive.mode,
+          count: directive.mode === 'parallel' ? directive.count : undefined,
+          substitutions:
+            directive.mode === 'single' ? directive.subs : undefined,
+          perCopySubstitutions:
+            directive.mode === 'parallel' ? directive.perCopySubs : undefined,
+        });
+        targetName = null;
+      } catch (err) {
+        logger.error(
+          { stage: currentStageName, template: matched.template, err },
+          'Stitch failed',
+        );
+        await this.notifyBanner(
+          `❌ ${currentStageName}: stitch of "${matched.template}" failed — ${(err as Error).message}`,
+        );
+        return {
+          stageResolved: true,
+          nextStageName: null,
+          nextInitialPrompt: null,
+          lastResult: 'error',
+        };
+      }
+    }
 
-    return mounts;
+    const targetDisplay = Array.isArray(targetName)
+      ? targetName.join(', ')
+      : targetName;
+    const transitionStageOutcome = transitionOutcome(matched);
+    const isErrorTransition = transitionStageOutcome === 'error';
+    if (isErrorTransition) {
+      await this.notifyBanner(
+        targetDisplay
+          ? `⚠️ Warning: ${payload || matchedLabel}\n🔄 Returning to ${targetDisplay}`
+          : `⚠️ Warning: ${payload || matchedLabel}`,
+      );
+    } else {
+      await this.notifyBanner(
+        targetDisplay
+          ? `✅ ${currentStageName} → ${targetDisplay} (${matchedLabel})`
+          : `✅ ${currentStageName} completed! (${matchedLabel})`,
+      );
+    }
+
+    // Track completed stage
+    completedStages.push(currentStageName);
+    this.manifest.stages.push({
+      name: currentStageName,
+      status: isErrorTransition ? 'error' : 'success',
+      duration: Date.now() - stageStartTime,
+    });
+    writeRunManifest(this.stateDir, this.manifest);
+
+    // Close the container first, then retrieve session ID
+    await this.closeAndWait(handle);
+    const containerResult = await handle.containerPromise;
+    if (containerResult.newSessionId) {
+      this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
+    }
+    this.activeHandles.delete(currentStageName);
+
+    // Payload forwarding for single-target transitions.
+    //   - Target has a resumed session (re-entry) → send payload via ephemeral
+    //     system-prompt append so it does NOT persist in the transcript.
+    //   - Target is entering fresh → bundle payload into the initial user
+    //     prompt like before (no session to pollute).
+    const { nextInitialPrompt, nextEphemeralSystemPrompt } =
+      this.buildPayloadHandoff(
+        payload,
+        currentStageName,
+        targetName,
+        stagesByName,
+        commonRules,
+      );
+    const targets = nextTargets(targetName);
+
+    return {
+      stageResolved: true,
+      nextStageName: targetName,
+      nextInitialPrompt,
+      nextEphemeralSystemPrompt,
+      stitchInvocation,
+      stitchPayload: stitchInvocation ? payload : null,
+      // Terminal transition: error-classified transitions (including
+      // `afterTimeout`) end the pipeline with 'error'; success-classified
+      // transitions end it with 'success'. Non-terminal transitions leave
+      // the result undetermined until a later stage decides.
+      lastResult:
+        !stitchInvocation && targets.length === 0
+          ? transitionStageOutcome
+          : null,
+    };
   }
+
+  private buildPayloadHandoff(
+    payload: string | null,
+    currentStageName: string,
+    targetName: string | string[] | null,
+    stagesByName: Map<string, PipelineStage>,
+    fallbackRules = '',
+  ): {
+    nextInitialPrompt: string | null;
+    nextEphemeralSystemPrompt: string | null;
+  } {
+    const targets = nextTargets(targetName);
+    if (targets.length !== 1 || !payload) {
+      return { nextInitialPrompt: null, nextEphemeralSystemPrompt: null };
+    }
+
+    const targetConfig = stagesByName.get(targets[0]);
+    const targetRules = targetConfig
+      ? this.buildCommonRules(targetConfig)
+      : fallbackRules;
+    const isResumedTarget =
+      targetConfig?.resumeSession !== false &&
+      this.stageSessionIds.has(targets[0]);
+
+    if (isResumedTarget) {
+      return {
+        nextInitialPrompt: null,
+        nextEphemeralSystemPrompt: `Forwarded from previous stage (${currentStageName}):\n\n${payload}`,
+      };
+    }
+
+    return {
+      nextInitialPrompt: `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}`,
+      nextEphemeralSystemPrompt: null,
+    };
+  }
+
+  /**
+   * Build commonRules dynamically from a stage's transitions.
+   */
+  private buildCommonRules(stageConfig: PipelineStage): string {
+    const markerLines = stageConfig.transitions
+      .filter((t) => !t.afterTimeout && t.marker)
+      .map((t) => {
+        const desc = t.prompt || t.marker;
+        return `- ${desc} → [${t.marker}]`;
+      });
+
+    const modeRule = stageConfig.chat
+      ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
+      : '- Do NOT ask questions. Always assume "yes" and proceed autonomously.\n- Do not stop until this stage is complete or you hit a blocking error.';
+    const externalMcpLines = (() => {
+      if (!stageConfig.mcpAccess || stageConfig.mcpAccess.length === 0) {
+        return '- External MCP access for this stage: none.';
+      }
+
+      const servers = resolveStageMcpServers(stageConfig.mcpAccess, {
+        hostGateway: getRuntime().hostGateway,
+      });
+      return [
+        '- External MCP access is limited to the following servers/tools:',
+        ...formatStageMcpAccessSummary(servers),
+      ].join('\n');
+    })();
+
+    return `
+RULES:
+${modeRule}
+- Read files before editing. Use tools freely.
+- Project source is available read-only at /workspace/project/.
+- Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
+${externalMcpLines}
+
+STAGE MARKERS — use the correct one:
+${markerLines.join('\n')}
+
+PAYLOAD FORMATS:
+- Short, single-line payload: [MARKER: payload text]
+- Long or multi-line payload (preferred for anything non-trivial), emit the bare marker on its own line followed by a fenced block:
+    [MARKER]
+    ---PAYLOAD_START---
+    free-form content, any characters or line count allowed
+    ---PAYLOAD_END---
+  Do NOT include the literal string "---PAYLOAD_END---" inside the payload.`;
+  }
+
+  // --- Stitch Dispatch Tree ---
+
+  private async runStitchInvocation(
+    invocation: StitchInvocation,
+    completedStages: string[],
+    saveSchedulerState?: (options?: SchedulerSnapshotOptions) => void,
+  ): Promise<TransitionOutcome> {
+    return runTemplateStitchInvocation(
+      this.templateDispatchRuntime(),
+      invocation,
+      completedStages,
+      saveSchedulerState,
+    );
+  }
+
+  private templateDispatchRuntime(): TemplateDispatchRuntime {
+    return {
+      state: this.dispatch,
+      scopeId: this.scopeId,
+      config: this.config,
+      notifyBanner: (text) => this.notifyBanner(text),
+      saveBlockedState: (completedStages, saveSchedulerState) =>
+        this.saveBlockedOnBarrierState(completedStages, saveSchedulerState),
+      settlementFromChildState: (childNodeId) =>
+        this.settlementFromChildState(childNodeId),
+      runChildNode: (childNodeId, childConfig) =>
+        this.runChildDispatchNode(childNodeId, childConfig),
+    };
+  }
+
+  private async runChildDispatchNode(
+    childNodeId: string,
+    childConfig: PipelineConfig,
+  ): Promise<{
+    result: TransitionOutcome;
+    dispatch: TemplateDispatchState;
+  }> {
+    const runner = new PipelineRunner(
+      this.group,
+      this.chatJid,
+      childConfig,
+      this.notify,
+      this.onProcess,
+      this.groupDir,
+      this.runId,
+      childNodeId,
+      this.bundleDir,
+    );
+    return {
+      result: await runner.run(),
+      dispatch: runner.dispatch,
+    };
+  }
+
+  private saveBlockedOnBarrierState(
+    completedStages: string[],
+    saveSchedulerState?: (options?: SchedulerSnapshotOptions) => void,
+  ): void {
+    if (saveSchedulerState) {
+      saveSchedulerState();
+      return;
+    }
+    this.saveRunnerState({
+      currentStage: null,
+      runningStages: [],
+      pendingStages: [],
+      waitingStages: [],
+      completedStages,
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+  }
+
+  private settlementFromChildState(
+    childNodeId: string,
+  ): TransitionOutcome | null {
+    const state = loadPipelineState(this.stateDir, undefined, childNodeId);
+    if (state?.status === 'success' || state?.status === 'error') {
+      return state.status;
+    }
+    return null;
+  }
+
+  // --- Stage Containers ---
 
   /**
    * Spawn a stage container as a virtual sub-group.
@@ -682,23 +1244,35 @@ export class PipelineRunner {
       },
     };
 
-    const ipcInputDir = path.join(resolveGroupIpcPath(subFolder), 'input');
-    fs.mkdirSync(ipcInputDir, { recursive: true });
-    // Clean stale _close sentinel
-    try {
-      fs.unlinkSync(path.join(ipcInputDir, '_close'));
-    } catch {
-      /* ignore */
-    }
+    const ipc = createStageIpcEndpoint(subFolder);
+    ipc.clearCloseSentinel();
 
     const handle: StageHandle = {
       name: stageConfig.name,
-      config: stageConfig,
-      ipcInputDir,
+      ipc,
       containerPromise: null!,
+      outboundPoller: null,
       pendingResult: createDeferred(),
       resultTexts: [],
     };
+
+    let outboundDrainRunning = false;
+    const pollOutboundMessages = (): void => {
+      if (outboundDrainRunning) return;
+      outboundDrainRunning = true;
+      void this.drainStageOutboundMessages(handle)
+        .catch((err) => {
+          logger.warn(
+            { stage: stageConfig.name, err },
+            'Failed to drain stage IPC outbound messages',
+          );
+        })
+        .finally(() => {
+          outboundDrainRunning = false;
+        });
+    };
+    handle.outboundPoller = setInterval(pollOutboundMessages, 500);
+    handle.outboundPoller.unref?.();
 
     // Create onOutput callback that resolves the pending deferred
     const onOutput = async (output: ContainerOutput) => {
@@ -717,6 +1291,7 @@ export class PipelineRunner {
       if (output.newSessionId) {
         this.stageSessionIds.set(stageConfig.name, output.newSessionId);
       }
+      await this.drainStageOutboundMessages(handle);
       if (!output.result) {
         if (handle.pendingResult && handle.resultTexts.length > 0) {
           handle.pendingResult.resolve({ matched: null, payload: null });
@@ -852,9 +1427,36 @@ export class PipelineRunner {
           });
           handle.pendingResult = null;
         }
+      })
+      .finally(() => {
+        this.stopStageOutboundPolling(handle);
+        pollOutboundMessages();
       });
 
     return handle;
+  }
+
+  private stopStageOutboundPolling(handle: StageHandle): void {
+    if (!handle.outboundPoller) return;
+    clearInterval(handle.outboundPoller);
+    handle.outboundPoller = null;
+  }
+
+  private async drainStageOutboundMessages(handle: StageHandle): Promise<void> {
+    for (const message of handle.ipc.drainFromContainer()) {
+      if (message.type !== 'message' || typeof message.text !== 'string') {
+        logger.warn(
+          { stage: handle.name, type: message.type },
+          'Ignoring unsupported stage IPC outbound message',
+        );
+        continue;
+      }
+      const sender =
+        typeof message.sender === 'string' && message.sender.length > 0
+          ? message.sender
+          : handle.name;
+      await this.notify(`[${sender}] ${message.text}`);
+    }
   }
 
   /**
@@ -1139,7 +1741,7 @@ export class PipelineRunner {
    * Close a stage container and wait for it to exit (with timeout).
    */
   private async closeAndWait(handle: StageHandle): Promise<void> {
-    closeStage(handle);
+    handle.ipc.closeContainerInput();
     const settled = await Promise.race([
       handle.containerPromise.then(() => 'done' as const),
       new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 5000)),
@@ -1156,1175 +1758,214 @@ export class PipelineRunner {
         /* best effort */
       }
     }
+    this.stopStageOutboundPolling(handle);
+    await this.drainStageOutboundMessages(handle);
   }
+
+  // --- Mounts And Paths ---
 
   /**
-   * Build commonRules dynamically from a stage's transitions.
+   * Build all internal mounts for a stage: group mounts + project mount +
+   * __art__ shadow + project:* sub-path overrides.
+   * Shared by both agent mode and command mode.
    */
-  private buildCommonRules(stageConfig: PipelineStage): string {
-    const markerLines = stageConfig.transitions
-      .filter((t) => !t.afterTimeout && t.marker)
-      .map((t) => {
-        const desc = t.prompt || t.marker;
-        return `- ${desc} → [${t.marker}]`;
-      });
-
-    const modeRule = stageConfig.chat
-      ? '- You are in an interactive conversation with the user. Ask questions and respond conversationally.\n- When the conversation goal is achieved, emit the completion marker.'
-      : '- Do NOT ask questions. Always assume "yes" and proceed autonomously.\n- Do not stop until this stage is complete or you hit a blocking error.';
-    const externalMcpLines = (() => {
-      if (!stageConfig.mcpAccess || stageConfig.mcpAccess.length === 0) {
-        return '- External MCP access for this stage: none.';
-      }
-
-      const servers = resolveStageMcpServers(stageConfig.mcpAccess, {
-        hostGateway: getRuntime().hostGateway,
-      });
-      return [
-        '- External MCP access is limited to the following servers/tools:',
-        ...formatStageMcpAccessSummary(servers),
-      ].join('\n');
-    })();
-
-    return `
-RULES:
-${modeRule}
-- Read files before editing. Use tools freely.
-- Project source is available read-only at /workspace/project/.
-- Stage working directories are mounted under /workspace/ (plan/, src/, tb/, build/, sim/, etc.). Always read and write files at these paths.
-${externalMcpLines}
-
-STAGE MARKERS — use the correct one:
-${markerLines.join('\n')}
-
-PAYLOAD FORMATS:
-- Short, single-line payload: [MARKER: payload text]
-- Long or multi-line payload (preferred for anything non-trivial), emit the bare marker on its own line followed by a fenced block:
-    [MARKER]
-    ---PAYLOAD_START---
-    free-form content, any characters or line count allowed
-    ---PAYLOAD_END---
-  Do NOT include the literal string "---PAYLOAD_END---" inside the payload.`;
-  }
-
-  /**
-   * Write manifest and create log stream.
-   * Returns null on validation failure.
-   */
-  private async initRun(): Promise<{
-    stagesByName: Map<string, PipelineStage>;
-    pipelineLogStream: fs.WriteStream;
-  } | null> {
-    // Write initial manifest
-    writeRunManifest(this.stateDir, this.manifest);
-    logger.info(
-      {
-        group: this.group.name,
-        runId: this.runId,
-        stageCount: this.config.stages.length,
-      },
-      'Pipeline starting',
-    );
-
-    const stageNames = this.config.stages.map((s) => s.name).join(' → ');
-    await this.notifyBanner(`🚀 Pipeline starting. Stages: ${stageNames}`);
-
-    // Pipeline-wide log file
-    const logsDir = this.scopeId
-      ? path.join(this.stateDir, 'logs', this.scopeId)
-      : path.join(this.stateDir, 'logs');
-    fs.mkdirSync(logsDir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const pipelineLogFile = path.join(logsDir, `pipeline-${ts}.log`);
-    this.manifest.logFile = this.scopeId
-      ? `logs/${this.scopeId}/pipeline-${ts}.log`
-      : `logs/pipeline-${ts}.log`;
-    writeRunManifest(this.stateDir, this.manifest);
-    const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
-    pipelineLogStream.write(
-      `=== Pipeline Log ===\n` +
-        `Started: ${new Date().toISOString()}\n` +
-        `Group: ${this.group.name}\n` +
-        `Stages: ${stageNames}\n\n`,
-    );
-
-    // Build stage config lookup
-    const stagesByName = new Map<string, PipelineStage>();
-    for (const s of this.config.stages) {
-      stagesByName.set(s.name, s);
-    }
-
-    return { stagesByName, pipelineLogStream };
-  }
-
-  /**
-   * Normalize transition.next to an array of target names (empty for pipeline end).
-   */
-  private static nextTargets(
-    next: string | string[] | null | undefined,
-  ): string[] {
-    if (next == null) return [];
-    return Array.isArray(next) ? next : [next];
-  }
-
-  private static stageEntries(
-    names: string[],
-    stagesByName: Map<string, PipelineStage>,
-    completedStages: string[],
-  ): PipelineStageQueueEntry[] {
-    const completed = new Set(completedStages);
-    const seen = new Set<string>();
-    const entries: PipelineStageQueueEntry[] = [];
-    for (const name of names) {
-      if (seen.has(name) || completed.has(name) || !stagesByName.has(name)) {
-        continue;
-      }
-      seen.add(name);
-      entries.push({ name });
-    }
-    return entries;
-  }
-
-  private static normalizeStageEntries(
-    entries: PipelineStageQueueEntry[] | undefined,
-    stagesByName: Map<string, PipelineStage>,
-    completedStages: string[],
-  ): PipelineStageQueueEntry[] {
-    const completed = new Set(completedStages);
-    const seen = new Set<string>();
-    const normalized: PipelineStageQueueEntry[] = [];
-    for (const entry of entries ?? []) {
-      if (
-        seen.has(entry.name) ||
-        completed.has(entry.name) ||
-        !stagesByName.has(entry.name)
-      ) {
-        continue;
-      }
-      seen.add(entry.name);
-      normalized.push(entry);
-    }
-    return normalized;
-  }
-
-  /**
-   * Build predecessor map: for each stage, which stages have primary
-   * transitions pointing to it?
-   */
-  private buildPredecessorMap(): Map<string, Set<string>> {
-    const predecessors = new Map<string, Set<string>>();
-    for (const s of this.config.stages) {
-      // Only the first transition (primary/success path) contributes to the
-      // predecessor map. Error/fallback transitions listed after the primary
-      // one do not gate fan-in.
-      const primary = primaryTransition(s);
-      if (!primary) continue;
-      for (const target of PipelineRunner.nextTargets(primary.next)) {
-        let set = predecessors.get(target);
-        if (!set) {
-          set = new Set();
-          predecessors.set(target, set);
-        }
-        set.add(s.name);
-      }
-    }
-    return predecessors;
-  }
-
-  /**
-   * Check if a stage's fan-in gate is satisfied:
-   * all predecessors must appear in completedStages.
-   */
-  /**
-   * Execute a stitch operation, mutating this.config to include the inserted
-   * stages and returning the new host transition target (single name or an
-   * array for parallel stitch).
-   */
-  private performStitch(
+  private buildStageMounts(
     stageConfig: PipelineStage,
-    transitionIdx: number,
-    templateName: string,
-    downstreamNext: string | null,
-    joinPolicy: JoinPolicy,
-    directive: StitchDirective,
-  ): {
-    insertedStages: PipelineStage[];
-    newNext: string | string[];
-  } {
-    if (transitionIdx < 0) {
-      throw new Error(
-        `Host transition for "${stageConfig.name}" not found in stage config`,
-      );
-    }
-    const template = loadPipelineTemplate(this.bundleDir, templateName);
-    if (directive.mode === 'parallel') {
-      const r = stitchParallel({
-        config: this.config,
-        originStage: stageConfig.name,
-        originTransitionIdx: transitionIdx,
-        template,
-        downstreamNext,
-        joinPolicy,
-        count: directive.count,
-        perCopySubstitutions: directive.perCopySubs,
+  ): Array<{ hostPath: string; containerPath: string; readonly: boolean }> {
+    const mounts: Array<{
+      hostPath: string;
+      containerPath: string;
+      readonly: boolean;
+    }> = [];
+
+    // Reserved keys that conflict with /workspace/* system paths
+    const RESERVED_KEYS = new Set([
+      'project',
+      'ipc',
+      'global',
+      'extra',
+      'conversations',
+    ]);
+
+    const emptyDir = path.join(getDataDir(), 'empty');
+    fs.mkdirSync(emptyDir, { recursive: true });
+
+    // Stage mounts (e.g. "src": "rw" → /workspace/src)
+    for (const [key, policy] of Object.entries(stageConfig.mounts)) {
+      if (key.includes(':')) continue; // sub-path keys handled below
+      if (!policy) continue;
+      if (RESERVED_KEYS.has(key)) {
+        logger.warn(
+          { key },
+          `mount key "${key}" conflicts with reserved /workspace/${key} — skipped`,
+        );
+        continue;
+      }
+
+      const hostDir = path.join(this.groupDir, key);
+      fs.mkdirSync(hostDir, { recursive: true });
+
+      mounts.push({
+        hostPath: hostDir,
+        containerPath: `/workspace/${key}`,
+        readonly: policy === 'ro',
       });
-      this.config = r.updatedConfig;
-      logger.info(
-        {
-          origin: stageConfig.name,
-          template: templateName,
-          insertId: r.insertId,
-          count: directive.count,
-          subs: directive.perCopySubs !== undefined,
-        },
-        'Stitch (parallel) applied',
-      );
-      return { insertedStages: r.insertedStages, newNext: r.entryNames };
     }
-    const r = stitchSingle({
-      config: this.config,
-      originStage: stageConfig.name,
-      originTransitionIdx: transitionIdx,
-      template,
-      downstreamNext,
-      joinPolicy,
-      substitutions: directive.subs,
-    });
-    this.config = r.updatedConfig;
-    logger.info(
-      {
-        origin: stageConfig.name,
-        template: templateName,
-        insertId: r.insertId,
-        subs: directive.subs !== undefined,
-      },
-      'Stitch (single) applied',
+
+    // Project mount (parent of __art__/)
+    const projectPolicy = stageConfig.mounts['project'];
+    const effectivePolicy = projectPolicy === undefined ? 'ro' : projectPolicy;
+    const artDirName = path.basename(this.groupDir);
+    if (effectivePolicy) {
+      mounts.push({
+        hostPath: path.dirname(this.groupDir),
+        containerPath: '/workspace/project',
+        readonly: effectivePolicy === 'ro',
+      });
+
+      // Shadow __art__/ with empty dir
+      mounts.push({
+        hostPath: emptyDir,
+        containerPath: `/workspace/project/${artDirName}`,
+        readonly: true,
+      });
+    }
+
+    // Sub-path overrides. Syntax: "<key>:<subpath>" with value ro | rw | null.
+    // File-level bind mounts are not supported (Docker tracks inodes, git
+    // operations replace files with new inodes, making the bind mount stale).
+    for (const [key, subPolicy] of Object.entries(stageConfig.mounts)) {
+      if (!key.includes(':')) continue;
+      const sepIdx = key.indexOf(':');
+      const parentKey = key.slice(0, sepIdx);
+      const subPath = key.slice(sepIdx + 1);
+
+      if (!this.isValidSubPath(subPath)) {
+        logger.warn({ key, subPath }, 'Invalid sub-path — skipped');
+        continue;
+      }
+      if (RESERVED_KEYS.has(parentKey) && parentKey !== 'project') {
+        logger.warn(
+          { parentKey, subPath },
+          `sub-mount parent "${parentKey}" conflicts with reserved /workspace/${parentKey} — skipped`,
+        );
+        continue;
+      }
+
+      let hostBase: string;
+      let containerBase: string;
+      let parentEffective: 'ro' | 'rw' | undefined;
+
+      if (parentKey === 'project') {
+        if (!effectivePolicy) continue;
+        if (subPath === artDirName || subPath.startsWith(artDirName + '/'))
+          continue;
+        hostBase = path.dirname(this.groupDir);
+        containerBase = '/workspace/project';
+        parentEffective = effectivePolicy;
+      } else {
+        hostBase = path.join(this.groupDir, parentKey);
+        containerBase = `/workspace/${parentKey}`;
+        const pp = stageConfig.mounts[parentKey];
+        parentEffective = pp === 'ro' || pp === 'rw' ? pp : undefined;
+      }
+
+      const subHostPath = path.join(hostBase, subPath);
+      const isFile =
+        fs.existsSync(subHostPath) && fs.statSync(subHostPath).isFile();
+      if (isFile) {
+        logger.warn(
+          { key, subPath },
+          'File-level sub-mount ignored (only directories supported)',
+        );
+        continue;
+      }
+
+      const containerSubPath = `${containerBase}/${subPath}`;
+      if (subPolicy === null) {
+        // Only meaningful when parent is mounted — shadow that subtree.
+        if (parentEffective) {
+          mounts.push({
+            hostPath: emptyDir,
+            containerPath: containerSubPath,
+            readonly: true,
+          });
+        }
+        continue;
+      }
+      if (!subPolicy) continue;
+      if (parentEffective && subPolicy === parentEffective) continue;
+
+      // Direct or override mount. Create the host dir so the child can
+      // populate it even when the parent is absent.
+      fs.mkdirSync(subHostPath, { recursive: true });
+      mounts.push({
+        hostPath: subHostPath,
+        containerPath: containerSubPath,
+        readonly: subPolicy === 'ro',
+      });
+    }
+
+    // Host path mounts (validated against external allowlist)
+    if (stageConfig.hostMounts && stageConfig.hostMounts.length > 0) {
+      const validated = validateAdditionalMounts(
+        stageConfig.hostMounts,
+        `pipeline-${stageConfig.name}`,
+        this.group.isMain ?? false,
+      );
+      mounts.push(...validated);
+    }
+
+    // Conversations archive directory (agent-runner writes transcripts here)
+    const subFolder = this.stageSubFolder(stageConfig.name);
+    const convDir = path.join(
+      resolveGroupFolderPath(subFolder),
+      'conversations',
     );
-    return { insertedStages: r.insertedStages, newNext: r.entryName };
+    fs.mkdirSync(convDir, { recursive: true });
+    mounts.push({
+      hostPath: convDir,
+      containerPath: '/workspace/conversations',
+      readonly: false,
+    });
+
+    return mounts;
   }
 
-  private static fanInReady(
-    stageName: string,
-    predecessors: Map<string, Set<string>>,
-    completedStages: string[],
-  ): boolean {
-    const preds = predecessors.get(stageName);
-    if (!preds || preds.size <= 1) return true;
-    const completed = new Set(completedStages);
-    for (const pred of preds) {
-      if (!completed.has(pred)) return false;
-    }
+  /**
+   * Compute the virtual sub-group folder for a stage container.
+   * When scopeId is set, embed it so sibling runners that spawn the same
+   * stage name get distinct IPC / sessions / conversations paths.
+   */
+  private stageSubFolder(stageName: string): string {
+    return this.scopeId
+      ? `${this.group.folder}__${this.scopeId}__pipeline_${stageName}`
+      : `${this.group.folder}__pipeline_${stageName}`;
+  }
+
+  /**
+   * Sub-paths must be relative, non-empty, and cannot contain ".." segments
+   * or start with a leading slash. Keeps the mount confined under its parent.
+   */
+  private isValidSubPath(subPath: string): boolean {
+    if (!subPath) return false;
+    if (subPath.startsWith('/')) return false;
+    const segments = subPath.split('/');
+    if (segments.some((s) => s === '' || s === '..' || s === '.')) return false;
     return true;
   }
 
-  /**
-   * Determine entry stage and resume from previous state if applicable.
-   * Restores activations/completions/joinSettlements into instance fields.
-   */
-  private async resolveEntryStage(
-    stagesByName: Map<string, PipelineStage>,
-  ): Promise<{
-    initialStages: PipelineStageQueueEntry[];
-    waitingStages: PipelineStageQueueEntry[];
-    completedStages: string[];
-  }> {
-    // Determine entry stage: explicit > heuristic (prefer nodes with outgoing edges) > stages[0]
-    const resolveEntry = (): string => {
-      if (this.config.entryStage && stagesByName.has(this.config.entryStage)) {
-        return this.config.entryStage;
-      }
-      const hasIncoming = new Set<string>();
-      const hasOutgoing = new Set<string>();
-      for (const s of this.config.stages) {
-        for (const t of s.transitions) {
-          const targets = PipelineRunner.nextTargets(t.next);
-          if (targets.length > 0) {
-            hasOutgoing.add(s.name);
-            for (const target of targets) hasIncoming.add(target);
-          }
-        }
-      }
-      const preferred = this.config.stages.find(
-        (s) => !hasIncoming.has(s.name) && hasOutgoing.has(s.name),
-      );
-      if (preferred) return preferred.name;
-      const fallback = this.config.stages.find((s) => !hasIncoming.has(s.name));
-      if (fallback) return fallback.name;
-      return this.config.stages[0].name;
-    };
+  // --- Notifications ---
 
-    // Resume from the last durable scheduler snapshot if the pipeline was
-    // interrupted. Newer snapshots persist the whole runtime frontier; older
-    // state files fall back to deriving a frontier from currentStage.
-    const existingState = loadPipelineState(
-      this.stateDir,
-      undefined,
-      this.scopeId,
-    );
-    if (existingState && existingState.status !== 'success') {
-      const completedStages = [...existingState.completedStages];
-      // Restore the runtime graph before resolving any frontier names. For
-      // stitched pipelines this includes both inserted stages and rewritten
-      // origin transitions.
-      this.restoreRuntimeGraph(stagesByName, existingState);
-      this.activations = new Map(
-        Object.entries(existingState.activations ?? {}),
-      );
-      this.completions = new Map(
-        Object.entries(existingState.completions ?? {}),
-      );
-      this.restoreJoinSettlements(existingState.joinSettlements);
-      this.stageSessionIds = new Map(
-        Object.entries(existingState.stageSessions ?? {}),
-      );
-
-      const restoredRunning = PipelineRunner.stageEntries(
-        existingState.runningStages ?? [],
-        stagesByName,
-        completedStages,
-      );
-      const restoredPending = PipelineRunner.normalizeStageEntries(
-        existingState.pendingStages,
-        stagesByName,
-        completedStages,
-      );
-      const restoredWaiting = PipelineRunner.normalizeStageEntries(
-        existingState.waitingStages,
-        stagesByName,
-        completedStages,
-      );
-
-      let initialStages: PipelineStageQueueEntry[] = [
-        ...restoredRunning,
-        ...restoredPending.filter(
-          (entry) => !restoredRunning.some((r) => r.name === entry.name),
-        ),
-      ];
-      const waitingStages = restoredWaiting;
-
-      // Legacy fallback: derive the frontier from currentStage when the
-      // scheduler-specific frontier fields are absent.
-      if (
-        initialStages.length === 0 &&
-        waitingStages.length === 0 &&
-        existingState.currentStage
-      ) {
-        const current = Array.isArray(existingState.currentStage)
-          ? existingState.currentStage
-          : [existingState.currentStage];
-        initialStages = PipelineRunner.stageEntries(
-          current
-            .flatMap((name) => {
-              if (!stagesByName.has(name)) return [];
-              if (!completedStages.includes(name)) return [name];
-              const stage = stagesByName.get(name)!;
-              const primary = primaryTransition(stage);
-              return primary ? PipelineRunner.nextTargets(primary.next) : [];
-            })
-            .filter((s, index, items) => items.indexOf(s) === index)
-            .filter((s) => stagesByName.has(s)),
-          stagesByName,
-          completedStages,
-        );
-      } else if (initialStages.length === 0 && waitingStages.length === 0) {
-        // Pipeline finished with error (currentStage: null). Find the first
-        // unfinished stage as a best-effort legacy fallback.
-        const completedSet = new Set(completedStages);
-        const unfinished = this.config.stages
-          .filter((s) => !completedSet.has(s.name))
-          .map((s) => s.name);
-        initialStages = PipelineRunner.stageEntries(
-          unfinished.length > 0 ? [unfinished[0]] : [],
-          stagesByName,
-          completedStages,
-        );
-      }
-      if (initialStages.length === 0 && waitingStages.length === 0) {
-        initialStages = [{ name: resolveEntry() }];
-      }
-      const frontierNames = [...initialStages, ...waitingStages].map(
-        (s) => s.name,
-      );
-      await this.notifyBanner(
-        `🔄 Resuming from ${frontierNames.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`,
-      );
-      return { initialStages, waitingStages, completedStages };
-    }
-
-    this.restoreJoinSettlements(undefined);
-    this.activations = new Map();
-    this.completions = new Map();
-    this.stageSessionIds = new Map();
-    return {
-      initialStages: [{ name: resolveEntry() }],
-      waitingStages: [],
-      completedStages: [],
-    };
-  }
-
-  /**
-   * Handle stage result: no-match → feedback prompt and re-send,
-   * transition → close container and advance FSM.
-   */
-  private async handleStageResult(
-    result: StageMarkerResult,
-    ctx: {
-      handle: StageHandle;
-      stageConfig: PipelineStage;
-      currentStageName: string;
-      turnCount: number;
-      stageStartTime: number;
-      completedStages: string[];
-      commonRules: string;
-      stagesByName: Map<string, PipelineStage>;
-      containerRespawnCount: number;
-      maxContainerRespawns: number;
-    },
-  ): Promise<{
-    stageResolved: boolean;
-    nextStageName: string | string[] | null;
-    nextInitialPrompt: string | null;
-    nextEphemeralSystemPrompt?: string | null;
-    stageOutcome: TransitionOutcome | null;
-    lastResult: 'success' | 'error' | null;
-  }> {
-    const { matched, payload } = result;
-    const {
-      handle,
-      stageConfig,
-      currentStageName,
-      turnCount,
-      stageStartTime,
-      completedStages,
-      commonRules,
-      stagesByName,
-    } = ctx;
-
-    if (!matched) {
-      if (stageConfig.chat) {
-        // Chatting stage: read user input and send to container
-        const userInput = await readUserInput('\n> ');
-        handle.pendingResult = createDeferred();
-        sendToStage(handle, userInput);
-        return {
-          stageResolved: false,
-          nextStageName: null,
-          nextInitialPrompt: null,
-          stageOutcome: null,
-          lastResult: null,
-        };
-      }
-
-      // No markers found — retry (autonomous mode)
-      logger.warn(
-        { stage: currentStageName, turn: turnCount },
-        'No stage markers found',
-      );
-      handle.pendingResult = createDeferred();
-      sendToStage(
-        handle,
-        `No stage markers found in the previous response. Continue working and emit the appropriate marker when done.\n\n${stageConfig.prompt}\n${commonRules}`,
-      );
-      return {
-        stageResolved: false,
-        nextStageName: null,
-        nextInitialPrompt: null,
-        stageOutcome: null,
-        lastResult: null,
-      };
-    }
-    const matchedLabel = transitionDisplayName(matched);
-
-    // Synthetic container exit/error — container is dead, must respawn in place.
-    if (matched.marker?.startsWith('_CONTAINER')) {
-      const errorDesc = payload || matched.marker;
+  /** Send a visually prominent banner to TUI for stage transitions */
+  private async notifyBanner(text: string): Promise<void> {
+    if (process.env.ART_TUI_MODE) {
+      const line = '─'.repeat(50);
       await this.notify(
-        `⚠️ [Turn ${turnCount}] ${currentStageName} error: ${errorDesc}`,
-      );
-      if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
-        await this.notify(
-          `❌ [Turn ${turnCount}] ${currentStageName} container respawn limit exceeded (${ctx.maxContainerRespawns}) — stage failed`,
-        );
-        return {
-          stageResolved: true,
-          nextStageName: null,
-          nextInitialPrompt: null,
-          stageOutcome: 'error',
-          lastResult: 'error',
-        };
-      }
-      await this.notify(
-        `🔄 [Turn ${turnCount}] ${currentStageName} container respawn (${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns})...`,
-      );
-      return {
-        stageResolved: true,
-        nextStageName: currentStageName,
-        nextInitialPrompt: `The container exited abnormally in the previous attempt: ${errorDesc}\n\nPlease retry.\n\n${stageConfig.prompt}\n${commonRules}`,
-        stageOutcome: null,
-        lastResult: null,
-      };
-    }
-
-    // Regular transition — move to next stage or end pipeline. When
-    // `template` is set, stitch the template into the graph in place and
-    // route to its entry/join flow. Otherwise `next` is either a scope-local
-    // stage name, null (pipeline end), or a runtime-injected string[] from
-    // stitch fan-out.
-    let targetName: string | string[] | null = matched.next ?? null;
-    if (matched.template) {
-      try {
-        const directive = resolveStitchInputs(matched, payload);
-        const transitionIdx = stageConfig.transitions.indexOf(matched);
-        const downstreamNext = Array.isArray(matched.next)
-          ? (() => {
-              throw new Error(
-                'Template transitions cannot carry authored multi-target "next" arrays',
-              );
-            })()
-          : (matched.next ?? null);
-        const stitched = this.performStitch(
-          stageConfig,
-          transitionIdx,
-          matched.template,
-          downstreamNext,
-          matched.joinPolicy ?? 'all_success',
-          directive,
-        );
-        for (const s of stitched.insertedStages) {
-          stagesByName.set(s.name, s);
-        }
-        targetName = stitched.newNext;
-        await this.notifyBanner(
-          `🧵 Stitched template "${matched.template}" after ${currentStageName} — inserted ${stitched.insertedStages.length} stage(s)`,
-        );
-      } catch (err) {
-        logger.error(
-          { stage: currentStageName, template: matched.template, err },
-          'Stitch failed',
-        );
-        await this.notifyBanner(
-          `❌ ${currentStageName}: stitch of "${matched.template}" failed — ${(err as Error).message}`,
-        );
-        return {
-          stageResolved: true,
-          nextStageName: null,
-          nextInitialPrompt: null,
-          stageOutcome: 'error',
-          lastResult: 'error',
-        };
-      }
-    }
-
-    const targetDisplay = Array.isArray(targetName)
-      ? targetName.join(', ')
-      : targetName;
-    const stageOutcome = transitionOutcome(matched);
-    const isErrorTransition = stageOutcome === 'error';
-    if (isErrorTransition) {
-      await this.notifyBanner(
-        targetDisplay
-          ? `⚠️ Warning: ${payload || matchedLabel}\n🔄 Returning to ${targetDisplay}`
-          : `⚠️ Warning: ${payload || matchedLabel}`,
+        `\n\x1b[36m${line}\x1b[0m\n\x1b[1;36m${text}\x1b[0m\n\x1b[36m${line}\x1b[0m`,
       );
     } else {
-      await this.notifyBanner(
-        targetDisplay
-          ? `✅ ${currentStageName} → ${targetDisplay} (${matchedLabel})`
-          : `✅ ${currentStageName} completed! (${matchedLabel})`,
-      );
+      await this.notify(text);
     }
-
-    // Track completed stage
-    completedStages.push(currentStageName);
-    this.manifest.stages.push({
-      name: currentStageName,
-      status: isErrorTransition ? 'error' : 'success',
-      duration: Date.now() - stageStartTime,
-    });
-    writeRunManifest(this.stateDir, this.manifest);
-
-    // Close the container first, then retrieve session ID
-    await this.closeAndWait(handle);
-    const containerResult = await handle.containerPromise;
-    if (containerResult.newSessionId) {
-      this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
-    }
-    this.activeHandles.delete(currentStageName);
-
-    // Payload forwarding for single-target transitions.
-    //   - Target has a resumed session (re-entry) → send payload via ephemeral
-    //     system-prompt append so it does NOT persist in the transcript.
-    //   - Target is entering fresh → bundle payload into the initial user
-    //     prompt like before (no session to pollute).
-    let nextInitialPrompt: string | null = null;
-    let nextEphemeralSystemPrompt: string | null = null;
-    const targets = PipelineRunner.nextTargets(targetName);
-    if (targets.length === 1 && payload) {
-      const targetConfig = stagesByName.get(targets[0]);
-      const targetRules = targetConfig
-        ? this.buildCommonRules(targetConfig)
-        : commonRules;
-      const isResumedTarget =
-        targetConfig?.resumeSession !== false &&
-        this.stageSessionIds.has(targets[0]);
-      if (isResumedTarget) {
-        nextEphemeralSystemPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}`;
-      } else {
-        nextInitialPrompt = `Forwarded from previous stage (${currentStageName}):\n\n${payload}\n\n${targetConfig?.prompt || ''}\n${targetRules}`;
-      }
-    }
-
-    return {
-      stageResolved: true,
-      nextStageName: targetName,
-      nextInitialPrompt,
-      nextEphemeralSystemPrompt,
-      stageOutcome,
-      // Terminal transition: error-classified transitions (including
-      // `afterTimeout`) end the pipeline with 'error'; success-classified
-      // transitions end it with 'success'. Non-terminal transitions leave
-      // the result undetermined until a later stage decides.
-      lastResult: targets.length === 0 ? stageOutcome : null,
-    };
-  }
-
-  /**
-   * Save final pipeline state, close manifest and log stream.
-   */
-  private async finalizeRun(
-    completedStages: string[],
-    lastResult: 'success' | 'error',
-    pipelineLogStream: fs.WriteStream,
-  ): Promise<void> {
-    this.saveRunnerState({
-      currentStage: null,
-      completedStages,
-      lastUpdated: new Date().toISOString(),
-      status: lastResult,
-    });
-
-    this.manifest.endTime = new Date().toISOString();
-    this.manifest.status = lastResult;
-    writeRunManifest(this.stateDir, this.manifest);
-
-    pipelineLogStream.write(
-      `\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`,
-    );
-    pipelineLogStream.end();
-
-    await this.notifyBanner(
-      lastResult === 'success'
-        ? '🏁 Pipeline completed!'
-        : '❌ Pipeline terminated with errors.',
-    );
-  }
-
-  private async runJoinStage(
-    stageConfig: PipelineStage,
-    completedStages: string[],
-  ): Promise<{
-    nextStages: string | string[] | null;
-    nextInitialPrompt: string | null;
-    nextEphemeralSystemPrompt: string | null;
-    stageOutcome: TransitionOutcome;
-    result: 'success' | 'error' | null;
-  }> {
-    if (!stageConfig.join) {
-      throw new Error(`Stage "${stageConfig.name}" is not a join stage`);
-    }
-
-    const stageStartTime = Date.now();
-    const stageOutcome = this.evaluateJoinOutcome(stageConfig);
-    const nextStages =
-      stageOutcome === 'success'
-        ? (stageConfig.transitions[0]?.next ?? null)
-        : null;
-    const targetDisplay = Array.isArray(nextStages)
-      ? nextStages.join(', ')
-      : nextStages;
-
-    await this.notifyBanner(
-      stageOutcome === 'success'
-        ? targetDisplay
-          ? `✅ ${stageConfig.name} → ${targetDisplay} (join:${stageConfig.join.policy})`
-          : `✅ ${stageConfig.name} completed! (join:${stageConfig.join.policy})`
-        : `❌ ${stageConfig.name} blocked downstream transition (join:${stageConfig.join.policy})`,
-    );
-
-    completedStages.push(stageConfig.name);
-    this.manifest.stages.push({
-      name: stageConfig.name,
-      status: stageOutcome,
-      duration: Date.now() - stageStartTime,
-    });
-    writeRunManifest(this.stateDir, this.manifest);
-
-    return {
-      nextStages,
-      nextInitialPrompt: null,
-      nextEphemeralSystemPrompt: null,
-      stageOutcome,
-      result:
-        PipelineRunner.nextTargets(nextStages).length === 0
-          ? stageOutcome
-          : null,
-    };
-  }
-
-  /**
-   * Run a single stage to completion (spawn → turn loop → close).
-   * Self-contained: handles retries and container respawns internally.
-   */
-  private async runSingleStage(
-    stageName: string,
-    stagesByName: Map<string, PipelineStage>,
-    completedStages: string[],
-    pipelineLogStream: fs.WriteStream,
-    initialPromptOverride?: string | null,
-    ephemeralSystemPromptOverride?: string | null,
-  ): Promise<{
-    stageName: string;
-    nextStages: string | string[] | null;
-    nextInitialPrompt: string | null;
-    nextEphemeralSystemPrompt: string | null;
-    stageOutcome: TransitionOutcome | null;
-    result: 'success' | 'error' | null;
-  }> {
-    const stageConfig = stagesByName.get(stageName);
-    if (!stageConfig) {
-      logger.error({ stage: stageName }, 'Stage config not found');
-      return {
-        stageName,
-        nextStages: null,
-        nextInitialPrompt: null,
-        nextEphemeralSystemPrompt: null,
-        stageOutcome: 'error',
-        result: 'error',
-      };
-    }
-
-    if (stageConfig.join) {
-      const joined = await this.runJoinStage(stageConfig, completedStages);
-      return {
-        stageName,
-        ...joined,
-      };
-    }
-
-    // Exclusive lock: wait for shared resource
-    let exclusiveLock: ExclusiveLock | null = null;
-    if (stageConfig.exclusive) {
-      exclusiveLock = getExclusiveLock(stageConfig.exclusive);
-      logger.info(
-        { stage: stageName, key: stageConfig.exclusive },
-        'Waiting for exclusive lock',
-      );
-      await this.notify(
-        `🔒 ${stageName}: waiting (${stageConfig.exclusive} lock)...`,
-      );
-      await exclusiveLock.acquire();
-      logger.info(
-        { stage: stageName, key: stageConfig.exclusive },
-        'Exclusive lock acquired',
-      );
-    }
-
-    let nextStages: string | string[] | null = null;
-    let stageOutcome: TransitionOutcome | null = null;
-    let stageResult: 'success' | 'error' | null = null;
-    let outNextInitialPrompt: string | null = null;
-    let outNextEphemeralSystemPrompt: string | null = null;
-
-    try {
-      const commonRules = this.buildCommonRules(stageConfig);
-      let nextInitialPrompt: string | null = initialPromptOverride ?? null;
-      // Ephemeral system-prompt append consumed only by the next spawn in this stage.
-      // Used when re-entering a resumed stage with a handoff payload from a predecessor.
-      let nextEphemeralSystemPrompt: string | null =
-        ephemeralSystemPromptOverride ?? null;
-      let containerRespawnCount = 0;
-      const MAX_CONTAINER_RESPAWNS = 3;
-      let turnCount = 0;
-      let currentStage: string | null = stageName;
-
-      while (currentStage === stageName) {
-        if (this.aborted) {
-          stageOutcome = 'error';
-          stageResult = 'error';
-          break;
-        }
-
-        const initialPrompt =
-          nextInitialPrompt || `${stageConfig.prompt ?? ''}\n${commonRules}`;
-        nextInitialPrompt = null;
-        const ephemeralForSpawn = nextEphemeralSystemPrompt ?? undefined;
-        nextEphemeralSystemPrompt = null;
-
-        const stageStartTime = Date.now();
-        const handle = this.spawnStageContainer(
-          stageConfig,
-          initialPrompt,
-          pipelineLogStream,
-          ephemeralForSpawn,
-        );
-        this.activeHandles.set(stageName, handle);
-
-        logger.info(
-          { stage: stageName },
-          'Stage container spawned (on-demand)',
-        );
-        logger.info({ stage: stageName }, 'Entering stage');
-        await this.notifyBanner(`📌 Stage: ${stageName} starting`);
-
-        let isFirstTurn = true;
-        let stageResolved = false;
-
-        while (!stageResolved) {
-          turnCount++;
-
-          if (!handle.pendingResult) {
-            handle.pendingResult = createDeferred();
-          }
-
-          if (!isFirstTurn) {
-            const prompt = `${stageConfig.prompt ?? ''}\n${commonRules}`;
-            sendToStage(handle, prompt);
-          }
-          isFirstTurn = false;
-
-          logger.debug(
-            { stage: stageName, turn: turnCount },
-            'Waiting for stage result',
-          );
-          await this.notify(
-            `🔧 [Turn ${turnCount}] ${stageName} in progress...`,
-          );
-
-          const result = await handle.pendingResult.promise;
-          handle.pendingResult = null;
-
-          logger.info(
-            { stage: stageName, turn: turnCount, result },
-            'Stage result received',
-          );
-
-          const outcome = await this.handleStageResult(result, {
-            handle,
-            stageConfig,
-            currentStageName: stageName,
-            turnCount,
-            stageStartTime,
-            completedStages,
-            commonRules,
-            stagesByName,
-            containerRespawnCount,
-            maxContainerRespawns: MAX_CONTAINER_RESPAWNS,
-          });
-
-          stageResolved = outcome.stageResolved;
-          if (outcome.stageResolved) {
-            if (outcome.nextStageName === stageName) {
-              // Container respawn — loop again with same stage
-              containerRespawnCount++;
-              nextInitialPrompt = outcome.nextInitialPrompt;
-              nextEphemeralSystemPrompt =
-                outcome.nextEphemeralSystemPrompt ?? null;
-              currentStage = stageName; // stay in outer while
-            } else {
-              // Advance to next stage(s) or end
-              nextStages = outcome.nextStageName;
-              outNextInitialPrompt = outcome.nextInitialPrompt;
-              outNextEphemeralSystemPrompt =
-                outcome.nextEphemeralSystemPrompt ?? null;
-              stageOutcome = outcome.stageOutcome;
-              currentStage = null; // exit outer while
-              if (outcome.lastResult) {
-                stageResult = outcome.lastResult;
-              }
-            }
-          }
-        }
-      }
-    } finally {
-      this.activeHandles.delete(stageName);
-      if (exclusiveLock) {
-        exclusiveLock.release();
-        logger.info(
-          { stage: stageName, key: stageConfig.exclusive },
-          'Exclusive lock released',
-        );
-      }
-    }
-
-    return {
-      stageName,
-      nextStages,
-      nextInitialPrompt: outNextInitialPrompt,
-      nextEphemeralSystemPrompt: outNextEphemeralSystemPrompt,
-      stageOutcome,
-      result: stageResult,
-    };
-  }
-
-  /**
-   * Main FSM loop with fan-out/fan-in support.
-   * Spawns stage containers on-demand, runs parallel stages concurrently,
-   * and gates fan-in stages until all predecessors complete.
-   */
-  async run(): Promise<'success' | 'error'> {
-    const init = await this.initRun();
-    if (!init) return 'error';
-
-    const { stagesByName, pipelineLogStream } = init;
-    const {
-      initialStages,
-      waitingStages: restoredWaitingStages,
-      completedStages,
-    } = await this.resolveEntryStage(stagesByName);
-
-    // Track activations for initial stages
-    for (const entry of initialStages) {
-      this.activations.set(
-        entry.name,
-        (this.activations.get(entry.name) ?? 0) + 1,
-      );
-    }
-
-    // `predecessors` is recomputed per-call below — stitch may add stages at
-    // runtime, so a snapshot taken at run-start would miss join-adjacent
-    // stage edges from later stitches.
-    // Each entry: { name, initialPrompt, ephemeralSystemPrompt }
-    // — set when payload forwarding applies (initialPrompt for fresh entries,
-    //   ephemeralSystemPrompt for re-entry into a resumed stage).
-    let pendingStages: PipelineStageQueueEntry[] = [...initialStages];
-    const waitingForFanIn = new Map<string, PipelineStageQueueEntry>(
-      restoredWaitingStages.map((entry) => [entry.name, entry]),
-    );
-    let lastResult: 'success' | 'error' = 'success';
-
-    // --- Completion notification queue (replaces Promise.all gating) ---
-    type StageResult = Awaited<ReturnType<PipelineRunner['runSingleStage']>>;
-    const resultQueue: StageResult[] = [];
-    let notifyResolve: (() => void) | null = null;
-    const running = new Set<Promise<void>>();
-    const runningNames = new Set<string>();
-
-    const durableCurrentStage = (): string | string[] | null => {
-      const names = [
-        ...runningNames,
-        ...pendingStages.map((entry) => entry.name),
-        ...[...waitingForFanIn.values()].map((entry) => entry.name),
-      ].filter((name, index, items) => items.indexOf(name) === index);
-      if (names.length === 0) return null;
-      return names.length === 1 ? names[0] : names;
-    };
-
-    const saveSchedulerState = (): void => {
-      this.saveRunnerState({
-        currentStage: durableCurrentStage(),
-        runningStages: [...runningNames],
-        pendingStages,
-        waitingStages: [...waitingForFanIn.values()],
-        completedStages,
-        lastUpdated: new Date().toISOString(),
-        status: 'running',
-      });
-    };
-
-    const waitForResult = (): Promise<void> => {
-      if (resultQueue.length > 0) return Promise.resolve();
-      return new Promise<void>((r) => {
-        notifyResolve = r;
-      });
-    };
-
-    const signalResult = (): void => {
-      if (notifyResolve) {
-        const r = notifyResolve;
-        notifyResolve = null;
-        r();
-      }
-    };
-
-    const launchStage = (entry: PipelineStageQueueEntry): void => {
-      if (runningNames.has(entry.name)) return;
-      runningNames.add(entry.name);
-      const p = this.runSingleStage(
-        entry.name,
-        stagesByName,
-        completedStages,
-        pipelineLogStream,
-        entry.initialPrompt,
-        entry.ephemeralSystemPrompt,
-      )
-        .then((result) => {
-          resultQueue.push(result);
-          running.delete(p);
-          runningNames.delete(result.stageName);
-          signalResult();
-        })
-        .catch((err) => {
-          logger.error({ stage: entry.name, err }, 'Stage threw unexpectedly');
-          resultQueue.push({
-            stageName: entry.name,
-            nextStages: null,
-            nextInitialPrompt: null,
-            nextEphemeralSystemPrompt: null,
-            stageOutcome: 'error',
-            result: 'error',
-          });
-          running.delete(p);
-          runningNames.delete(entry.name);
-          signalResult();
-        });
-      running.add(p);
-    };
-
-    // Helper: check readiness for a gated stage. Runtime-generated join stages
-    // use persisted settlement accounting; multi-predecessor stages use
-    // predecessor-based gating.
-    const isStageReady = (stageName: string): boolean => {
-      const stage = stagesByName.get(stageName);
-      if (stage?.join) {
-        return this.isJoinReady(stageName);
-      }
-      const predecessors = this.buildPredecessorMap();
-      return PipelineRunner.fanInReady(
-        stageName,
-        predecessors,
-        completedStages,
-      );
-    };
-
-    // Helper: launch a stage, deferring chat stages if pool is busy
-    const tryLaunch = (entry: PipelineStageQueueEntry): void => {
-      const cfg = stagesByName.get(entry.name);
-      if (cfg?.chat && running.size > 0) {
-        // Chat stages need exclusive stdin — defer until pool drains
-        pendingStages.push(entry);
-        return;
-      }
-      launchStage(entry);
-    };
-
-    // Launch initial stages (gate fan-in/join stages that aren't ready yet)
-    for (const entry of pendingStages) {
-      if (isStageReady(entry.name)) {
-        tryLaunch(entry);
-      } else {
-        waitingForFanIn.set(entry.name, entry);
-      }
-    }
-    pendingStages = [];
-    for (const [name, entry] of [...waitingForFanIn.entries()]) {
-      if (isStageReady(name)) {
-        waitingForFanIn.delete(name);
-        tryLaunch(entry);
-      }
-    }
-    saveSchedulerState();
-
-    while (
-      running.size > 0 ||
-      waitingForFanIn.size > 0 ||
-      pendingStages.length > 0
-    ) {
-      if (this.aborted) break;
-
-      // Launch any deferred pending stages (e.g. chat stages waiting for pool to drain)
-      // To think... -> only used in chat stage? -> we need to make the chat system with IPC;
-      if (pendingStages.length > 0 && running.size === 0) {
-        const deferred = [...pendingStages];
-        pendingStages = [];
-        for (const entry of deferred) {
-          tryLaunch(entry);
-        }
-      }
-
-      // Stuck detection: nothing running, nothing queued, only fan-in waiting
-      if (
-        running.size === 0 &&
-        resultQueue.length === 0 &&
-        pendingStages.length === 0
-      ) {
-        if (waitingForFanIn.size > 0) {
-          logger.warn(
-            { waiting: [...waitingForFanIn.keys()] },
-            'Fan-in stages stuck — predecessors did not complete',
-          );
-          lastResult = 'error';
-        }
-        break;
-      }
-
-      // Save a consistent scheduler frontier before waiting.
-      saveSchedulerState();
-
-      // Wait for at least one stage to complete
-      await waitForResult();
-
-      // Drain all available results and launch ready successors immediately
-      while (resultQueue.length > 0) {
-        const {
-          stageName: finishedStage,
-          nextStages,
-          nextInitialPrompt,
-          nextEphemeralSystemPrompt,
-          stageOutcome,
-          result,
-        } = resultQueue.shift()!;
-
-        if (result === 'error') lastResult = 'error';
-
-        // Track completion for dynamic fan-in
-        this.completions.set(
-          finishedStage,
-          (this.completions.get(finishedStage) ?? 0) + 1,
-        );
-
-        const targets = PipelineRunner.nextTargets(nextStages);
-        for (const target of targets) {
-          const targetConfig = stagesByName.get(target);
-          if (targetConfig?.join) {
-            this.recordJoinSettlement(target, finishedStage, stageOutcome);
-          }
-          // Skip if already running, queued, or waiting for fan-in
-          if (
-            runningNames.has(target) ||
-            pendingStages.some((s) => s.name === target) ||
-            waitingForFanIn.has(target)
-          ) {
-            continue;
-          }
-          // Track activation for dynamic fan-in (only when actually queued, not deduped)
-          this.activations.set(target, (this.activations.get(target) ?? 0) + 1);
-          const targetEntry: PipelineStageQueueEntry = {
-            name: target,
-            initialPrompt: targets.length === 1 ? nextInitialPrompt : null,
-            ephemeralSystemPrompt:
-              targets.length === 1 ? nextEphemeralSystemPrompt : null,
-          };
-
-          if (isStageReady(target)) {
-            tryLaunch(targetEntry);
-          } else {
-            waitingForFanIn.set(target, targetEntry);
-          }
-        }
-      }
-
-      // Re-check fan-in gates — a newly completed stage may have unblocked waiters
-      for (const [name, entry] of [...waitingForFanIn.entries()]) {
-        if (isStageReady(name)) {
-          waitingForFanIn.delete(name);
-          tryLaunch(entry);
-        }
-      }
-
-      saveSchedulerState();
-    }
-
-    await this.finalizeRun(completedStages, lastResult, pipelineLogStream);
-    return lastResult;
   }
 }

@@ -101,6 +101,7 @@ vi.mock('../../src/mcp-registry.js', () => ({
 
 interface OutputSequenceEntry {
   result: string | null;
+  outbound?: string;
 }
 
 // Each stage name maps to a list of "invocations". Each invocation is an array
@@ -130,7 +131,7 @@ vi.mock('../../src/container-runner.js', () => ({
   },
   runContainerAgent: vi.fn(
     (
-      group: { name: string },
+      group: { name: string; folder: string },
       _input: { prompt: string },
       _onProcess: unknown,
       onOutput: (output: { status: string; result: string | null }) => void,
@@ -153,6 +154,22 @@ vi.mock('../../src/container-runner.js', () => ({
                 if (entry.result === '__REJECT__') {
                   reject(new Error(`forced reject in ${stageName}`));
                   return;
+                }
+                if (entry.outbound) {
+                  const messagesDir = path.join(
+                    TEST_IPC_BASE,
+                    group.folder,
+                    'messages',
+                  );
+                  fs.mkdirSync(messagesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(messagesDir, `${Date.now()}-outbound.json`),
+                    JSON.stringify({
+                      type: 'message',
+                      text: entry.outbound,
+                      sender: 'worker',
+                    }),
+                  );
                 }
                 await onOutput({ status: 'success', result: entry.result });
                 // Give FSM time to process result and set new pendingResult
@@ -235,6 +252,13 @@ import {
   type PipelineState,
 } from '../../src/pipeline-runner.js';
 import { buildContainerArgs } from '../../src/container-runner.js';
+import {
+  buildStitchInvocation,
+  dispatchChildNodeId,
+  dispatchInvocationIdFor,
+  dispatchStageName,
+  ROOT_DISPATCH_NODE_ID,
+} from '../../src/stitch.js';
 import * as mcpRegistry from '../../src/mcp-registry.js';
 import type { RegisteredGroup } from '../../src/types.js';
 
@@ -243,6 +267,20 @@ const mockLoadMcpRegistry = vi.mocked(mcpRegistry.loadMcpRegistry);
 const mockResolveStageMcpServers = vi.mocked(
   mcpRegistry.resolveStageMcpServers,
 );
+
+function stitchInvocation(
+  parentNodeId: string,
+  originStage: string,
+  templateName: string,
+  transitionIdx = 0,
+): string {
+  return dispatchInvocationIdFor(
+    parentNodeId,
+    originStage,
+    transitionIdx,
+    templateName,
+  );
+}
 
 beforeEach(() => {
   mockLoadMcpRegistry.mockReset();
@@ -768,6 +806,39 @@ describe('PipelineRunner FSM', () => {
     expect(result).toBe('success');
   }, 15000);
 
+  it('relays stage outbound IPC messages to notify', async () => {
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'implement',
+          prompt: 'Implement the feature',
+          mounts: {},
+          transitions: [{ marker: 'IMPL_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const notifications: string[] = [];
+    enqueueStageOutput('implement', [
+      { result: '[IMPL_COMPLETE]', outbound: 'progress update' },
+    ]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async (text) => {
+        notifications.push(text);
+      },
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    expect(notifications).toContain('[worker] progress update');
+  }, 15000);
+
   it('does not append plan/PLAN.md to stage prompts', async () => {
     const { runContainerAgent } = await import('../../src/container-runner.js');
     const config: PipelineConfig = {
@@ -1094,11 +1165,18 @@ describe('Stitch integration', () => {
       ],
     };
 
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      templateName,
+    );
+    const doStage = dispatchStageName(invocationId, 0, 'do');
+
     ensureIpc('start');
-    ensureIpc(`start__${templateName}0__do`);
+    ensureIpc(doStage);
 
     enqueueStageOutput('start', [{ result: '[GO]' }]);
-    enqueueStageOutput(`start__${templateName}0__do`, [{ result: '[DONE]' }]);
+    enqueueStageOutput(doStage, [{ result: '[DONE]' }]);
 
     const runner = new PipelineRunner(
       group,
@@ -1115,18 +1193,100 @@ describe('Stitch integration', () => {
     const { runContainerAgent } = await import('../../src/container-runner.js');
     const calls = vi.mocked(runContainerAgent).mock.calls;
     const stitchedCalls = calls.filter(
-      (c) =>
-        (c[0] as { name: string }).name ===
-        `pipeline-start__${templateName}0__do`,
+      (c) => (c[0] as { name: string }).name === `pipeline-${doStage}`,
     );
     expect(stitchedCalls.length).toBe(1);
   }, 15000);
 
-  it('resume restores nested stitched lane frontier without re-running completed stages', async () => {
-    const lane = (idx: number) => `init__fmax-lane${idx}__lane-setup`;
-    const innerWork = (idx: number) => `${lane(idx)}__inner0__work`;
-    const innerJoin = (idx: number) => `${lane(idx)}__inner__join`;
-    const topJoin = 'init__fmax-lane__join';
+  it('releases the origin exclusive lock before running stitched child nodes', async () => {
+    const templateName = 'exclusive-child';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'work',
+        stages: [
+          {
+            name: 'work',
+            prompt: 'child work',
+            mounts: {},
+            exclusive: 'vivado',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'kick off',
+          mounts: {},
+          exclusive: 'vivado',
+          transitions: [{ marker: 'GO', template: templateName, next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      templateName,
+    );
+    const workStage = dispatchStageName(invocationId, 0, 'work');
+
+    enqueueStageOutput('start', [{ result: '[GO]' }]);
+    enqueueStageOutput(workStage, [{ result: '[DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).toEqual(['pipeline-start', `pipeline-${workStage}`]);
+  }, 5000);
+
+  it('resume restores an active tree barrier without re-running completed child nodes', async () => {
+    const laneTemplate = {
+      name: 'fmax-lane',
+      entry: 'lane-setup',
+      stages: [
+        {
+          name: 'lane-setup',
+          prompt: 'lane',
+          mounts: {},
+          transitions: [{ marker: 'INNER', template: 'inner', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'fmax-lane.json'),
+      JSON.stringify(laneTemplate),
+    );
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'inner.json'),
+      JSON.stringify({
+        entry: 'work',
+        stages: [
+          {
+            name: 'work',
+            prompt: 'inner',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
 
     const config: PipelineConfig = {
       stages: [
@@ -1151,77 +1311,68 @@ describe('Stitch integration', () => {
         },
       ],
     };
-    const runtimeStages: PipelineStage[] = [
-      {
-        ...config.stages[0],
-        transitions: [{ marker: 'READY', next: [lane(0), lane(1), lane(2)] }],
-      },
-      config.stages[1],
-      ...[0, 1, 2].flatMap((idx): PipelineStage[] => [
-        {
-          name: lane(idx),
-          prompt: `lane ${idx}`,
-          mounts: {},
-          transitions: [{ marker: 'INNER', next: innerWork(idx) }],
-        },
-        {
-          name: innerWork(idx),
-          prompt: `inner work ${idx}`,
-          mounts: {},
-          transitions: [{ marker: 'DONE', next: innerJoin(idx) }],
-        },
-        {
-          name: innerJoin(idx),
-          mounts: {},
-          join: {
-            policy: 'all_success',
-            expectedCopies: 1,
-            copyPrefixes: [`${lane(idx)}__inner0__`],
-          },
-          transitions: [{ marker: 'STAGE_COMPLETE', next: topJoin }],
-        },
-      ]),
-      {
-        name: topJoin,
-        mounts: {},
-        join: {
-          policy: 'all_success',
-          expectedCopies: 3,
-          copyPrefixes: [
-            'init__fmax-lane0__',
-            'init__fmax-lane1__',
-            'init__fmax-lane2__',
-          ],
-        },
-        transitions: [{ marker: 'STAGE_COMPLETE', next: 'summarize' }],
-      },
-    ];
+
+    const invocation = buildStitchInvocation({
+      originStage: 'init',
+      originTransitionIdx: 0,
+      template: laneTemplate,
+      downstreamNext: 'summarize',
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: ROOT_DISPATCH_NODE_ID,
+      mode: 'parallel',
+      count: 3,
+    });
+    const laneDispatch = invocation.invocationId;
+    const laneNode = (idx: number) => dispatchChildNodeId(laneDispatch, idx);
+    const lane = (idx: number) =>
+      dispatchStageName(laneDispatch, idx, 'lane-setup');
+    const innerDispatch = (idx: number) =>
+      stitchInvocation(laneNode(idx), lane(idx), 'inner');
+    const innerWork = (idx: number) =>
+      dispatchStageName(innerDispatch(idx), 0, 'work');
 
     savePipelineState(path.join(groupDir, '.state'), {
-      currentStage: [innerWork(1), innerWork(2), topJoin],
-      completedStages: [
-        'init',
-        lane(0),
-        lane(1),
-        lane(2),
-        innerWork(0),
-        innerJoin(0),
-      ],
-      runtimeStages,
-      insertedStages: runtimeStages.slice(config.stages.length),
-      runningStages: [innerWork(1), innerWork(2)],
-      waitingStages: [{ name: topJoin }],
-      joinSettlements: {
-        [innerJoin(0)]: { '0': 'success' },
-        [topJoin]: { '0': 'success' },
+      currentStage: null,
+      completedStages: ['init'],
+      dispatchTree: {
+        [ROOT_DISPATCH_NODE_ID]: {
+          id: ROOT_DISPATCH_NODE_ID,
+          parentId: null,
+          originStage: null,
+          template: null,
+          copyIndex: null,
+          entryStage: 'init',
+          stageNames: ['init', 'summarize'],
+          childIds: [laneNode(0), laneNode(1), laneNode(2)],
+          status: 'running',
+          config,
+        },
+        ...Object.fromEntries(
+          invocation.children.map((child, idx) => [
+            child.node.id,
+            {
+              ...child.node,
+              status: idx === 0 ? 'success' : 'pending',
+            },
+          ]),
+        ),
       },
+      dispatchBarriers: {
+        [laneDispatch]: {
+          ...invocation.barrier,
+          settlements: { [laneNode(0)]: 'success' },
+        },
+      },
+      activeBarrierIds: [laneDispatch],
+      runningStages: [],
+      pendingStages: [],
+      waitingStages: [],
       lastUpdated: new Date().toISOString(),
       status: 'running',
     });
 
-    ensureIpc(innerWork(1));
-    ensureIpc(innerWork(2));
-    ensureIpc('summarize');
+    enqueueStageOutput(lane(1), [{ result: '[INNER]' }]);
+    enqueueStageOutput(lane(2), [{ result: '[INNER]' }]);
     enqueueStageOutput(innerWork(1), [{ result: '[DONE]' }]);
     enqueueStageOutput(innerWork(2), [{ result: '[DONE]' }]);
     enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
@@ -1242,9 +1393,10 @@ describe('Stitch integration', () => {
     const spawnedNames = calls.map((c) => (c[0] as { name: string }).name);
     expect(spawnedNames).not.toContain('pipeline-init');
     expect(spawnedNames).not.toContain(`pipeline-${lane(0)}`);
-    expect(spawnedNames).not.toContain(`pipeline-${innerWork(0)}`);
     expect(spawnedNames).toEqual(
       expect.arrayContaining([
+        `pipeline-${lane(1)}`,
+        `pipeline-${lane(2)}`,
         `pipeline-${innerWork(1)}`,
         `pipeline-${innerWork(2)}`,
         'pipeline-summarize',
@@ -1253,9 +1405,12 @@ describe('Stitch integration', () => {
 
     const state = loadPipelineState(path.join(groupDir, '.state'));
     expect(state?.status).toBe('success');
-    expect(state?.runtimeStages?.map((s) => s.name).sort()).toEqual(
-      runtimeStages.map((s) => s.name).sort(),
-    );
+    expect(state?.activeBarrierIds).toEqual([]);
+    expect(state?.dispatchBarriers?.[laneDispatch]?.settlements).toEqual({
+      [laneNode(0)]: 'success',
+      [laneNode(1)]: 'success',
+      [laneNode(2)]: 'success',
+    });
   }, 15000);
 
   it('nested stitch + parallel join — three levels deep then fan-out of 3 lanes', async () => {
@@ -1333,11 +1488,22 @@ describe('Stitch integration', () => {
     };
 
     // All deterministic stitched names — IPC dirs + mock output queues.
-    const intro = 'start__demo0__intro';
-    const deep1Work = `${intro}__deep10__work`;
-    const deep2Work = `${deep1Work}__deep20__work`;
-    const laneTask = (i: number) => `${deep2Work}__lane${i}__task`;
-    const join = `${deep2Work}__lane__join`;
+    const demoDispatch = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      'demo',
+    );
+    const demoNode = dispatchChildNodeId(demoDispatch, 0);
+    const intro = dispatchStageName(demoDispatch, 0, 'intro');
+    const deep1Dispatch = stitchInvocation(demoNode, intro, 'deep1');
+    const deep1Node = dispatchChildNodeId(deep1Dispatch, 0);
+    const deep1Work = dispatchStageName(deep1Dispatch, 0, 'work');
+    const deep2Dispatch = stitchInvocation(deep1Node, deep1Work, 'deep2');
+    const deep2Node = dispatchChildNodeId(deep2Dispatch, 0);
+    const deep2Work = dispatchStageName(deep2Dispatch, 0, 'work');
+    const laneDispatch = stitchInvocation(deep2Node, deep2Work, 'lane');
+    const laneNode = (i: number) => dispatchChildNodeId(laneDispatch, i);
+    const laneTask = (i: number) => dispatchStageName(laneDispatch, i, 'task');
     const allNames = [
       'start',
       intro,
@@ -1346,7 +1512,6 @@ describe('Stitch integration', () => {
       laneTask(0),
       laneTask(1),
       laneTask(2),
-      join,
     ];
     for (const n of allNames) {
       fs.mkdirSync(
@@ -1384,6 +1549,22 @@ describe('Stitch integration', () => {
     for (let i = 0; i < 3; i++) {
       expect(callNames).toContain(`pipeline-${laneTask(i)}`);
     }
+
+    const state = loadPipelineState(path.join(groupDir, '.state'));
+    expect(state?.completedStages).toEqual(['start']);
+    expect(state?.dispatchTree?.[ROOT_DISPATCH_NODE_ID]?.childIds).toContain(
+      demoNode,
+    );
+    expect(state?.dispatchTree?.[demoNode]?.childIds).toContain(deep1Node);
+    expect(state?.dispatchTree?.[deep1Node]?.childIds).toContain(deep2Node);
+    expect(state?.dispatchTree?.[deep2Node]?.childIds.sort()).toEqual(
+      [laneNode(0), laneNode(1), laneNode(2)].sort(),
+    );
+    expect(state?.dispatchBarriers?.[laneDispatch]?.settlements).toEqual({
+      [laneNode(0)]: 'success',
+      [laneNode(1)]: 'success',
+      [laneNode(2)]: 'success',
+    });
   }, 30000);
 
   it('payload-driven fanout — agent emits 3-element payload, 3 lanes spawn with per-lane subs', async () => {
@@ -1426,17 +1607,22 @@ describe('Stitch integration', () => {
       ],
     };
 
+    const perIdDispatch = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'planner',
+      'per_id',
+    );
     const laneName = (id: string) =>
-      `planner__per_id0__author`.replace(
-        'per_id0',
-        `per_id${['alpha', 'beta', 'gamma'].indexOf(id)}`,
+      dispatchStageName(
+        perIdDispatch,
+        ['alpha', 'beta', 'gamma'].indexOf(id),
+        'author',
       );
     const allNames = [
       'planner',
-      'planner__per_id0__author',
-      'planner__per_id1__author',
-      'planner__per_id2__author',
-      'planner__per_id__join',
+      laneName('alpha'),
+      laneName('beta'),
+      laneName('gamma'),
     ];
     for (const n of allNames) {
       fs.mkdirSync(
@@ -1454,10 +1640,8 @@ describe('Stitch integration', () => {
       ]) +
       '\n---PAYLOAD_END---';
     enqueueStageOutput('planner', [{ result: payloadBlock }]);
-    for (const lane of [0, 1, 2]) {
-      enqueueStageOutput(`planner__per_id${lane}__author`, [
-        { result: '[DONE]' },
-      ]);
+    for (const id of ['alpha', 'beta', 'gamma']) {
+      enqueueStageOutput(laneName(id), [{ result: '[DONE]' }]);
     }
     // Join stages are virtual — no spawn/output queue required.
 
@@ -1478,9 +1662,9 @@ describe('Stitch integration', () => {
     // substitution of {{id}} / {{kind}} from payload[i]). The prompt reaches
     // the container through the stage config captured at spawn time.
     const authorCalls = calls.filter((c) =>
-      /^pipeline-planner__per_id\d+__author$/.test(
-        (c[0] as { name: string }).name,
-      ),
+      [laneName('alpha'), laneName('beta'), laneName('gamma')]
+        .map((name) => `pipeline-${name}`)
+        .includes((c[0] as { name: string }).name),
     );
     expect(authorCalls).toHaveLength(3);
     const prompts = authorCalls
@@ -1490,9 +1674,8 @@ describe('Stitch integration', () => {
     expect(prompts[1]).toContain('author beta of kind monitor');
     expect(prompts[2]).toContain('author gamma of kind probe');
     // Transition prompt substitution is applied too (transitions whitelist).
-    // Hard to inspect directly without exposing runtime internals — the fact
-    // that the join fired proves all three lanes reached null, meaning
-    // their transitions were wired correctly.
+    // Hard to inspect directly without exposing runtime internals; successful
+    // barrier settlement proves all three lanes reached null.
     void laneName;
   }, 30000);
 });
