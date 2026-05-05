@@ -235,6 +235,7 @@ export interface TemplateDispatchRuntime {
   runChildNode: (
     childNodeId: string,
     childConfig: PipelineConfig,
+    resumeExistingState: boolean,
   ) => Promise<{
     result: TransitionOutcome;
     dispatch: TemplateDispatchState;
@@ -264,6 +265,10 @@ export async function runTemplateStitchInvocation(
     invocation.barrier,
     completedStages,
     saveSchedulerState,
+    {
+      resumeChildState: false,
+      useSavedChildSettlements: false,
+    },
   );
 }
 
@@ -282,6 +287,10 @@ export async function resumeActiveTemplateDispatchBarriers(
       barrier,
       ctx.completedStages,
       ctx.saveSchedulerState,
+      {
+        resumeChildState: true,
+        useSavedChildSettlements: true,
+      },
     );
     if (outcome === 'error') {
       ctx.failPipeline();
@@ -309,6 +318,10 @@ export async function runTemplateDispatchBarrier(
   barrier: PipelineDispatchBarrier,
   completedStages: string[],
   saveSchedulerState?: (options?: SchedulerSnapshotOptions) => void,
+  options: {
+    resumeChildState: boolean;
+    useSavedChildSettlements: boolean;
+  } = { resumeChildState: true, useSavedChildSettlements: true },
 ): Promise<TransitionOutcome> {
   runtime.state.addActiveBarrier(barrier.id);
   runtime.state.setBarrier(barrier);
@@ -318,7 +331,9 @@ export async function runTemplateDispatchBarrier(
     barrier.childNodeIds.map(async (childNodeId) => {
       if (barrier.settlements[childNodeId]) return;
 
-      const savedOutcome = runtime.settlementFromChildState(childNodeId);
+      const savedOutcome = options.useSavedChildSettlements
+        ? runtime.settlementFromChildState(childNodeId)
+        : null;
       if (savedOutcome) {
         barrier.settlements[childNodeId] = savedOutcome;
         runtime.state.markNodeSettled(childNodeId, savedOutcome);
@@ -335,7 +350,11 @@ export async function runTemplateDispatchBarrier(
       let result: TransitionOutcome;
       let childDispatch: TemplateDispatchState | null = null;
       try {
-        const child = await runtime.runChildNode(childNodeId, childConfig);
+        const child = await runtime.runChildNode(
+          childNodeId,
+          childConfig,
+          options.resumeChildState,
+        );
         result = child.result;
         childDispatch = child.dispatch;
       } catch (err) {
