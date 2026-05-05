@@ -1522,6 +1522,91 @@ describe('Stitch integration', () => {
     expect(stitchedCalls.length).toBe(1);
   }, 15000);
 
+  it('fresh stitch ignores stale child scope state from a previous run', async () => {
+    const templateName = 'followup';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'do',
+        stages: [
+          {
+            name: 'do',
+            prompt: 'do it',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'kick off',
+          mounts: {},
+          transitions: [
+            { marker: 'GO', template: templateName, next: 'summarize' },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      templateName,
+    );
+    const childNodeId = dispatchChildNodeId(invocationId, 0);
+    const doStage = dispatchStageName(invocationId, 0, 'do');
+
+    savePipelineState(
+      path.join(groupDir, '.state'),
+      {
+        currentStage: null,
+        completedStages: [doStage],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'success',
+      },
+      undefined,
+      childNodeId,
+    );
+
+    enqueueStageOutput('start', [{ result: '[GO]' }]);
+    enqueueStageOutput(doStage, [{ result: '[DONE]' }]);
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).toEqual([
+      'pipeline-start',
+      `pipeline-${doStage}`,
+      'pipeline-summarize',
+    ]);
+  }, 15000);
+
   it('releases the origin exclusive lock before running stitched child nodes', async () => {
     const templateName = 'exclusive-child';
     fs.writeFileSync(

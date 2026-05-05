@@ -201,6 +201,7 @@ export class PipelineRunner {
   private dispatch = new TemplateDispatchState();
   private activations = new Map<string, number>();
   private completions = new Map<string, number>();
+  private resumeExistingState: boolean;
 
   // --- Public API ---
 
@@ -217,6 +218,7 @@ export class PipelineRunner {
     runId?: string,
     scopeId?: string,
     bundleDir?: string,
+    resumeExistingState = true,
   ) {
     this.group = group;
     this.chatJid = chatJid;
@@ -229,6 +231,7 @@ export class PipelineRunner {
     this.runId = runId ?? generateRunId();
     if (scopeId !== undefined) assertValidScopeId(scopeId);
     this.scopeId = scopeId;
+    this.resumeExistingState = resumeExistingState;
     this.manifest = {
       runId: this.runId,
       pid: process.pid,
@@ -418,7 +421,11 @@ export class PipelineRunner {
       undefined,
       this.scopeId,
     );
-    if (existingState && existingState.status === 'running') {
+    if (
+      this.resumeExistingState &&
+      existingState &&
+      existingState.status === 'running'
+    ) {
       const completedStages = [...existingState.completedStages];
       this.dispatch.restoreTree(
         existingState.dispatchTree,
@@ -1114,14 +1121,19 @@ PAYLOAD FORMATS:
         this.saveBlockedOnBarrierState(completedStages, saveSchedulerState),
       settlementFromChildState: (childNodeId) =>
         this.settlementFromChildState(childNodeId),
-      runChildNode: (childNodeId, childConfig) =>
-        this.runChildDispatchNode(childNodeId, childConfig),
+      runChildNode: (childNodeId, childConfig, resumeExistingState) =>
+        this.runChildDispatchNode(
+          childNodeId,
+          childConfig,
+          resumeExistingState,
+        ),
     };
   }
 
   private async runChildDispatchNode(
     childNodeId: string,
     childConfig: PipelineConfig,
+    resumeExistingState: boolean,
   ): Promise<{
     result: TransitionOutcome;
     dispatch: TemplateDispatchState;
@@ -1136,6 +1148,7 @@ PAYLOAD FORMATS:
       this.runId,
       childNodeId,
       this.bundleDir,
+      resumeExistingState,
     );
     return {
       result: await runner.run(),
