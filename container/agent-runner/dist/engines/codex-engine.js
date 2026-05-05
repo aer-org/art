@@ -247,6 +247,7 @@ class LocalCodexAppServerClient {
 export class CodexEngine {
     async *runTurn(input) {
         const authMode = process.env.ART_CODEX_AUTH_MODE ?? 'passthrough';
+        console.error(`[codex-engine] authMode=${authMode} authProxy=${process.env.ART_CODEX_AUTH_PROXY_URL?.trim() ? 'present' : 'missing'}`);
         if (authMode === 'host-managed' &&
             process.env.ART_CODEX_AUTH_PROXY_URL?.trim()) {
             yield* this.runTurnViaLocalAppServer(input);
@@ -339,10 +340,13 @@ export class CodexEngine {
                 yield { type: 'turn.result', result: finalResponse };
             }
             else if (event.type === 'turn.failed') {
-                yield { type: 'turn.error', error: event.error.message };
+                yield {
+                    type: 'turn.error',
+                    error: `Codex SDK turn failed: ${event.error.message}`,
+                };
             }
             else if (event.type === 'error') {
-                yield { type: 'turn.error', error: event.message };
+                yield { type: 'turn.error', error: `Codex SDK error: ${event.message}` };
             }
         }
     }
@@ -524,9 +528,10 @@ export class CodexEngine {
                         yield { type: 'assistant.checkpoint', messageId: lastMessageId };
                     }
                     if (event.params?.turn?.status === 'failed') {
+                        const errorMessage = String(event.params?.turn?.error?.message ?? 'Codex turn failed');
                         yield {
                             type: 'turn.error',
-                            error: String(event.params?.turn?.error?.message ?? 'Codex turn failed'),
+                            error: `Codex app-server turn failed: ${errorMessage}`,
                         };
                     }
                     else {
@@ -535,9 +540,10 @@ export class CodexEngine {
                     break;
                 }
                 if (event.method === 'error') {
+                    const errorMessage = String(event.params?.message ?? 'Codex app-server error');
                     yield {
                         type: 'turn.error',
-                        error: String(event.params?.message ?? 'Codex app-server error'),
+                        error: `Codex app-server error notification: ${errorMessage}`,
                     };
                     break;
                 }
