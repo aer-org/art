@@ -30,6 +30,8 @@ export interface PipelineState {
 }
 
 const PIPELINE_STATE_FILE = 'PIPELINE_STATE.json';
+const DISPATCH_SCOPE_STATE_FILE_PATTERN =
+  /^PIPELINE_STATE\.d_[0-9a-f]{10}_\d+(?:\..+)?\.json$/;
 
 // scopeId constrains nested child-runner paths so parent and sibling runners
 // don't collide on PIPELINE_STATE / sessions / IPC / logs. Short alphanumeric
@@ -98,6 +100,24 @@ export function loadPipelineState(
     );
   }
   return parsed;
+}
+
+export function deleteScopedPipelineStateFiles(stateDir: string): number {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(stateDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw err;
+  }
+
+  let deleted = 0;
+  for (const entry of entries) {
+    if (!DISPATCH_SCOPE_STATE_FILE_PATTERN.test(entry)) continue;
+    fs.rmSync(path.join(stateDir, entry), { force: true });
+    deleted++;
+  }
+  return deleted;
 }
 
 /**
