@@ -7,6 +7,7 @@
  *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
  *          Files: {type:"message", text:"..."}.json — polled and consumed
  *          Sentinel: /workspace/ipc/input/_close — signals session end
+ *          Outbound files in /workspace/ipc/messages/ are picked up by host.
  *
  * Stdout protocol:
  *   Each result is wrapped in OUTPUT_START_MARKER / OUTPUT_END_MARKER pairs.
@@ -25,7 +26,9 @@ async function readStdin() {
     return new Promise((resolve, reject) => {
         let data = '';
         process.stdin.setEncoding('utf8');
-        process.stdin.on('data', chunk => { data += chunk; });
+        process.stdin.on('data', (chunk) => {
+            data += chunk;
+        });
         process.stdin.on('end', () => resolve(data));
         process.stdin.on('error', reject);
     });
@@ -51,7 +54,7 @@ function getSessionSummary(sessionId, transcriptPath) {
     }
     try {
         const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-        const entry = index.entries.find(e => e.sessionId === sessionId);
+        const entry = index.entries.find((e) => e.sessionId === sessionId);
         if (entry?.summary) {
             return entry.summary;
         }
@@ -118,7 +121,9 @@ function parseTranscript(content) {
             if (entry.type === 'user' && entry.message?.content) {
                 const text = typeof entry.message.content === 'string'
                     ? entry.message.content
-                    : entry.message.content.map((c) => c.text || '').join('');
+                    : entry.message.content
+                        .map((c) => c.text || '')
+                        .join('');
                 if (text)
                     messages.push({ role: 'user', content: text });
             }
@@ -131,8 +136,7 @@ function parseTranscript(content) {
                     messages.push({ role: 'assistant', content: text });
             }
         }
-        catch {
-        }
+        catch { }
     }
     return messages;
 }
@@ -143,7 +147,7 @@ function formatTranscriptMarkdown(messages, title, assistantName) {
         day: 'numeric',
         hour: 'numeric',
         minute: '2-digit',
-        hour12: true
+        hour12: true,
     });
     const lines = [];
     lines.push(`# ${title || 'Conversation'}`);
@@ -153,7 +157,7 @@ function formatTranscriptMarkdown(messages, title, assistantName) {
     lines.push('---');
     lines.push('');
     for (const msg of messages) {
-        const sender = msg.role === 'user' ? 'User' : (assistantName || 'Assistant');
+        const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
         const content = msg.content.length > 2000
             ? msg.content.slice(0, 2000) + '...'
             : msg.content;
@@ -170,7 +174,9 @@ function shouldClose() {
         try {
             fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL);
         }
-        catch { /* ignore */ }
+        catch {
+            /* ignore */
+        }
         return true;
     }
     return false;
@@ -182,8 +188,9 @@ function shouldClose() {
 function drainIpcInput() {
     try {
         fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
-        const files = fs.readdirSync(IPC_INPUT_DIR)
-            .filter(f => f.endsWith('.json'))
+        const files = fs
+            .readdirSync(IPC_INPUT_DIR)
+            .filter((f) => f.endsWith('.json'))
             .sort();
         const messages = [];
         for (const file of files) {
@@ -200,7 +207,9 @@ function drainIpcInput() {
                 try {
                     fs.unlinkSync(filePath);
                 }
-                catch { /* ignore */ }
+                catch {
+                    /* ignore */
+                }
             }
         }
         return messages;
@@ -410,14 +419,16 @@ async function main() {
         try {
             fs.unlinkSync('/tmp/input.json');
         }
-        catch { /* may not exist */ }
+        catch {
+            /* may not exist */
+        }
         log(`Received input for group: ${containerInput.groupFolder}`);
     }
     catch (err) {
         writeOutput({
             status: 'error',
             result: null,
-            error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
+            error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`,
         });
         process.exit(1);
     }
@@ -428,7 +439,11 @@ async function main() {
     const xilinxBase = '/workspace/extra/Xilinx';
     if (fs.existsSync(xilinxBase)) {
         try {
-            const versions = fs.readdirSync(xilinxBase).filter(v => /^\d/.test(v)).sort().reverse();
+            const versions = fs
+                .readdirSync(xilinxBase)
+                .filter((v) => /^\d/.test(v))
+                .sort()
+                .reverse();
             if (versions.length > 0) {
                 const ver = versions[0];
                 const vivadoBin = path.join(xilinxBase, ver, 'Vivado', 'bin');
@@ -453,7 +468,9 @@ async function main() {
     try {
         fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL);
     }
-    catch { /* ignore */ }
+    catch {
+        /* ignore */
+    }
     // Build initial prompt (drain any pending IPC messages too)
     let prompt = containerInput.prompt;
     if (containerInput.isScheduledTask) {
@@ -522,7 +539,7 @@ async function main() {
             status: 'error',
             result: null,
             newSessionId: sessionId,
-            error: errorMessage
+            error: errorMessage,
         });
         process.exit(1);
     }

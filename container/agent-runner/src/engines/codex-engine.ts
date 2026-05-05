@@ -99,7 +99,9 @@ function isRequest(message: unknown): message is JsonRpcRequest {
   );
 }
 
-function isSuccessResponse(message: unknown): message is JsonRpcSuccessResponse {
+function isSuccessResponse(
+  message: unknown,
+): message is JsonRpcSuccessResponse {
   return (
     !!message &&
     typeof message === 'object' &&
@@ -126,11 +128,19 @@ async function readProxyLogin(
   chatgptAccountId: string;
   chatgptPlanType?: string | null;
 }> {
-  const response = await fetch(`${proxyUrl}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload ?? {}),
-  });
+  const url = `${proxyUrl}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload ?? {}),
+    });
+  } catch (error) {
+    throw new Error(
+      `Codex auth proxy request failed (${url}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Codex auth proxy failed: ${response.status} ${body}`);
@@ -155,7 +165,9 @@ class LocalCodexAppServerClient {
 
   constructor(
     private readonly env: Record<string, string>,
-    private readonly onNotification: (notification: JsonRpcNotification) => void,
+    private readonly onNotification: (
+      notification: JsonRpcNotification,
+    ) => void,
     private readonly onServerRequest: (
       request: JsonRpcRequest,
     ) => Promise<unknown> | unknown,
@@ -304,7 +316,9 @@ class LocalCodexAppServerClient {
           error: {
             code: -32000,
             message:
-              error instanceof Error ? error.message : 'Unhandled server request',
+              error instanceof Error
+                ? error.message
+                : 'Unhandled server request',
           },
         }) + '\n',
       );
@@ -458,7 +472,9 @@ export class CodexEngine implements AgentEngine {
     const notificationResolvers: Array<() => void> = [];
     const waitForNotification = async (): Promise<JsonRpcNotification> => {
       while (notificationQueue.length === 0) {
-        await new Promise<void>((resolve) => notificationResolvers.push(resolve));
+        await new Promise<void>((resolve) =>
+          notificationResolvers.push(resolve),
+        );
       }
       return notificationQueue.shift()!;
     };
@@ -466,7 +482,9 @@ export class CodexEngine implements AgentEngine {
     try {
       await client.start();
       await client.initialize();
-      await client.loginWithExternalAuth(await readProxyLogin(proxyUrl, '/login'));
+      await client.loginWithExternalAuth(
+        await readProxyLogin(proxyUrl, '/login'),
+      );
 
       let threadId = input.sessionId;
       if (!threadId) {

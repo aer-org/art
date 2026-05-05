@@ -32,6 +32,7 @@ export interface ResumeDispatchContext {
   waitingForFanIn: Map<string, PipelineStageQueueEntry>;
   saveSchedulerState: (options?: SchedulerSnapshotOptions) => void;
   setLastResult: (result: 'success' | 'error') => void;
+  failPipeline: () => void;
 }
 
 export interface NodeSchedulerOptions {
@@ -77,6 +78,7 @@ export async function runNodeLocalScheduler(
     options.restoredWaitingStages.map((entry) => [entry.name, entry]),
   );
   let lastResult: 'success' | 'error' = 'success';
+  let fatalError = false;
 
   const resultQueue: NodeStageResult[] = [];
   let notifyResolve: (() => void) | null = null;
@@ -111,6 +113,13 @@ export async function runNodeLocalScheduler(
 
   const setLastResult = (result: 'success' | 'error'): void => {
     lastResult = result;
+  };
+
+  const failPipeline = (): void => {
+    lastResult = 'error';
+    fatalError = true;
+    pendingStages.length = 0;
+    waitingForFanIn.clear();
   };
 
   const waitForResult = (): Promise<void> => {
@@ -175,9 +184,10 @@ export async function runNodeLocalScheduler(
     waitingForFanIn,
     saveSchedulerState,
     setLastResult,
+    failPipeline,
   });
 
-  for (const entry of pendingStages) {
+  for (const entry of fatalError ? [] : pendingStages) {
     if (isStageReady(entry.name)) {
       tryLaunch(entry);
     } else {
@@ -185,7 +195,9 @@ export async function runNodeLocalScheduler(
     }
   }
   pendingStages = [];
-  for (const [name, entry] of [...waitingForFanIn.entries()]) {
+  for (const [name, entry] of fatalError
+    ? []
+    : [...waitingForFanIn.entries()]) {
     if (isStageReady(name)) {
       waitingForFanIn.delete(name);
       tryLaunch(entry);
@@ -200,7 +212,12 @@ export async function runNodeLocalScheduler(
   ) {
     if (options.isAborted()) break;
 
-    if (pendingStages.length > 0 && running.size === 0) {
+    if (fatalError) {
+      pendingStages.length = 0;
+      waitingForFanIn.clear();
+    }
+
+    if (!fatalError && pendingStages.length > 0 && running.size === 0) {
       const deferred = [...pendingStages];
       pendingStages = [];
       for (const entry of deferred) {
@@ -237,8 +254,9 @@ export async function runNodeLocalScheduler(
         result,
       } = resultQueue.shift()!;
 
-      if (result === 'error') lastResult = 'error';
+      if (result === 'error') failPipeline();
       options.recordCompletion(finishedStage);
+      if (fatalError) continue;
 
       let resolvedNextStages = nextStages;
       let resolvedNextInitialPrompt = nextInitialPrompt;
@@ -251,7 +269,7 @@ export async function runNodeLocalScheduler(
           saveSchedulerState,
         );
         if (stitchOutcome === 'error') {
-          lastResult = 'error';
+          failPipeline();
           resolvedNextStages = null;
           resolvedNextInitialPrompt = null;
           resolvedNextEphemeralSystemPrompt = null;
@@ -270,6 +288,7 @@ export async function runNodeLocalScheduler(
         }
       }
 
+      if (fatalError) continue;
       const targets = nextTargets(resolvedNextStages);
       for (const target of targets) {
         if (
@@ -296,7 +315,9 @@ export async function runNodeLocalScheduler(
       }
     }
 
-    for (const [name, entry] of [...waitingForFanIn.entries()]) {
+    for (const [name, entry] of fatalError
+      ? []
+      : [...waitingForFanIn.entries()]) {
       if (isStageReady(name)) {
         waitingForFanIn.delete(name);
         tryLaunch(entry);

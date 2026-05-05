@@ -73,11 +73,18 @@ function isErrorResponse(message) {
         'error' in message);
 }
 async function readProxyLogin(proxyUrl, path, payload) {
-    const response = await fetch(`${proxyUrl}${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload ?? {}),
-    });
+    const url = `${proxyUrl}${path}`;
+    let response;
+    try {
+        response = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload ?? {}),
+        });
+    }
+    catch (error) {
+        throw new Error(`Codex auth proxy request failed (${url}): ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (!response.ok) {
         const body = await response.text();
         throw new Error(`Codex auth proxy failed: ${response.status} ${body}`);
@@ -225,7 +232,9 @@ class LocalCodexAppServerClient {
                 id: request.id,
                 error: {
                     code: -32000,
-                    message: error instanceof Error ? error.message : 'Unhandled server request',
+                    message: error instanceof Error
+                        ? error.message
+                        : 'Unhandled server request',
                 },
             }) + '\n');
         }

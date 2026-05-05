@@ -284,8 +284,8 @@ export async function resumeActiveTemplateDispatchBarriers(
       ctx.saveSchedulerState,
     );
     if (outcome === 'error') {
-      ctx.setLastResult('error');
-      continue;
+      ctx.failPipeline();
+      break;
     }
     const targets = nextTargets(barrier.downstreamNext);
     if (targets.length === 0) {

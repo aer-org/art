@@ -48,7 +48,7 @@ export function startCodexAuthProxy(
         }
 
         if (req.url === '/login') {
-          const login = authManager.getExternalLogin();
+          const login = await authManager.getFreshExternalLogin();
           writeJson(res, 200, login);
           return;
         }
