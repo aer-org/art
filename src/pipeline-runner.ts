@@ -418,7 +418,7 @@ export class PipelineRunner {
       undefined,
       this.scopeId,
     );
-    if (existingState && existingState.status !== 'success') {
+    if (existingState && existingState.status === 'running') {
       const completedStages = [...existingState.completedStages];
       this.dispatch.restoreTree(
         existingState.dispatchTree,
@@ -495,39 +495,27 @@ export class PipelineRunner {
           stagesByName,
           completedStages,
         );
-      } else if (
-        initialStages.length === 0 &&
-        waitingStages.length === 0 &&
-        this.dispatch.activeBarrierCount() === 0
-      ) {
-        // Pipeline finished with error (currentStage: null). Find the first
-        // unfinished stage as a best-effort legacy fallback.
-        const completedSet = new Set(completedStages);
-        const unfinished = this.config.stages
-          .filter((s) => !completedSet.has(s.name))
-          .map((s) => s.name);
-        initialStages = stageEntries(
-          unfinished.length > 0 ? [unfinished[0]] : [],
-          stagesByName,
-          completedStages,
-        );
       }
       if (
         initialStages.length === 0 &&
         waitingStages.length === 0 &&
         this.dispatch.activeBarrierCount() === 0
       ) {
-        initialStages = [{ name: resolveEntry() }];
+        logger.warn(
+          { scopeId: this.scopeId },
+          'Pipeline resume state has no durable frontier, starting fresh',
+        );
+      } else {
+        const frontierNames = [
+          ...initialStages.map((s) => s.name),
+          ...waitingStages.map((s) => s.name),
+          ...this.dispatch.activeBarrierIdsArray().map((id) => `barrier:${id}`),
+        ];
+        await this.notifyBanner(
+          `🔄 Resuming from ${frontierNames.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`,
+        );
+        return { initialStages, waitingStages, completedStages };
       }
-      const frontierNames = [
-        ...initialStages.map((s) => s.name),
-        ...waitingStages.map((s) => s.name),
-        ...this.dispatch.activeBarrierIdsArray().map((id) => `barrier:${id}`),
-      ];
-      await this.notifyBanner(
-        `🔄 Resuming from ${frontierNames.join(', ')} (previously completed: ${existingState.completedStages.join(' → ')})`,
-      );
-      return { initialStages, waitingStages, completedStages };
     }
 
     this.dispatch.clear();
