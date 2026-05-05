@@ -250,7 +250,7 @@ export function loadPipelineConfig(
         );
       }
 
-      if (stage.join !== undefined) {
+      if (stageAny.join !== undefined) {
         return invalid(
           { groupFolder, stage: stage.name },
           'Runtime "join" metadata cannot be authored in PIPELINE.json',

@@ -92,9 +92,11 @@ interface VolumeMount {
 type AgentProvider = 'claude' | 'codex';
 
 function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
-  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
-    ? 'host-managed'
-    : 'passthrough';
+  // Default to host-managed so `art run --codex` can refresh host OAuth
+  // tokens itself. Passthrough remains available as an explicit legacy opt-out.
+  return process.env.ART_CODEX_AUTH_MODE === 'passthrough'
+    ? 'passthrough'
+    : 'host-managed';
 }
 
 function resolveProvider(

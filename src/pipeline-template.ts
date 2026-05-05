@@ -203,7 +203,7 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       `Template "${templateName}": stage "${stage.name}" uses unsupported "fan_in" field; multi-predecessor fan-in is automatic`,
     );
   }
-  if (stage.join !== undefined) {
+  if (stageAny.join !== undefined) {
     throw new Error(
       `Template "${templateName}": stage "${stage.name}" cannot author runtime "join" metadata`,
     );

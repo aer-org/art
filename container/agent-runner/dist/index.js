@@ -235,7 +235,7 @@ function waitForIpcMessage() {
  * Run a single query and stream results via writeOutput.
  */
 async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, endOnResult, ephemeralAppend) {
-    const provider = containerInput.provider || 'claude';
+    const provider = containerInput.provider || 'codex';
     const engine = provider === 'codex'
         ? new (await import('./engines/codex-engine.js')).CodexEngine()
         : new ClaudeEngine();

@@ -1,7 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 
-import type { PipelineStage } from './pipeline-types.js';
+import type {
+  PipelineDispatchBarrier,
+  PipelineDispatchNode,
+} from './pipeline-types.js';
 
 export interface PipelineStageQueueEntry {
   name: string;
@@ -17,9 +20,9 @@ export interface PipelineState {
   status: 'running' | 'error' | 'success';
   activations?: Record<string, number>; // Per-stage activation count for fan-in accounting.
   completions?: Record<string, number>; // Per-stage completion count for fan-in accounting.
-  runtimeStages?: PipelineStage[]; // Complete runtime graph after all stitches and rewrites.
-  insertedStages?: PipelineStage[]; // Dynamically inserted stages (from runtime stitch). Merged into config on resume.
-  joinSettlements?: Record<string, Record<string, 'success' | 'error'>>; // Per join-stage copy outcomes keyed by copy index.
+  dispatchTree?: Record<string, PipelineDispatchNode>; // Runtime dispatch tree keyed by dispatch node id.
+  dispatchBarriers?: Record<string, PipelineDispatchBarrier>; // Parent-owned barriers for stitched child node fan-in.
+  activeBarrierIds?: string[]; // Barriers this node is currently waiting on before scheduling downstream stages.
   runningStages?: string[]; // Stages active when the last durable scheduler snapshot was written.
   pendingStages?: PipelineStageQueueEntry[]; // Runnable stages not yet launched, including handoff prompts.
   waitingStages?: PipelineStageQueueEntry[]; // Fan-in/join waiters, including handoff prompts.

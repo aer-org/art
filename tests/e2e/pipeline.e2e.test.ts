@@ -4,6 +4,11 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  dispatchChildNodeId,
+  dispatchInvocationIdFor,
+  ROOT_DISPATCH_NODE_ID,
+} from '../../src/stitch.js';
+import {
   copyFixture,
   runArt,
   cleanupFixture,
@@ -171,7 +176,7 @@ describe.skipIf(!hasDocker)('Fan-out/fan-in command pipeline', () => {
     cleanupFixture(fixtureDir);
   });
 
-  it('runs parallel stages and waits for the synthesized join', () => {
+  it('runs parallel child nodes and waits for the dispatch barrier', () => {
     const result = runArt(['run', '--skip-preflight', '.'], fixtureDir);
 
     if (result.code !== 0) {
@@ -184,26 +189,31 @@ describe.skipIf(!hasDocker)('Fan-out/fan-in command pipeline', () => {
     expect(state).not.toBeNull();
     expect(state!.status).toBe('success');
 
-    // build (origin) → 2 stitched test lanes → synthesized join → deploy
+    // build (origin) → 2 stitched child nodes → deploy
     const completed = state!.completedStages as string[];
+    const testDispatch = dispatchInvocationIdFor(
+      ROOT_DISPATCH_NODE_ID,
+      'build',
+      0,
+      'test',
+    );
+    const lane0 = dispatchChildNodeId(testDispatch, 0);
+    const lane1 = dispatchChildNodeId(testDispatch, 1);
     expect(completed).toContain('build');
-    expect(completed).toContain('build__test0__run');
-    expect(completed).toContain('build__test1__run');
-    expect(completed).toContain('build__test__join');
     expect(completed).toContain('deploy');
-    expect(completed).toHaveLength(5);
+    expect(completed).toHaveLength(2);
+    const barriers = state!.dispatchBarriers as
+      | Record<string, { settlements: Record<string, string> }>
+      | undefined;
+    expect(barriers?.[testDispatch]?.settlements).toEqual({
+      [lane0]: 'success',
+      [lane1]: 'success',
+    });
 
-    // build runs first; join waits for both lanes; deploy runs after join
+    // build runs first; deploy runs after the child-node barrier settles.
     const buildIdx = completed.indexOf('build');
-    const lane0Idx = completed.indexOf('build__test0__run');
-    const lane1Idx = completed.indexOf('build__test1__run');
-    const joinIdx = completed.indexOf('build__test__join');
     const deployIdx = completed.indexOf('deploy');
-    expect(buildIdx).toBeLessThan(lane0Idx);
-    expect(buildIdx).toBeLessThan(lane1Idx);
-    expect(joinIdx).toBeGreaterThan(lane0Idx);
-    expect(joinIdx).toBeGreaterThan(lane1Idx);
-    expect(deployIdx).toBeGreaterThan(joinIdx);
+    expect(buildIdx).toBeLessThan(deployIdx);
   });
 });
 

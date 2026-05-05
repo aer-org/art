@@ -18,6 +18,42 @@ export interface PipelineTransition {
 export type TransitionOutcome = 'success' | 'error';
 export type JoinPolicy = 'all_success' | 'any_success' | 'all_settled';
 
+export type DispatchNodeStatus = 'pending' | 'running' | 'success' | 'error';
+
+export interface PipelineDispatchNode {
+  id: string;
+  parentId: string | null;
+  originStage: string | null;
+  template: string | null;
+  copyIndex: number | null;
+  entryStage: string | null;
+  stageNames: string[];
+  childIds: string[];
+  status: DispatchNodeStatus;
+  config: PipelineConfig;
+}
+
+export interface PipelineDispatchBarrier {
+  id: string;
+  ownerNodeId: string;
+  originStage: string;
+  originTransitionIdx: number;
+  template: string;
+  childNodeIds: string[];
+  joinPolicy: JoinPolicy;
+  downstreamNext: string | null;
+  settlements: Record<string, TransitionOutcome>;
+  status: DispatchNodeStatus;
+}
+
+export interface PipelineStageDispatch {
+  nodeId: string;
+  parentNodeId: string | null;
+  invocationId: string;
+  copyIndex?: number;
+  localName: string;
+}
+
 export interface PipelineStage {
   name: string;
   agent?: string; // Local agents/<name>.md prompt ref. Resolved while loading config.
@@ -38,11 +74,7 @@ export interface PipelineStage {
   hostMounts?: AdditionalMount[]; // Host path mounts validated against allowlist
   mcpAccess?: string[]; // External MCP registry refs available to this stage
   resumeSession?: boolean; // false = always start fresh session. default true = resume
-  join?: {
-    policy: JoinPolicy;
-    expectedCopies: number;
-    copyPrefixes: string[];
-  }; // Runtime-generated join stage metadata. Not allowed in authored config.
+  dispatch?: PipelineStageDispatch; // Runtime-generated dispatch tree metadata.
   transitions: PipelineTransition[];
 }
 
