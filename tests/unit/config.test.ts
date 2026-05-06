@@ -7,6 +7,7 @@ import {
   getCredentialProxyPort,
   setCredentialProxyPort,
 } from '../../src/config.js';
+import fs from 'fs';
 import path from 'path';
 
 describe('config', () => {
@@ -35,11 +36,24 @@ describe('config', () => {
       expect(buildScript.endsWith(path.join('container', 'build.sh'))).toBe(
         true,
       );
+      expect(fs.existsSync(buildScript)).toBe(true);
+    });
+
+    it('resolves shipped container runtime assets', () => {
+      for (const parts of [
+        ['container', 'skills'],
+        ['container', 'agent-runner', 'src'],
+      ]) {
+        const assetPath = getPackageAssetPath(...parts);
+        expect(path.isAbsolute(assetPath)).toBe(true);
+        expect(fs.existsSync(assetPath)).toBe(true);
+      }
     });
 
     it('returns the package root when called with no args', () => {
       const root = getPackageAssetPath();
       expect(path.isAbsolute(root)).toBe(true);
+      expect(fs.existsSync(path.join(root, 'package.json'))).toBe(true);
     });
   });
 

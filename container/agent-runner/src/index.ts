@@ -71,6 +71,8 @@ const OUTPUT_START_MARKER = '---AER_ART_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
 const TOOL_START_MARKER = '---AER_ART_TOOL_START---';
 const TOOL_END_MARKER = '---AER_ART_TOOL_END---';
+const DEBUG_EVENT_TRACE =
+  process.env.AER_ART_AGENT_RUNNER_DEBUG_EVENTS === '1';
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
@@ -80,6 +82,10 @@ function writeOutput(output: ContainerOutput): void {
 
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
+}
+
+function debugLog(message: string): void {
+  if (DEBUG_EVENT_TRACE) log(message);
 }
 
 function getSessionSummary(
@@ -384,7 +390,7 @@ async function runQuery(
     preCompactHookFactory: createPreCompactHook,
   })) {
     eventCount++;
-    log(`[event #${eventCount}] provider=${provider} type=${event.type}`);
+    debugLog(`[event #${eventCount}] provider=${provider} type=${event.type}`);
     handleNormalizedEvent(
       event,
       pendingToolUses,
@@ -405,7 +411,7 @@ async function runQuery(
     );
   }
 
-  log(
+  debugLog(
     `Query done. Provider: ${provider}, events: ${eventCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`,
   );
   return { newSessionId, lastAssistantUuid, closedDuringQuery, resultTexts };
@@ -433,7 +439,7 @@ function handleNormalizedEvent(
   switch (event.type) {
     case 'session.started':
       setSessionId(event.sessionId);
-      log(`Session initialized: ${event.sessionId}`);
+      debugLog(`Session initialized: ${event.sessionId}`);
       return;
     case 'assistant.text':
       process.stdout.write(event.text);

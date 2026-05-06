@@ -5,12 +5,11 @@ import { fileURLToPath } from 'url';
 const HOME_DIR = process.env.HOME || os.homedir();
 
 // Package install root — derived from this file's location at runtime.
-// dist/config.js → up two = package root. Source-mode (ts-node) lands at
-// src/config.ts → up two = same package root. Used only for shipped assets
+// dist/config.js → up one = package root. Source-mode (ts-node) lands at
+// src/config.ts → up one = same package root. Used only for shipped assets
 // like `container/build.sh`, `container/skills/`, `container/agent-runner/src/`.
 const PACKAGE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  '..',
   '..',
 );
 

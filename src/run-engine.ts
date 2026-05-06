@@ -35,11 +35,11 @@ function resolveProvider(): 'claude' | 'codex' {
 }
 
 function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
-  // Default to host-managed so `art run --codex` can refresh host OAuth
-  // tokens itself. Passthrough remains available as an explicit legacy opt-out.
-  return process.env.ART_CODEX_AUTH_MODE === 'passthrough'
-    ? 'passthrough'
-    : 'host-managed';
+  // Host-managed auth requires a container-to-host proxy connection. Default
+  // to passthrough so local firewall policy does not block ordinary runs.
+  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
+    ? 'host-managed'
+    : 'passthrough';
 }
 
 export async function runPipeline(opts: {
