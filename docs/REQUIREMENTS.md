@@ -22,7 +22,7 @@ Instead of application-level permission systems trying to prevent agents from ac
 
 ### Plan First, Then Execute
 
-`art init` creates a minimal scaffold, and `art run` executes it through a pipeline where the plan is read-only by default. Each stage gets only the permissions it needs.
+`art init` creates a minimal scaffold, and `art run` executes the authored pipeline. Each stage gets only the permissions it needs.
 
 ### Customization = Code Changes
 
@@ -66,12 +66,12 @@ Containers never see real API keys. A host-side HTTP proxy intercepts all Anthro
 
 ### Two CLI Commands
 
-- `art init <path>` — Create `__art__/` if needed and write a default `PIPELINE.json`.
+- `art init <path>` — Create `__art__/` if needed and write an empty `PIPELINE.json`.
 - `art run <path>` — Executes the pipeline. Each stage runs sequentially in its own container. Completed stages are checkpointed for resume on interrupt.
 
 ### Stage Modes
 
-- **Agent mode** (default): Claude agent receives a prompt and works autonomously
+- **Agent mode** (default): Codex receives a prompt and works autonomously
 - **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout. Useful for deterministic steps like linting, building, or running test suites.
 
 ### Resume on Interrupt
@@ -92,7 +92,7 @@ Stages can declare an `exclusive` key. Stages sharing the same key never run con
 
 | Command | Purpose |
 |---------|---------|
-| `art init [dir]` | Create scaffold and default pipeline files |
+| `art init [dir]` | Create scaffold and empty pipeline file |
 | `art run [dir]` | Execute pipeline — sequential stage containers |
 
 ### Authentication
@@ -120,7 +120,7 @@ Installs to `~/.art`, creates `art` symlink, requires Node.js ≥ 20.
 
 ### Skills
 
-- `/setup` — Install dependencies, configure container runtime, Claude authentication
+- `/setup` — Install dependencies, configure container runtime, provider authentication
 - `/debug` — Container issues, logs, troubleshooting
 - `/update-aer-art` — Pull upstream changes, merge with customizations
 

@@ -1,6 +1,6 @@
 import path from 'path';
 
-import { DATA_DIR, GROUPS_DIR } from './config.js';
+import { getDataDir } from './config.js';
 
 // Up to 200 chars total. Stitched stage names compound per nesting level
 // (e.g. `origin__template0__stage`), so the cap needs headroom for several
@@ -8,7 +8,11 @@ import { DATA_DIR, GROUPS_DIR } from './config.js';
 const GROUP_FOLDER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/;
 const RESERVED_FOLDERS = new Set(['global']);
 
-// External folder overrides — allows groups to live outside GROUPS_DIR (e.g., __art__/)
+// External folder mappings — every group must be registered before its path
+// can be resolved. The main project group (e.g. "art-myapp") is registered to
+// the project's __art__/ directory. Virtual sub-groups (e.g.
+// "art-myapp__pipeline_build") inherit their parent's mapping and resolve to
+// the parent's .stages/ subtree.
 const externalFolders = new Map<string, string>();
 
 export function registerExternalGroupFolder(
@@ -42,19 +46,33 @@ function ensureWithinBase(baseDir: string, resolvedPath: string): void {
 }
 
 export function resolveGroupFolderPath(folder: string): string {
-  // Check external overrides first (art mode)
+  // Direct external mapping (the main project group)
   const external = externalFolders.get(folder);
   if (external) return external;
 
-  assertValidGroupFolder(folder);
-  const groupPath = path.resolve(GROUPS_DIR, folder);
-  ensureWithinBase(GROUPS_DIR, groupPath);
-  return groupPath;
+  // Virtual sub-group: inherit parent's external mapping and resolve under
+  // the parent's .stages/ subtree (e.g. "art-myapp__pipeline_build" →
+  // "<parent>/.stages/pipeline_build").
+  for (const [parent, parentPath] of externalFolders) {
+    if (folder.startsWith(`${parent}__`)) {
+      assertValidGroupFolder(folder);
+      const suffix = folder.slice(parent.length + 2);
+      const stagesBase = path.resolve(parentPath, '.stages');
+      const resolved = path.resolve(stagesBase, suffix);
+      ensureWithinBase(stagesBase, resolved);
+      return resolved;
+    }
+  }
+
+  throw new Error(
+    `No external mapping registered for group folder "${folder}". ` +
+      `Call registerExternalGroupFolder() before resolving group paths.`,
+  );
 }
 
 export function resolveGroupIpcPath(folder: string): string {
   assertValidGroupFolder(folder);
-  const ipcBaseDir = path.resolve(DATA_DIR, 'ipc');
+  const ipcBaseDir = path.resolve(getDataDir(), 'ipc');
   const ipcPath = path.resolve(ipcBaseDir, folder);
   ensureWithinBase(ipcBaseDir, ipcPath);
   return ipcPath;

@@ -20,8 +20,8 @@ A single Node.js process handles container spawning, output streaming, marker pa
 
 ### `art init [dir]`
 
-- Creates `__art__/` directory structure (plan, src, logs, metrics, insights, memory, outputs, tests)
-- Generates default `PIPELINE.json`: build → test → review → history (4 stages)
+- Creates minimal `__art__/` authoring structure (`agents`, `templates`, `logs`)
+- Generates an empty `PIPELINE.json`
 - Creates `.gitignore`
 - Does not start agents or open a browser
 
@@ -50,7 +50,7 @@ A host-side FSM (Finite State Machine) that orchestrates multi-stage container e
 Load PIPELINE.json → determine entry stage
   → spawn stage container → deliver prompt via IPC
   → stream agent output → parse markers → decide transition
-  → next stage / retry / terminate
+  → next stage / terminate
 ```
 
 ### Stage Markers and Transitions
@@ -64,11 +64,11 @@ Agents embed markers in their output to trigger stage transitions:
 | `[STAGE_ERROR_CODE: code]`   | Failed with error code               |
 
 Each stage's `transitions` array defines marker → target stage mappings.
-Transitions with `retry: true` stay in the same stage; others advance to the next.
+Transitions advance to another stage or end the current scope. If no marker matches, the runner sends feedback and keeps the current container session active.
 
 ### Agent Mode vs Command Mode
 
-- **Agent mode**: Claude agent receives a prompt and executes (default)
+- **Agent mode**: Codex receives a prompt and executes by default; `--claude` selects Claude Code
 - **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout
 
 ### Resume on Interrupt
@@ -92,24 +92,16 @@ Stale PIDs are detected and orphan cleanup runs automatically.
 
 ---
 
-## 3. Default Scaffold Stages (`src/cli/default-stage-presets.ts`)
+## 3. Pipeline Authoring Files
 
-`art init` seeds a default 4-stage scaffold: **build**, **test**, **review**, **history**
+`art init` creates the smallest useful bundle layout and leaves pipeline behavior explicit in `PIPELINE.json`.
 
-Each preset provides:
+Common bundle files:
 
-- SOUL-based system prompt (role, behavior rules, output format)
-- Mount policy (which directories are rw/ro/null)
-- Default transition markers
-
-Overridable per-project via `PIPELINE.json`.
-
-Default 4-stage pipeline:
-
-1. **build** — reads PLAN.md, writes code to src/
-2. **test** — runs adversarial tests against src/
-3. **review** — examines outputs, writes REPORT.md
-4. **history** — distills insights into MEMORY.md
+- `PIPELINE.json` — authored stages, transitions, mounts, and entry stage
+- `agents/<name>.md` — optional reusable prompts referenced by `stage.agent`
+- `templates/<name>.json` — optional sub-graphs stitched by transitions
+- `logs/` — per-run and per-stage logs
 
 ---
 
@@ -226,9 +218,7 @@ Stores image key → spec mappings in `~/.config/aer-art/images.json`.
 | `src/container-runtime.ts`         | Runtime abstraction (Docker/Podman/udocker)      |
 | `src/credential-proxy.ts`          | API credential proxy                             |
 | `src/image-registry.ts`            | Image registry CRUD                              |
-| `src/cli/default-stage-presets.ts` | Default `art init` scaffold stage presets        |
 | `src/mount-security.ts`            | Mount allowlist and blocked-pattern enforcement  |
-| `src/mount-validation.ts`          | Mount path validation utilities                  |
 | `src/group-folder.ts`              | Workspace path resolution and traversal defense  |
 | `src/config.ts`                    | Paths, intervals, image registry path            |
 | `src/env.ts`                       | Environment variable handling                    |

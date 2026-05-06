@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   ART_DIR_NAME,
-  setEngineRoot,
   setDataDir,
-  getProjectRoot,
+  getDataDir,
+  getPackageAssetPath,
   getCredentialProxyPort,
   setCredentialProxyPort,
 } from '../../src/config.js';
+import fs from 'fs';
 import path from 'path';
 
 describe('config', () => {
@@ -16,38 +17,48 @@ describe('config', () => {
     });
   });
 
-  describe('setEngineRoot / getProjectRoot', () => {
-    const original = getProjectRoot();
-
-    beforeEach(() => {
-      setEngineRoot(original);
+  describe('setDataDir / getDataDir', () => {
+    it('returns the configured data directory', () => {
+      setDataDir('/tmp/custom-data');
+      expect(getDataDir()).toBe(path.resolve('/tmp/custom-data'));
     });
 
-    it('updates project root and derived paths', async () => {
-      setEngineRoot('/tmp/test-engine');
-      expect(getProjectRoot()).toBe('/tmp/test-engine');
-
-      // Re-import to check STORE_DIR etc. — they are let exports
-      const config = await import('../../src/config.js');
-      expect(config.STORE_DIR).toBe(path.resolve('/tmp/test-engine', 'store'));
-      expect(config.GROUPS_DIR).toBe(
-        path.resolve('/tmp/test-engine', 'groups'),
-      );
-      expect(config.DATA_DIR).toBe(path.resolve('/tmp/test-engine', 'data'));
+    it('resolves relative paths', () => {
+      setDataDir('./relative-data');
+      expect(getDataDir()).toBe(path.resolve('./relative-data'));
     });
   });
 
-  describe('setDataDir', () => {
-    it('overrides DATA_DIR independently', async () => {
-      setDataDir('/tmp/custom-data');
-      const config = await import('../../src/config.js');
-      expect(config.DATA_DIR).toBe(path.resolve('/tmp/custom-data'));
+  describe('getPackageAssetPath', () => {
+    it('resolves under the package install root', () => {
+      const buildScript = getPackageAssetPath('container', 'build.sh');
+      expect(path.isAbsolute(buildScript)).toBe(true);
+      expect(buildScript.endsWith(path.join('container', 'build.sh'))).toBe(
+        true,
+      );
+      expect(fs.existsSync(buildScript)).toBe(true);
+    });
+
+    it('resolves shipped container runtime assets', () => {
+      for (const parts of [
+        ['container', 'skills'],
+        ['container', 'agent-runner', 'src'],
+      ]) {
+        const assetPath = getPackageAssetPath(...parts);
+        expect(path.isAbsolute(assetPath)).toBe(true);
+        expect(fs.existsSync(assetPath)).toBe(true);
+      }
+    });
+
+    it('returns the package root when called with no args', () => {
+      const root = getPackageAssetPath();
+      expect(path.isAbsolute(root)).toBe(true);
+      expect(fs.existsSync(path.join(root, 'package.json'))).toBe(true);
     });
   });
 
   describe('credential proxy port', () => {
     beforeEach(() => {
-      // Reset to default by setting a known value then clearing
       setCredentialProxyPort(3001);
     });
 
@@ -65,7 +76,6 @@ describe('config', () => {
   describe('CONTAINER_IMAGE', () => {
     it('defaults to art-agent:latest', async () => {
       const config = await import('../../src/config.js');
-      // Only check default when env var is not set
       if (!process.env.CONTAINER_IMAGE) {
         expect(config.CONTAINER_IMAGE).toBe('art-agent:latest');
       }

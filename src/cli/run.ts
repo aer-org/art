@@ -7,10 +7,10 @@ import { ensureAuth, hasCodexCliAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
 
 function resolveProvider(): 'claude' | 'codex' {
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
-function preflight(opts?: { skipClaudeCli?: boolean }): void {
+function preflight(opts?: { skipProviderCli?: boolean }): void {
   const errors: string[] = [];
   const provider = resolveProvider();
 
@@ -40,7 +40,7 @@ function preflight(opts?: { skipClaudeCli?: boolean }): void {
     );
   }
 
-  if (!opts?.skipClaudeCli) {
+  if (!opts?.skipProviderCli) {
     if (provider === 'codex') {
       try {
         execSync('codex --version', { stdio: 'pipe', timeout: 5000 });
@@ -89,9 +89,9 @@ async function askConfirmation(prompt: string): Promise<boolean> {
 
 export async function run(
   targetDir: string,
-  opts?: { skipPreflight?: boolean; stage?: string; pipeline?: string },
+  opts?: { skipPreflight?: boolean; stage?: string },
 ): Promise<void> {
-  preflight({ skipClaudeCli: opts?.skipPreflight });
+  preflight({ skipProviderCli: opts?.skipPreflight });
 
   const projectDir = path.resolve(targetDir);
   const artDirName = '__art__';
@@ -115,7 +115,7 @@ export async function run(
   // Generate run ID for this execution
   const runId = generateRunId();
 
-  // Ensure Claude authentication is available (before any engine imports)
+  // Ensure provider authentication is available (before any engine imports)
   if (opts?.skipPreflight) {
     // Set placeholder so credential proxy can start without real auth
     if (
@@ -146,11 +146,8 @@ export async function run(
     await import('../image-registry.js');
   const { contentHash: computeHash } = await import('../bundle.js');
 
-  const pipelineOverride = opts?.pipeline
-    ? path.resolve(projectDir, opts.pipeline)
-    : undefined;
-  const bundleDir = pipelineOverride ? path.dirname(pipelineOverride) : artDir;
-  const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
+  const bundleDir = artDir;
+  const pipelineConfig = loadPipelineConfig('', artDir);
   if (pipelineConfig) {
     const rt = getRuntime();
     const registry = loadImageRegistry();
@@ -249,26 +246,14 @@ export async function run(
         continue;
       }
 
-      // No local Dockerfile — check art registry
-      try {
-        const { resolveRemoteWithAuth } = await import('../remote-config.js');
-        const { RegistryApi } = await import('../registry-api.js');
-        const { url, token } = resolveRemoteWithAuth();
-        const api = new RegistryApi(url, token);
-        const check = await api.checkDockerfile(imageName);
-        if (check.exists) {
-          console.error(
-            `\n  ✗ Image "${imageName}" not found locally, but a Dockerfile exists in the registry.`,
-          );
-          console.error(`    Run "art pull" to download it, then re-run.`);
-          process.exit(1);
-        }
-      } catch {
-        // No remote configured or unreachable — skip registry check
-      }
-
-      // Docker Hub fallback
-      images.add(imageName);
+      // No local Dockerfile — agent images must be built from a local Dockerfile.
+      console.error(
+        `\n  ✗ Image "${imageName}" is not available locally and no Dockerfile was found at __art__/dockerfiles/${imageName}.Dockerfile.`,
+      );
+      console.error(
+        `    Add a Dockerfile at that path or use a pre-built image name resolvable by the container runtime.`,
+      );
+      process.exit(1);
     }
 
     // Phase 2: Pre-pull missing Docker images (Hub images + command stage images)
@@ -337,6 +322,5 @@ export async function run(
     runId,
     artDir,
     stage: opts?.stage,
-    pipeline: pipelineOverride,
   });
 }

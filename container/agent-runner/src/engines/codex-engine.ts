@@ -5,6 +5,9 @@ import { Codex } from '@openai/codex-sdk';
 
 import { AgentEngine, NormalizedEvent, RunTurnInput } from './types.js';
 
+const DEBUG_ENGINE_TRACE =
+  process.env.AER_ART_AGENT_RUNNER_DEBUG_EVENTS === '1';
+
 type JsonRpcId = string | number;
 
 interface JsonRpcRequest {
@@ -99,7 +102,9 @@ function isRequest(message: unknown): message is JsonRpcRequest {
   );
 }
 
-function isSuccessResponse(message: unknown): message is JsonRpcSuccessResponse {
+function isSuccessResponse(
+  message: unknown,
+): message is JsonRpcSuccessResponse {
   return (
     !!message &&
     typeof message === 'object' &&
@@ -126,11 +131,19 @@ async function readProxyLogin(
   chatgptAccountId: string;
   chatgptPlanType?: string | null;
 }> {
-  const response = await fetch(`${proxyUrl}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload ?? {}),
-  });
+  const url = `${proxyUrl}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload ?? {}),
+    });
+  } catch (error) {
+    throw new Error(
+      `Codex auth proxy request failed (${url}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Codex auth proxy failed: ${response.status} ${body}`);
@@ -148,6 +161,7 @@ class LocalCodexAppServerClient {
   private readonly pending = new Map<
     JsonRpcId,
     {
+      method: string;
       resolve: (value: unknown) => void;
       reject: (reason: Error) => void;
     }
@@ -155,7 +169,9 @@ class LocalCodexAppServerClient {
 
   constructor(
     private readonly env: Record<string, string>,
-    private readonly onNotification: (notification: JsonRpcNotification) => void,
+    private readonly onNotification: (
+      notification: JsonRpcNotification,
+    ) => void,
     private readonly onServerRequest: (
       request: JsonRpcRequest,
     ) => Promise<unknown> | unknown,
@@ -171,11 +187,12 @@ class LocalCodexAppServerClient {
     this.proc = proc;
 
     proc.on('exit', (code, signal) => {
-      const err = new Error(
-        `codex app-server exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
-      );
       for (const pending of this.pending.values()) {
-        pending.reject(err);
+        pending.reject(
+          new Error(
+            `Codex app-server request "${pending.method}" failed: app-server exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+          ),
+        );
       }
       this.pending.clear();
       this.proc = null;
@@ -184,6 +201,10 @@ class LocalCodexAppServerClient {
     const lineReader = readline.createInterface({ input: proc.stdout });
     lineReader.on('line', (line) => {
       void this.handleInboundLine(line);
+    });
+    const stderrReader = readline.createInterface({ input: proc.stderr });
+    stderrReader.on('line', (line) => {
+      if (line.trim()) console.error(`[codex-app-server] ${line}`);
     });
   }
 
@@ -221,11 +242,15 @@ class LocalCodexAppServerClient {
     const payload = JSON.stringify(message);
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { method, resolve, reject });
       this.proc!.stdin.write(payload + '\n', 'utf8', (err) => {
         if (!err) return;
         this.pending.delete(id);
-        reject(err);
+        reject(
+          new Error(
+            `Codex app-server request "${method}" failed while writing stdin: ${err.message}`,
+          ),
+        );
       });
     });
   }
@@ -283,10 +308,14 @@ class LocalCodexAppServerClient {
 
     if (isErrorResponse(message)) {
       const pending = this.pending.get(message.id ?? -1);
-      const error = new Error(message.error.message);
-      if (!pending) throw error;
+      const messageText = message.error.message;
+      if (!pending) throw new Error(messageText);
       this.pending.delete(message.id ?? -1);
-      pending.reject(error);
+      pending.reject(
+        new Error(
+          `Codex app-server request "${pending.method}" failed: ${messageText}`,
+        ),
+      );
     }
   }
 
@@ -304,7 +333,9 @@ class LocalCodexAppServerClient {
           error: {
             code: -32000,
             message:
-              error instanceof Error ? error.message : 'Unhandled server request',
+              error instanceof Error
+                ? error.message
+                : 'Unhandled server request',
           },
         }) + '\n',
       );
@@ -315,6 +346,11 @@ class LocalCodexAppServerClient {
 export class CodexEngine implements AgentEngine {
   async *runTurn(input: RunTurnInput): AsyncGenerator<NormalizedEvent> {
     const authMode = process.env.ART_CODEX_AUTH_MODE ?? 'passthrough';
+    if (DEBUG_ENGINE_TRACE) {
+      console.error(
+        `[codex-engine] authMode=${authMode} authProxy=${process.env.ART_CODEX_AUTH_PROXY_URL?.trim() ? 'present' : 'missing'}`,
+      );
+    }
     if (
       authMode === 'host-managed' &&
       process.env.ART_CODEX_AUTH_PROXY_URL?.trim()
@@ -417,9 +453,15 @@ export class CodexEngine implements AgentEngine {
         yield { type: 'assistant.checkpoint', messageId: lastMessageId };
         yield { type: 'turn.result', result: finalResponse };
       } else if (event.type === 'turn.failed') {
-        yield { type: 'turn.error', error: event.error.message };
+        yield {
+          type: 'turn.error',
+          error: `Codex SDK turn failed: ${event.error.message}`,
+        };
       } else if (event.type === 'error') {
-        yield { type: 'turn.error', error: event.message };
+        yield {
+          type: 'turn.error',
+          error: `Codex SDK error: ${event.message}`,
+        };
       }
     }
   }
@@ -458,15 +500,39 @@ export class CodexEngine implements AgentEngine {
     const notificationResolvers: Array<() => void> = [];
     const waitForNotification = async (): Promise<JsonRpcNotification> => {
       while (notificationQueue.length === 0) {
-        await new Promise<void>((resolve) => notificationResolvers.push(resolve));
+        await new Promise<void>((resolve) =>
+          notificationResolvers.push(resolve),
+        );
       }
       return notificationQueue.shift()!;
+    };
+    const loginWithProxyAuth = async (): Promise<void> => {
+      const initialLogin = await readProxyLogin(proxyUrl, '/login');
+      try {
+        await client.loginWithExternalAuth(initialLogin);
+        return;
+      } catch (error) {
+        const initialError =
+          error instanceof Error ? error.message : String(error);
+        const refreshedLogin = await readProxyLogin(proxyUrl, '/refresh', {
+          reason: 'account_login_start_failed',
+          previousAccountId: initialLogin.chatgptAccountId,
+        });
+        try {
+          await client.loginWithExternalAuth(refreshedLogin);
+          return;
+        } catch (retryError) {
+          throw new Error(
+            `Codex app-server login failed after forced refresh: ${retryError instanceof Error ? retryError.message : String(retryError)} (initial failure: ${initialError})`,
+          );
+        }
+      }
     };
 
     try {
       await client.start();
       await client.initialize();
-      await client.loginWithExternalAuth(await readProxyLogin(proxyUrl, '/login'));
+      await loginWithProxyAuth();
 
       let threadId = input.sessionId;
       if (!threadId) {
@@ -597,11 +663,12 @@ export class CodexEngine implements AgentEngine {
             yield { type: 'assistant.checkpoint', messageId: lastMessageId };
           }
           if (event.params?.turn?.status === 'failed') {
+            const errorMessage = String(
+              event.params?.turn?.error?.message ?? 'Codex turn failed',
+            );
             yield {
               type: 'turn.error',
-              error: String(
-                event.params?.turn?.error?.message ?? 'Codex turn failed',
-              ),
+              error: `Codex app-server turn failed: ${errorMessage}`,
             };
           } else {
             yield { type: 'turn.result', result: finalResponse || null };
@@ -610,9 +677,12 @@ export class CodexEngine implements AgentEngine {
         }
 
         if (event.method === 'error') {
+          const errorMessage = String(
+            event.params?.message ?? 'Codex app-server error',
+          );
           yield {
             type: 'turn.error',
-            error: String(event.params?.message ?? 'Codex app-server error'),
+            error: `Codex app-server error notification: ${errorMessage}`,
           };
           break;
         }

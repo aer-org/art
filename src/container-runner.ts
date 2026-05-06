@@ -30,9 +30,8 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   getCredentialProxyPort,
-  getProjectRoot,
-  DATA_DIR,
-  GROUPS_DIR,
+  getDataDir,
+  getPackageAssetPath,
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
@@ -93,6 +92,9 @@ interface VolumeMount {
 type AgentProvider = 'claude' | 'codex';
 
 function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
+  // Host-managed auth requires containers to reach a host-side proxy, which can
+  // be blocked by local firewall policy. Keep passthrough as the safe default
+  // and allow explicit opt-in where the proxy path is known to work.
   return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
     ? 'host-managed'
     : 'passthrough';
@@ -104,7 +106,7 @@ function resolveProvider(
 ): AgentProvider {
   if (inputProvider) return inputProvider;
   if (group.containerConfig?.provider) return group.containerConfig.provider;
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
 function getProviderHomeDirName(provider: AgentProvider): '.claude' | '.codex' {
@@ -173,7 +175,6 @@ function buildVolumeMounts(
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
-  const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
@@ -199,21 +200,9 @@ function buildVolumeMounts(
     }
   }
 
-  // Global memory directory (read-only, shared across all groups)
-  if (!isMain) {
-    const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
-      mounts.push({
-        hostPath: globalDir,
-        containerPath: '/workspace/global',
-        readonly: true,
-      });
-    }
-  }
-
   // Per-group provider sessions directory (isolated from other groups)
   const groupSessionsDir = path.join(
-    DATA_DIR,
+    getDataDir(),
     'sessions',
     group.folder,
     getProviderHomeDirName(provider),
@@ -241,7 +230,7 @@ function buildVolumeMounts(
     );
 
     // Sync skills from container/skills/ into each group's .claude/skills/
-    const skillsSrc = path.join(getProjectRoot(), 'container', 'skills');
+    const skillsSrc = getPackageAssetPath('container', 'skills');
     const skillsDst = path.join(groupSessionsDir, 'skills');
     if (fs.existsSync(skillsSrc)) {
       for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -298,14 +287,13 @@ function buildVolumeMounts(
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
-  const agentRunnerSrc = path.join(
-    getProjectRoot(),
+  const agentRunnerSrc = getPackageAssetPath(
     'container',
     'agent-runner',
     'src',
   );
   const groupAgentRunnerDir = path.join(
-    DATA_DIR,
+    getDataDir(),
     'sessions',
     group.folder,
     'agent-runner-src',
@@ -328,7 +316,7 @@ function buildVolumeMounts(
   // 2. Skips stdin cat — agent-runner reads input from IPC file instead
   if (getRuntime().kind === 'udocker') {
     const patchedEntrypoint = path.join(
-      DATA_DIR,
+      getDataDir(),
       'sessions',
       group.folder,
       'entrypoint.sh',
@@ -378,7 +366,7 @@ export function buildContainerArgs(
   runId?: string,
   privileged = false,
   env?: Record<string, string>,
-  provider: AgentProvider = 'claude',
+  provider: AgentProvider = 'codex',
 ): string[] {
   const rt = getRuntime();
   const args: string[] = ['run'];
@@ -937,23 +925,18 @@ export async function runContainerAgent(
         return;
       }
 
-      // Legacy mode: parse the last output marker pair from accumulated stdout
+      // Non-streaming mode: parse the output marker pair from accumulated stdout.
       try {
-        // Extract JSON between sentinel markers for robust parsing
         const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
         const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
 
-        let jsonLine: string;
-        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-        } else {
-          // Fallback: last non-empty line (backwards compatibility)
-          const lines = stdout.trim().split('\n');
-          jsonLine = lines[lines.length - 1];
+        if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+          throw new Error('Container output did not include output markers');
         }
 
+        const jsonLine = stdout
+          .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+          .trim();
         const output: ContainerOutput = JSON.parse(jsonLine);
 
         logger.info(
