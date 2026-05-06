@@ -37,6 +37,7 @@ const OUTPUT_START_MARKER = '---AER_ART_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---AER_ART_OUTPUT_END---';
 const TOOL_START_MARKER = '---AER_ART_TOOL_START---';
 const TOOL_END_MARKER = '---AER_ART_TOOL_END---';
+const DEBUG_EVENT_TRACE = process.env.AER_ART_AGENT_RUNNER_DEBUG_EVENTS === '1';
 function writeOutput(output) {
     console.log(OUTPUT_START_MARKER);
     console.log(JSON.stringify(output));
@@ -44,6 +45,10 @@ function writeOutput(output) {
 }
 function log(message) {
     console.error(`[agent-runner] ${message}`);
+}
+function debugLog(message) {
+    if (DEBUG_EVENT_TRACE)
+        log(message);
 }
 function getSessionSummary(sessionId, transcriptPath) {
     const projectDir = path.dirname(transcriptPath);
@@ -283,7 +288,7 @@ async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv
         preCompactHookFactory: createPreCompactHook,
     })) {
         eventCount++;
-        log(`[event #${eventCount}] provider=${provider} type=${event.type}`);
+        debugLog(`[event #${eventCount}] provider=${provider} type=${event.type}`);
         handleNormalizedEvent(event, pendingToolUses, erroredHashes, stageName, resultTexts, endOnResult, (value) => {
             newSessionId = value;
         }, () => newSessionId, (value) => {
@@ -292,7 +297,7 @@ async function runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv
             resultCount++;
         });
     }
-    log(`Query done. Provider: ${provider}, events: ${eventCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+    debugLog(`Query done. Provider: ${provider}, events: ${eventCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
     return { newSessionId, lastAssistantUuid, closedDuringQuery, resultTexts };
 }
 // (FSM helpers removed — pipeline FSM is now host-side)
@@ -301,7 +306,7 @@ function handleNormalizedEvent(event, pendingToolUses, erroredHashes, stageName,
     switch (event.type) {
         case 'session.started':
             setSessionId(event.sessionId);
-            log(`Session initialized: ${event.sessionId}`);
+            debugLog(`Session initialized: ${event.sessionId}`);
             return;
         case 'assistant.text':
             process.stdout.write(event.text);

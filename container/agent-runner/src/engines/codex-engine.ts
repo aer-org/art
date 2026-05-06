@@ -5,6 +5,9 @@ import { Codex } from '@openai/codex-sdk';
 
 import { AgentEngine, NormalizedEvent, RunTurnInput } from './types.js';
 
+const DEBUG_ENGINE_TRACE =
+  process.env.AER_ART_AGENT_RUNNER_DEBUG_EVENTS === '1';
+
 type JsonRpcId = string | number;
 
 interface JsonRpcRequest {
@@ -343,9 +346,11 @@ class LocalCodexAppServerClient {
 export class CodexEngine implements AgentEngine {
   async *runTurn(input: RunTurnInput): AsyncGenerator<NormalizedEvent> {
     const authMode = process.env.ART_CODEX_AUTH_MODE ?? 'passthrough';
-    console.error(
-      `[codex-engine] authMode=${authMode} authProxy=${process.env.ART_CODEX_AUTH_PROXY_URL?.trim() ? 'present' : 'missing'}`,
-    );
+    if (DEBUG_ENGINE_TRACE) {
+      console.error(
+        `[codex-engine] authMode=${authMode} authProxy=${process.env.ART_CODEX_AUTH_PROXY_URL?.trim() ? 'present' : 'missing'}`,
+      );
+    }
     if (
       authMode === 'host-managed' &&
       process.env.ART_CODEX_AUTH_PROXY_URL?.trim()

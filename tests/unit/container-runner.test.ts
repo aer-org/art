@@ -297,17 +297,15 @@ describe('container-runner MCP config generation', () => {
     await resultPromise;
   });
 
-  it('defaults container args provider to Codex', () => {
+  it('defaults container args provider to Codex with passthrough auth', () => {
     const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
     delete process.env.ART_CODEX_AUTH_MODE;
 
     try {
       const args = buildContainerArgs([], 'art-test-default-provider');
 
-      expect(args).toContain('ART_CODEX_AUTH_MODE=host-managed');
-      expect(args).toContain(
-        'ART_CODEX_AUTH_PROXY_URL=http://host.docker.internal:3002',
-      );
+      expect(args).toContain('ART_CODEX_AUTH_MODE=passthrough');
+      expect(args.join(' ')).not.toContain('ART_CODEX_AUTH_PROXY_URL=');
       expect(args.join(' ')).not.toContain('ANTHROPIC_BASE_URL=');
     } finally {
       if (previousAuthMode === undefined) {
@@ -318,15 +316,17 @@ describe('container-runner MCP config generation', () => {
     }
   });
 
-  it('allows explicit Codex auth passthrough opt-out', () => {
+  it('allows explicit Codex host-managed auth opt-in', () => {
     const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
-    process.env.ART_CODEX_AUTH_MODE = 'passthrough';
+    process.env.ART_CODEX_AUTH_MODE = 'host-managed';
 
     try {
-      const args = buildContainerArgs([], 'art-test-passthrough-provider');
+      const args = buildContainerArgs([], 'art-test-host-managed-provider');
 
-      expect(args).toContain('ART_CODEX_AUTH_MODE=passthrough');
-      expect(args.join(' ')).not.toContain('ART_CODEX_AUTH_PROXY_URL=');
+      expect(args).toContain('ART_CODEX_AUTH_MODE=host-managed');
+      expect(args).toContain(
+        'ART_CODEX_AUTH_PROXY_URL=http://host.docker.internal:3002',
+      );
     } finally {
       if (previousAuthMode === undefined) {
         delete process.env.ART_CODEX_AUTH_MODE;
