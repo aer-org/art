@@ -511,3 +511,78 @@ export function readPipelineStateForRun(
     ),
   );
 }
+
+export interface AllStageRecord {
+  nodeId: string;
+  stageName: string;
+  stage: Record<string, unknown> | null;
+  turnCount: number;
+  turnSum: {
+    tokensIn: number;
+    tokensOut: number;
+    cacheReadTokens: number;
+    latencyMs: number;
+    costUsd: number;
+  };
+}
+
+/**
+ * Walk every nodes/<n>/stages/<s>/stage.json + sibling turns/ to build a
+ * run-wide list for Timeline + Cost overlays. Single fast pass so the L4
+ * overlays don't need N+1 stage fetches.
+ */
+export function readAllStageRecords(
+  projectDir: string,
+  runId: string,
+): AllStageRecord[] {
+  const out: AllStageRecord[] = [];
+  const nodesDir = path.join(runDirOf(projectDir, runId), 'nodes');
+  if (!fs.existsSync(nodesDir)) return out;
+  for (const nodeId of fs.readdirSync(nodesDir)) {
+    const stagesDir = path.join(nodesDir, nodeId, 'stages');
+    if (!fs.existsSync(stagesDir)) continue;
+    for (const stage of fs.readdirSync(stagesDir)) {
+      const dir = path.join(stagesDir, stage);
+      const rec = readJson(path.join(dir, 'stage.json'));
+      // Aggregate turns (small files, parsed eagerly so the client gets one
+      // round trip per L4 view).
+      const turnsDir = path.join(dir, 'turns');
+      const turnSum = {
+        tokensIn: 0,
+        tokensOut: 0,
+        cacheReadTokens: 0,
+        latencyMs: 0,
+        costUsd: 0,
+      };
+      let turnCount = 0;
+      if (fs.existsSync(turnsDir)) {
+        for (const f of fs.readdirSync(turnsDir)) {
+          if (!/^\d+\.json$/.test(f)) continue;
+          const t = readJson(path.join(turnsDir, f));
+          if (!t) continue;
+          turnCount++;
+          if (typeof t.tokensIn === 'number') turnSum.tokensIn += t.tokensIn;
+          if (typeof t.tokensOut === 'number')
+            turnSum.tokensOut += t.tokensOut;
+          if (typeof t.cacheReadTokens === 'number')
+            turnSum.cacheReadTokens += t.cacheReadTokens;
+          if (typeof t.latencyMs === 'number')
+            turnSum.latencyMs += t.latencyMs;
+          if (typeof t.costUsd === 'number') turnSum.costUsd += t.costUsd;
+        }
+      }
+      out.push({ nodeId, stageName: stage, stage: rec, turnCount, turnSum });
+    }
+  }
+  // Sort by finishedAt when available, else node + stage name. Timeline
+  // wants chronological; Cost view is order-agnostic.
+  out.sort((a, b) => {
+    const af = (a.stage as { finishedAt?: string } | null)?.finishedAt ?? '';
+    const bf = (b.stage as { finishedAt?: string } | null)?.finishedAt ?? '';
+    if (af && bf) return af.localeCompare(bf);
+    return `${a.nodeId}/${a.stageName}`.localeCompare(
+      `${b.nodeId}/${b.stageName}`,
+    );
+  });
+  return out;
+}

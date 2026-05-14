@@ -220,11 +220,14 @@ web/src/
 - [x] `L3StreamTail.tsx` — kind toggle (agent/stdout/stderr only if non-empty), tail size dropdown (100/500/2000). Empty-state explains stream sinks are Phase 2-deferred.
 
 ### Phase H — L4 overlays
-- [ ] `L4RunInfo.tsx` — provenance + pipeline.snap
-- [ ] `L4Timeline.tsx` — Gantt
-- [ ] `L4DecisionsCrossStage.tsx`
-- [ ] `L4CostView.tsx`
-- [ ] `L4EventsRaw.tsx`
+Top toolbar row exposes 5 buttons (`info | timeline | decisions | cost | events`). Clicking opens an overlay in the right slot — mutually exclusive with the L2/L3 stage stack (selecting a stage in any L4 list jumps back to the sidebar).
+
+- [x] `L4RunInfo.tsx` — provenance.json (agents + templates sha256 + bytes, env allowlist table) + pipeline.snap.json raw view.
+- [x] `L4Timeline.tsx` — pure-SVG Gantt. One row per stage with `finishedAt`/`durationMs`, bars colored by result, x-axis ticks at "nice" intervals, hover tooltip with marker + duration, click row → jump to that stage's sidebar.
+- [x] `L4DecisionsCrossStage.tsx` — every `decision.*` event from `events.jsonl`, sortable filter chips, stage cell is a link back to the sidebar, click row → expand JSON.
+- [x] `L4CostView.tsx` — per-stage stacked bar with mode toggle (tokens / cost / latency); uses server-aggregated `turnSum` from the new `/api/runs/:id/stages` endpoint so the client gets one round trip.
+- [x] `L4EventsRaw.tsx` — raw `events.jsonl` JSON-per-line tail with a substring type filter + limit dropdown (500/1000/5000).
+- Server: new `GET /api/runs/:runId/stages` returns `Array<{nodeId, stageName, stage, turnCount, turnSum}>` with turns aggregated server-side; reused by Timeline + Cost.
 
 ### Phase I — Live-mode parity
 - [ ] Convert `LivePage` to use the new RunDetailPage with 5s polling and the latest non-sealed run

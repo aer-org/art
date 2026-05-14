@@ -930,6 +930,9 @@ input, textarea {
 .inspector-with-l3 .inspector-body {
   grid-template-columns: 1fr minmax(280px, 24%) minmax(420px, 44%);
 }
+.inspector-with-l4 .inspector-body {
+  grid-template-columns: 1fr minmax(560px, 56%);
+}
 
 .inspector-empty {
   display: flex;
@@ -1520,3 +1523,91 @@ input, textarea {
 .turn-row.open { background: rgba(91, 141, 239, 0.06); }
 .turn-detail td { background: var(--bg); padding: 0; }
 .turn-detail .l3-pre { border: none; }
+
+/* --- Inspector toolbar (L4 trigger row) --------------------------- */
+
+.inspector-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 24px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-family: var(--mono);
+}
+.toolbar-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  cursor: pointer;
+  border-radius: 0;
+  text-transform: lowercase;
+}
+.toolbar-btn:hover { color: var(--fg); }
+.toolbar-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(91, 141, 239, 0.08);
+}
+
+/* --- L4 panel ----------------------------------------------------- */
+
+.l4-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+  min-width: 0;
+  animation: sidebar-in 200ms ease-out;
+}
+
+/* --- Gantt + cost SVG ------------------------------------------- */
+
+.gantt-svg {
+  width: 100%;
+  height: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+}
+.gantt-grid {
+  stroke: var(--border);
+  stroke-width: 0.5;
+}
+.gantt-tick-label {
+  fill: var(--dim);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.gantt-label {
+  fill: var(--fg-dim);
+  font-size: 11px;
+}
+.gantt-row:hover .gantt-label { fill: var(--fg); }
+.gantt-bar { stroke: none; }
+.gantt-bar.success { fill: rgba(34, 197, 94, 0.55); }
+.gantt-bar.success:hover { fill: rgba(34, 197, 94, 0.8); }
+.gantt-bar.error { fill: rgba(239, 68, 68, 0.55); }
+.gantt-bar.error:hover { fill: rgba(239, 68, 68, 0.8); }
+.gantt-bar.unknown { fill: rgba(151, 160, 179, 0.4); }
+.gantt-bar.cost-in { fill: rgba(91, 141, 239, 0.55); }
+.gantt-bar.cost-out { fill: rgba(110, 217, 138, 0.55); }
+.gantt-bar.cost-cost { fill: rgba(245, 158, 11, 0.55); }
+.gantt-bar.cost-lat { fill: rgba(91, 141, 239, 0.55); }
+
+.raw-filter {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 0;
+  min-width: 120px;
+}

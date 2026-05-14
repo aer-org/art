@@ -234,6 +234,11 @@ export const api = {
       'GET',
       `/api/runs/${encodeURIComponent(runId)}/graph`,
     ),
+  runStages: (runId: string) =>
+    http<{ stages: AllStageRecord[] }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages`,
+    ),
   stageStream: (
     runId: string,
     nodeId: string,
@@ -294,6 +299,20 @@ export interface RunDetail extends RunHeader {
   hasPipelineSnap: boolean;
   hasEvents: boolean;
   nodes: NodeIndex[];
+}
+
+export interface AllStageRecord {
+  nodeId: string;
+  stageName: string;
+  stage: Record<string, unknown> | null;
+  turnCount: number;
+  turnSum: {
+    tokensIn: number;
+    tokensOut: number;
+    cacheReadTokens: number;
+    latencyMs: number;
+    costUsd: number;
+  };
 }
 
 export interface StageDetail {

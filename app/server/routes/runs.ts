@@ -33,6 +33,7 @@ import {
   readPipelineStateForRun,
   readProvenance,
   readStageCommand,
+  readAllStageRecords,
   readStageDiff,
   readStageDiffSummary,
   readStageStream,
@@ -155,6 +156,15 @@ export function registerRunsRoutes(app: FastifyInstance): void {
         node.nodeId = rec.nodeId;
       }
       return graph;
+    },
+  );
+
+  app.get<{ Params: RunIdParam }>(
+    '/api/runs/:runId/stages',
+    async (req, reply) => {
+      const projectDir = projectOr400(reply);
+      if (!projectDir) return;
+      return { stages: readAllStageRecords(projectDir, req.params.runId) };
     },
   );
 

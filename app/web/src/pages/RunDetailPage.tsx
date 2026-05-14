@@ -1,18 +1,22 @@
 /**
  * RunDetailPage — inspector view of an archived (or live) run.
  *
- * Layout (CSS grid): header / [canvas | sidebar?].
- *   - Header: runId + state + outcome + duration + host.
- *   - Canvas: ReactFlow DAG from runs/<id>/pipeline.snap.json + state.
- *   - Sidebar: opens when a stage is clicked; grid-push, never overlay.
+ * Layout (CSS grid): header / toolbar / [canvas | sidebar? | (L3 | L4)?]
  *
- * Live runs poll every 5s for header + graph; sealed/crashed runs load
- * once. Stage detail in the sidebar refetches whenever the selection
- * changes.
+ * - L2 sidebar opens on stage click
+ * - L3 panel opens from sidebar "view X" links
+ * - L4 panel opens from the toolbar (Info / Timeline / Decisions / Cost
+ *   / Events). L4 is mutually exclusive with the sidebar+L3 stack — opens
+ *   in the same right slot.
  */
 import { useEffect, useMemo, useState } from 'react';
 
 import { L3Panel } from '../components/L3Panel.tsx';
+import { L4CostView } from '../components/L4CostView.tsx';
+import { L4DecisionsCrossStage } from '../components/L4DecisionsCrossStage.tsx';
+import { L4EventsRaw } from '../components/L4EventsRaw.tsx';
+import { L4RunInfo } from '../components/L4RunInfo.tsx';
+import { L4Timeline } from '../components/L4Timeline.tsx';
 import { PipelineGraph } from '../components/PipelineGraph.tsx';
 import { RunDetailHeader } from '../components/RunDetailHeader.tsx';
 import {
@@ -29,6 +33,16 @@ import {
 
 const LIVE_POLL_MS = 5000;
 
+type L4Kind = 'info' | 'timeline' | 'decisions' | 'cost' | 'events';
+
+const L4_TITLES: Record<L4Kind, string> = {
+  info: 'Run info',
+  timeline: 'Timeline',
+  decisions: 'Decisions',
+  cost: 'Cost',
+  events: 'Events (raw)',
+};
+
 export function RunDetailPage(props: { runId: string }): JSX.Element {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [graph, setGraph] = useState<{
@@ -40,6 +54,7 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
   const [l3, setL3] = useState<{ kind: L3PanelKind; mount?: string } | null>(
     null,
   );
+  const [l4, setL4] = useState<L4Kind | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,7 +85,6 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
     };
   }, [props.runId]);
 
-  // Resolve nodeId for the selected stage via the graph augmentation.
   const selectedNodeId = useMemo(() => {
     if (!selectedStage || !graph) return null;
     const node = graph.nodes.find((n) => n.name === selectedStage);
@@ -79,22 +93,28 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
 
   const stageData = useStageDetail(detail, selectedNodeId, selectedStage);
 
-  // Esc: close L3 first, then sidebar.
+  // Esc cascade: L4 → L3 → sidebar.
   useEffect(() => {
-    if (!selectedStage) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (l3) setL3(null);
-      else setSelectedStage(null);
+      if (l4) setL4(null);
+      else if (l3) setL3(null);
+      else if (selectedStage) setSelectedStage(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedStage, l3]);
+  }, [selectedStage, l3, l4]);
 
-  // Closing the stage also closes any L3 panel.
   useEffect(() => {
     if (!selectedStage) setL3(null);
   }, [selectedStage]);
+
+  function openL4(kind: L4Kind) {
+    // L4 takes the right slot; close the stage stack while it's up.
+    setSelectedStage(null);
+    setL3(null);
+    setL4(kind);
+  }
 
   if (error) {
     return (
@@ -117,17 +137,33 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
 
   const sidebarOpen =
     !!selectedStage && !!selectedNodeId && stageData.stage !== null;
-
   const l3Open = sidebarOpen && l3 !== null;
-  const layoutClass = l3Open
-    ? 'inspector-with-l3'
-    : sidebarOpen
-      ? 'inspector-with-sidebar'
-      : '';
+  const l4Open = l4 !== null;
+
+  const layoutClass = l4Open
+    ? 'inspector-with-l4'
+    : l3Open
+      ? 'inspector-with-l3'
+      : sidebarOpen
+        ? 'inspector-with-sidebar'
+        : '';
 
   return (
     <div className={`inspector ${layoutClass}`}>
       <RunDetailHeader run={detail} />
+      <nav className="inspector-toolbar">
+        {(['info', 'timeline', 'decisions', 'cost', 'events'] as L4Kind[]).map(
+          (k) => (
+            <button
+              key={k}
+              className={`toolbar-btn ${l4 === k ? 'active' : ''}`}
+              onClick={() => (l4 === k ? setL4(null) : openL4(k))}
+            >
+              {L4_TITLES[k]}
+            </button>
+          ),
+        )}
+      </nav>
       <div className="inspector-body">
         <div className="inspector-canvas">
           {graph && graph.nodes.length > 0 ? (
@@ -137,6 +173,7 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
               onNodeClick={(name) => {
                 setSelectedStage(name);
                 setL3(null);
+                setL4(null);
               }}
             />
           ) : (
@@ -147,10 +184,10 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
             </div>
           )}
         </div>
-        {selectedStage && selectedNodeId && (
+        {sidebarOpen && (
           <StageSidebar
-            nodeId={selectedNodeId}
-            stageName={selectedStage}
+            nodeId={selectedNodeId!}
+            stageName={selectedStage!}
             data={stageData}
             onClose={() => setSelectedStage(null)}
             onOpenPanel={(kind, mount) => setL3({ kind, mount })}
@@ -161,14 +198,54 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
             runId={props.runId}
             nodeId={selectedNodeId}
             stageName={selectedStage}
-            kind={l3.kind}
-            mount={l3.mount}
+            kind={l3!.kind}
+            mount={l3!.mount}
             stage={stageData.stage}
             events={stageData.events}
             turns={stageData.turns}
             diffSummary={stageData.diffSummary}
             onClose={() => setL3(null)}
           />
+        )}
+        {l4Open && (
+          <aside className="l4-panel inspector">
+            <header className="l3-header">
+              <div>
+                <div className="label">overlay</div>
+                <div className="value large">{L4_TITLES[l4!]}</div>
+              </div>
+              <button
+                className="sidebar-close"
+                onClick={() => setL4(null)}
+                title="Close (Esc)"
+              >
+                ✕
+              </button>
+            </header>
+            <div className="l3-body">
+              {l4 === 'info' && <L4RunInfo runId={props.runId} />}
+              {l4 === 'timeline' && (
+                <L4Timeline
+                  runId={props.runId}
+                  onSelectStage={(name) => {
+                    setL4(null);
+                    setSelectedStage(name);
+                  }}
+                />
+              )}
+              {l4 === 'decisions' && (
+                <L4DecisionsCrossStage
+                  runId={props.runId}
+                  onSelectStage={(name) => {
+                    setL4(null);
+                    setSelectedStage(name);
+                  }}
+                />
+              )}
+              {l4 === 'cost' && <L4CostView runId={props.runId} />}
+              {l4 === 'events' && <L4EventsRaw runId={props.runId} />}
+            </div>
+          </aside>
         )}
       </div>
     </div>
