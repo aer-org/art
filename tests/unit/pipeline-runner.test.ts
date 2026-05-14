@@ -259,6 +259,13 @@ import {
   dispatchStageName,
   ROOT_DISPATCH_NODE_ID,
 } from '../../src/stitch.js';
+import { generateRunId } from '../../src/run-manifest.js';
+
+// State files now live under runs/<runId>/state/ (transparency layer). Tests
+// that pre-save or post-read state use this helper to construct the right path.
+function runStateDir(groupDir: string, runId: string): string {
+  return path.join(groupDir, '.state', 'runs', runId, 'state');
+}
 import type { PipelineTemplate } from '../../src/pipeline-template.js';
 import * as mcpRegistry from '../../src/mcp-registry.js';
 import type { RegisteredGroup } from '../../src/types.js';
@@ -917,9 +924,9 @@ describe('PipelineRunner FSM', () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
 
-    // Pre-save state with implement completed (state lives under .state/)
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    // Pre-save state with implement completed
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: 'implement',
       completedStages: ['implement'],
       lastUpdated: new Date().toISOString(),
@@ -936,6 +943,7 @@ describe('PipelineRunner FSM', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     const result = await runner.run();
@@ -957,8 +965,8 @@ describe('PipelineRunner FSM', () => {
       stages: [config.stages[0], { ...config.stages[0] }],
     };
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: null,
       completedStages: ['implement'],
       dispatchTree: {
@@ -992,6 +1000,7 @@ describe('PipelineRunner FSM', () => {
       },
       () => {},
       groupDir,
+      runId,
     );
 
     const result = await runner.run();
@@ -1009,7 +1018,7 @@ describe('PipelineRunner FSM', () => {
       'pipeline-verify',
     ]);
 
-    const state = loadPipelineState(stateDir);
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
     expect(state?.status).toBe('success');
     expect(state?.completedStages).toEqual(['implement', 'verify']);
   }, 15000);
@@ -1017,8 +1026,8 @@ describe('PipelineRunner FSM', () => {
   it('terminal success state starts a fresh rerun', async () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: null,
       completedStages: ['implement', 'verify'],
       lastUpdated: new Date().toISOString(),
@@ -1059,8 +1068,8 @@ describe('PipelineRunner FSM', () => {
   it('running state with no durable frontier restarts at entry', async () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: null,
       completedStages: ['implement'],
       runningStages: [],
@@ -1083,6 +1092,7 @@ describe('PipelineRunner FSM', () => {
       },
       () => {},
       groupDir,
+      runId,
     );
 
     const result = await runner.run();
@@ -1100,15 +1110,15 @@ describe('PipelineRunner FSM', () => {
       'pipeline-verify',
     ]);
 
-    const state = loadPipelineState(stateDir);
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
     expect(state?.completedStages).toEqual(['implement', 'verify']);
   }, 15000);
 
   it('resume restores runningStages by re-running in-flight stages', async () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: 'implement',
       completedStages: [],
       runningStages: ['implement'],
@@ -1131,6 +1141,7 @@ describe('PipelineRunner FSM', () => {
       },
       () => {},
       groupDir,
+      runId,
     );
 
     const result = await runner.run();
@@ -1152,8 +1163,8 @@ describe('PipelineRunner FSM', () => {
   it('resume preserves pending stage handoff prompts and sessions', async () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: 'verify',
       completedStages: ['implement'],
       runningStages: [],
@@ -1179,6 +1190,7 @@ describe('PipelineRunner FSM', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     const result = await runner.run();
@@ -1229,8 +1241,8 @@ describe('PipelineRunner FSM', () => {
       ],
     };
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: ['right', 'join'],
       completedStages: ['left'],
       runningStages: [],
@@ -1255,6 +1267,7 @@ describe('PipelineRunner FSM', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     const result = await runner.run();
@@ -1566,8 +1579,9 @@ describe('Stitch integration', () => {
     const childNodeId = dispatchChildNodeId(invocationId, 0);
     const doStage = dispatchStageName(invocationId, 0, 'do');
 
+    const runId = generateRunId();
     savePipelineState(
-      path.join(groupDir, '.state'),
+      runStateDir(groupDir, runId),
       {
         currentStage: null,
         completedStages: [doStage],
@@ -1582,7 +1596,7 @@ describe('Stitch integration', () => {
     );
     const staleUnrelatedScope = 'd_deadbeef00_0';
     savePipelineState(
-      path.join(groupDir, '.state'),
+      runStateDir(groupDir, runId),
       {
         currentStage: null,
         completedStages: ['old-child'],
@@ -1596,7 +1610,7 @@ describe('Stitch integration', () => {
       staleUnrelatedScope,
     );
     fs.writeFileSync(
-      path.join(groupDir, '.state', 'PIPELINE_STATE.pipeline.json'),
+      path.join(runStateDir(groupDir, runId), 'PIPELINE_STATE.pipeline.json'),
       JSON.stringify({ keep: true }),
     );
 
@@ -1611,6 +1625,7 @@ describe('Stitch integration', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     await expect(runner.run()).resolves.toBe('success');
@@ -1627,15 +1642,14 @@ describe('Stitch integration', () => {
     expect(
       fs.existsSync(
         path.join(
-          groupDir,
-          '.state',
+          runStateDir(groupDir, runId),
           `PIPELINE_STATE.${staleUnrelatedScope}.json`,
         ),
       ),
     ).toBe(false);
     expect(
       fs.existsSync(
-        path.join(groupDir, '.state', 'PIPELINE_STATE.pipeline.json'),
+        path.join(runStateDir(groupDir, runId), 'PIPELINE_STATE.pipeline.json'),
       ),
     ).toBe(true);
   }, 15000);
@@ -2050,7 +2064,8 @@ describe('Stitch integration', () => {
     const laneStage = (idx: number) =>
       dispatchStageName(laneDispatch, idx, 'lane-analyze');
 
-    savePipelineState(path.join(groupDir, '.state'), {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: ['summarize', `barrier:${laneDispatch}`],
       completedStages: ['init'],
       dispatchTree: {
@@ -2098,6 +2113,7 @@ describe('Stitch integration', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     await expect(runner.run()).resolves.toBe('error');
@@ -2112,7 +2128,7 @@ describe('Stitch integration', () => {
       expect(spawnedNames).toContain(`pipeline-${laneStage(idx)}`);
     }
 
-    const state = loadPipelineState(path.join(groupDir, '.state'));
+    const state = loadPipelineState(runStateDir(groupDir, runId));
     expect(state?.status).toBe('error');
     expect(state?.completedStages).toEqual(['init']);
   }, 30000);
@@ -2192,7 +2208,8 @@ describe('Stitch integration', () => {
     const innerWork = (idx: number) =>
       dispatchStageName(innerDispatch(idx), 0, 'work');
 
-    savePipelineState(path.join(groupDir, '.state'), {
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: null,
       completedStages: ['init'],
       dispatchTree: {
@@ -2245,6 +2262,7 @@ describe('Stitch integration', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     await expect(runner.run()).resolves.toBe('success');
@@ -2264,7 +2282,7 @@ describe('Stitch integration', () => {
       ]),
     );
 
-    const state = loadPipelineState(path.join(groupDir, '.state'));
+    const state = loadPipelineState(runStateDir(groupDir, runId));
     expect(state?.status).toBe('success');
     expect(state?.activeBarrierIds).toEqual([]);
     expect(state?.dispatchBarriers?.[laneDispatch]?.settlements).toEqual({
@@ -2355,7 +2373,8 @@ describe('Stitch integration', () => {
     const innerDispatch = innerInvocation.invocationId;
     const innerNode = dispatchChildNodeId(innerDispatch, 0);
     const innerWork = dispatchStageName(innerDispatch, 0, 'work');
-    const stateDir = path.join(groupDir, '.state');
+    const runId = generateRunId();
+    const stateDir = runStateDir(groupDir, runId);
 
     savePipelineState(stateDir, {
       currentStage: null,
@@ -2429,6 +2448,7 @@ describe('Stitch integration', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     await expect(runner.run()).resolves.toBe('success');
@@ -2612,7 +2632,8 @@ describe('Stitch integration', () => {
         'success' as const,
       ]),
     );
-    const stateDir = path.join(groupDir, '.state');
+    const runId = generateRunId();
+    const stateDir = runStateDir(groupDir, runId);
 
     savePipelineState(stateDir, {
       currentStage: null,
@@ -2758,6 +2779,7 @@ describe('Stitch integration', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     await expect(runner.run()).resolves.toBe('success');
@@ -2947,7 +2969,7 @@ describe('Stitch integration', () => {
       expect(callNames).toContain(`pipeline-${laneTask(i)}`);
     }
 
-    const state = loadPipelineState(path.join(groupDir, '.state'));
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
     expect(state?.completedStages).toEqual(['start']);
     expect(state?.dispatchTree?.[ROOT_DISPATCH_NODE_ID]?.childIds).toContain(
       demoNode,
@@ -3061,7 +3083,7 @@ describe('Stitch integration', () => {
     const result = await runner.run();
     expect(result).toBe('error');
 
-    const state = loadPipelineState(path.join(groupDir, '.state'));
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
     // The grandchild barrier under outer[0] sees the failure of inner[0].
     expect(state?.dispatchBarriers?.[innerDispatch(0)]?.settlements).toEqual({
       [innerNode(0, 0)]: 'error',
@@ -3293,7 +3315,6 @@ describe('Command mode stage', () => {
       ],
     };
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
-    const stateDir = path.join(groupDir, '.state');
 
     const firstRunner = new PipelineRunner(
       group,
@@ -3312,7 +3333,9 @@ describe('Command mode stage', () => {
     fakeProc!.emit('close', 1);
 
     await expect(firstRun).resolves.toBe('error');
-    const failedState = loadPipelineState(stateDir);
+    const failedState = loadPipelineState(
+      runStateDir(groupDir, firstRunner.getRunId()),
+    );
     expect(failedState?.status).toBe('error');
     expect(failedState?.completedStages).toEqual(['init']);
 
@@ -3342,7 +3365,9 @@ describe('Command mode stage', () => {
       false,
     );
 
-    const finalState = loadPipelineState(stateDir);
+    const finalState = loadPipelineState(
+      runStateDir(groupDir, secondRunner.getRunId()),
+    );
     expect(finalState?.completedStages).toEqual(['init', 'summarize']);
   }, 15000);
 

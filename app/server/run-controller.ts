@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -230,17 +231,75 @@ class RunController extends EventEmitter {
     if (!fs.existsSync(runsDir)) return [];
     return fs
       .readdirSync(runsDir)
-      .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
-      .sort()
-      .reverse()
-      .map((f) => {
+      .filter((entry) => {
+        if (!entry.startsWith('run-')) return false;
         try {
-          return JSON.parse(fs.readFileSync(path.join(runsDir, f), 'utf8')) as RunManifest;
+          return fs.statSync(path.join(runsDir, entry)).isDirectory();
         } catch {
-          return null;
+          return false;
         }
       })
+      .sort()
+      .reverse()
+      .map((entry) => this.runFolderToManifest(runsDir, entry))
       .filter((manifest): manifest is RunManifest => manifest !== null);
+  }
+
+  // Synthesize a legacy-shape RunManifest from a runs/<id>/ folder. status is
+  // derived: sealed marker + summary.outcome -> success/error; no sealed +
+  // PID alive on this host -> running; no sealed + PID dead -> cancelled
+  // (closest legacy label for crashed). Stages array is left empty because
+  // the new layout records progress in events.jsonl, not in the manifest.
+  private runFolderToManifest(
+    runsDir: string,
+    runId: string,
+  ): RunManifest | null {
+    const dir = path.join(runsDir, runId);
+    let runJson: {
+      pid?: number;
+      hostname?: string;
+      startTime?: string;
+    } | null = null;
+    try {
+      runJson = JSON.parse(
+        fs.readFileSync(path.join(dir, 'run.json'), 'utf8'),
+      );
+    } catch {
+      return null;
+    }
+    const sealed = fs.existsSync(path.join(dir, 'sealed'));
+    let status: RunManifest['status'];
+    let endTime: string | undefined;
+    if (sealed) {
+      let outcome: 'success' | 'error' = 'success';
+      try {
+        const summary = JSON.parse(
+          fs.readFileSync(path.join(dir, 'summary.json'), 'utf8'),
+        );
+        if (summary.outcome === 'error') outcome = 'error';
+        if (typeof summary.endTime === 'string') endTime = summary.endTime;
+      } catch {
+        // sealed but no readable summary; treat as success for legacy clients
+      }
+      status = outcome;
+    } else if (
+      typeof runJson?.pid === 'number' &&
+      runJson.pid > 0 &&
+      (!runJson.hostname || runJson.hostname === os.hostname()) &&
+      isPidAlive(runJson.pid)
+    ) {
+      status = 'running';
+    } else {
+      status = 'cancelled';
+    }
+    return {
+      runId,
+      pid: typeof runJson?.pid === 'number' ? runJson.pid : 0,
+      startTime: runJson?.startTime ?? '',
+      endTime,
+      status,
+      stages: [],
+    };
   }
 
   private findLiveRunningManifest(

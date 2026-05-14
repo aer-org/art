@@ -28,11 +28,7 @@ import {
   getActiveRecorder,
   setActiveRecorder,
 } from './run-recorder.js';
-import {
-  generateRunId,
-  writeRunManifest,
-  type RunManifest,
-} from './run-manifest.js';
+import { generateRunId, type RunManifest } from './run-manifest.js';
 import {
   formatStageMcpAccessSummary,
   resolveStageMcpServers,
@@ -197,7 +193,8 @@ export class PipelineRunner {
     containerName: string,
   ) => void;
   private groupDir: string;
-  private stateDir: string;
+  private stateDir: string; // <groupDir>/.state — legacy shared dir (logs etc.)
+  private runStateDir: string; // <groupDir>/.state/runs/<runId>/state — owned by recorder
   private bundleDir: string;
   private runId: string;
   private scopeId: string | undefined;
@@ -275,6 +272,7 @@ export class PipelineRunner {
       this.recorder = active;
       this.ownsRecorder = false;
     }
+    this.runStateDir = this.recorder.stateDir();
   }
 
   getRunId(): string {
@@ -386,8 +384,6 @@ export class PipelineRunner {
     stagesByName: Map<string, PipelineStage>;
     pipelineLogStream: fs.WriteStream;
   } | null> {
-    // Write initial manifest
-    writeRunManifest(this.stateDir, this.manifest);
     logger.info(
       {
         group: this.group.name,
@@ -410,7 +406,6 @@ export class PipelineRunner {
     this.manifest.logFile = this.scopeId
       ? `logs/${this.scopeId}/pipeline-${ts}.log`
       : `logs/pipeline-${ts}.log`;
-    writeRunManifest(this.stateDir, this.manifest);
     const pipelineLogStream = fs.createWriteStream(pipelineLogFile);
     pipelineLogStream.write(
       `=== Pipeline Log ===\n` +
@@ -468,7 +463,7 @@ export class PipelineRunner {
     // interrupted. Newer snapshots persist the whole runtime frontier; older
     // state files fall back to deriving a frontier from currentStage.
     const existingState = loadPipelineState(
-      this.stateDir,
+      this.runStateDir,
       undefined,
       this.scopeId,
     );
@@ -578,7 +573,7 @@ export class PipelineRunner {
 
     this.dispatch.clear();
     if (this.scopeId === undefined) {
-      const deleted = deleteScopedPipelineStateFiles(this.stateDir);
+      const deleted = deleteScopedPipelineStateFiles(this.runStateDir);
       if (deleted > 0) {
         logger.info(
           { count: deleted },
@@ -615,7 +610,6 @@ export class PipelineRunner {
 
     this.manifest.endTime = new Date().toISOString();
     this.manifest.status = lastResult;
-    writeRunManifest(this.stateDir, this.manifest);
 
     // Finalize recorder: only the root runner that owns it.
     if (this.ownsRecorder) {
@@ -658,7 +652,7 @@ export class PipelineRunner {
     >,
   ): void {
     savePipelineState(
-      this.stateDir,
+      this.runStateDir,
       {
         ...state,
         activations: Object.fromEntries(this.activations),
@@ -1044,7 +1038,6 @@ export class PipelineRunner {
       status: isErrorTransition ? 'error' : 'success',
       duration: Date.now() - stageStartTime,
     });
-    writeRunManifest(this.stateDir, this.manifest);
 
     // Close the container first, then retrieve session ID
     await this.closeAndWait(handle);
@@ -1254,7 +1247,7 @@ PAYLOAD FORMATS:
   private settlementFromChildState(
     childNodeId: string,
   ): TransitionOutcome | null {
-    const state = loadPipelineState(this.stateDir, undefined, childNodeId);
+    const state = loadPipelineState(this.runStateDir, undefined, childNodeId);
     if (state?.status === 'success' || state?.status === 'error') {
       return state.status;
     }

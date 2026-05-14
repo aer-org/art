@@ -104,8 +104,6 @@ export async function run(
     process.exit(1);
   }
 
-  const stateDir = path.join(artDir, '.state');
-
   const { generateRunId } = await import('../run-manifest.js');
 
   // Generate run ID for this execution
@@ -281,25 +279,8 @@ export async function run(
     }
   }
 
-  // Import manifest functions ahead of signal handler registration
-  const { readRunManifest, writeRunManifest } =
-    await import('../run-manifest.js');
-
-  // Register SIGINT/SIGTERM handlers to mark manifest as cancelled
-  const cleanupOnSignal = () => {
-    try {
-      const manifest = readRunManifest(stateDir, runId);
-      if (manifest) {
-        manifest.endTime = new Date().toISOString();
-        manifest.status = 'cancelled';
-        writeRunManifest(stateDir, manifest);
-      }
-    } catch {
-      /* best effort */
-    }
-  };
-  process.on('SIGINT', cleanupOnSignal);
-  process.on('SIGTERM', cleanupOnSignal);
+  // Signal cancellation: PipelineRunner.abort() finalizes the recorder, which
+  // writes summary.json + sealed marker. No manifest write here anymore.
 
   const artGroup = {
     name: 'art',

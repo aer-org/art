@@ -1,22 +1,19 @@
 /**
- * Run manifest CRUD (legacy format).
+ * Run identity + the legacy in-memory manifest shape kept on PipelineRunner.
  *
- * Per-run manifest at `<stateDir>/runs/{runId}.json` with stage history.
- * The newer transparency layer (RunRecorder + run-registry) coexists with
- * this in transitional form; later work migrates the server controller to
- * read from `runs/<id>/run.json` and `summary.json` instead.
+ * After the transparency-foundation migration, manifests are no longer
+ * written to disk by `art run` — per-run persistence lives under
+ * `runs/<id>/run.json` and `summary.json` via RunRecorder. The in-memory
+ * RunManifest type is retained because PipelineRunner still aggregates
+ * per-stage outcomes during a run and exposes them at finalize time. The
+ * server controller and pipeline-watcher synthesize the same shape from
+ * `run.json` + `sealed` marker.
  */
-import fs from 'fs';
-import path from 'path';
 import crypto from 'crypto';
-
-// --- Run ID ---
 
 export function generateRunId(): string {
   return `run-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
 }
-
-// --- Interfaces ---
 
 export interface RunManifest {
   runId: string;
@@ -27,59 +24,4 @@ export interface RunManifest {
   stages: Array<{ name: string; status: string; duration?: number }>;
   logFile?: string;
   outputLogFile?: string;
-}
-
-// --- Helpers ---
-
-function runsDir(stateDir: string): string {
-  return path.join(stateDir, 'runs');
-}
-
-// --- Run Manifest ---
-
-export function writeRunManifest(
-  stateDir: string,
-  manifest: RunManifest,
-): void {
-  const dir = runsDir(stateDir);
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `${manifest.runId}.json`);
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(manifest, null, 2));
-  fs.renameSync(tmpPath, filePath);
-}
-
-export function readRunManifest(
-  stateDir: string,
-  runId: string,
-): RunManifest | null {
-  try {
-    const raw = fs.readFileSync(
-      path.join(runsDir(stateDir), `${runId}.json`),
-      'utf-8',
-    );
-    return JSON.parse(raw) as RunManifest;
-  } catch {
-    return null;
-  }
-}
-
-export function listRunManifests(stateDir: string): RunManifest[] {
-  const dir = runsDir(stateDir);
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
-    .sort()
-    .reverse()
-    .map((f) => {
-      try {
-        return JSON.parse(
-          fs.readFileSync(path.join(dir, f), 'utf-8'),
-        ) as RunManifest;
-      } catch {
-        return null;
-      }
-    })
-    .filter((m): m is RunManifest => m !== null);
 }
