@@ -186,9 +186,11 @@ web/src/
 - [x] Unit tests for `run-reader.ts` covering missing files, malformed JSON, classification edges (sealed/live/crashed), stitched node walking, event filtering by type prefix + limit, stream tailing. 18 tests passing via `node --test` (Node 22 / `tsx --test` on Node 20).
 
 ### Phase B — Runs list page
-- [ ] `RunsListPage.tsx` + hash router skeleton (`/`, `/runs`, `/runs/:id`)
-- [ ] `RunTable.tsx` — sortable by start time, filter by state
-- [ ] Wire top-bar nav: Live | Runs
+- [x] `RunsListPage.tsx` + hash router skeleton (`router.tsx`: `/`, `/runs`, `/runs/:id`)
+- [~] `RunTable.tsx` — basic table inlined into `RunsListPage.tsx` (state/outcome chips, duration/stages columns). Sort by runId desc (server). Filter chips deferred to Phase J.
+- [x] Top-bar nav: Live | Runs (active state highlighted, projectDir indicator on right)
+- [x] `RunDetailPage.tsx` scaffold so `/runs/:id` resolves (full content lands in Phase C).
+- [x] `App.tsx` slimmed to router shell; original body moved to `pages/LivePage.tsx`.
 
 ### Phase C — Run detail header + graph
 - [ ] `RunDetailPage.tsx` with top-bar (L0 from §2) + reuse `PipelineGraph` for completed run
