@@ -1040,21 +1040,23 @@ export class PipelineRunner {
       status: isErrorTransition ? 'error' : 'success',
       duration: stageDuration,
     });
-    this.recordStageOutcome(currentStageName, {
-      result: isErrorTransition ? 'error' : 'success',
-      matchedMarker: matched.marker,
-      transitionTarget: targetName,
-      durationMs: stageDuration,
-      payloadLen: payload ? payload.length : undefined,
-    });
-
-    // Close the container first, then retrieve session ID
+    // Close the container first, then retrieve session ID + exit metadata.
     await this.closeAndWait(handle);
     const containerResult = await handle.containerPromise;
     if (containerResult.newSessionId) {
       this.stageSessionIds.set(currentStageName, containerResult.newSessionId);
     }
     this.activeHandles.delete(currentStageName);
+
+    this.recordStageOutcome(currentStageName, {
+      result: isErrorTransition ? 'error' : 'success',
+      matchedMarker: matched.marker,
+      transitionTarget: targetName,
+      durationMs: stageDuration,
+      payloadLen: payload ? payload.length : undefined,
+      retryCount: ctx.containerRespawnCount,
+      exitCode: containerResult.exitCode ?? null,
+    });
 
     // Payload forwarding for single-target transitions.
     //   - Target has a resumed session (re-entry) → send payload via ephemeral
@@ -1308,6 +1310,20 @@ PAYLOAD FORMATS:
           path.join(stageDir, 'command.sh'),
           stageConfig.command,
         );
+        // Command stages also have shell/timeout/env worth preserving.
+        // Kept separate from command.sh so the .sh file is exec-friendly.
+        fs.writeFileSync(
+          path.join(stageDir, 'command.json'),
+          JSON.stringify(
+            {
+              shell: 'sh -c',
+              timeoutMs: stageConfig.timeout ?? null,
+              env: stageConfig.env ?? {},
+            },
+            null,
+            2,
+          ),
+        );
       }
       if (initialPrompt || ephemeralSystemPrompt) {
         const blocks: string[] = [];
@@ -1356,6 +1372,7 @@ PAYLOAD FORMATS:
       durationMs: number;
       retryCount?: number;
       payloadLen?: number;
+      exitCode?: number | null;
     },
   ): void {
     const stageDir = this.recorder.stagePath(this.scopeId, stageName);
@@ -1381,6 +1398,7 @@ PAYLOAD FORMATS:
       durationMs: outcome.durationMs,
       retryCount: outcome.retryCount,
       payloadLen: outcome.payloadLen,
+      exitCode: outcome.exitCode,
       finishedAt: new Date().toISOString(),
       inputHashes: {
         prompt: hashOf('prompt.txt'),

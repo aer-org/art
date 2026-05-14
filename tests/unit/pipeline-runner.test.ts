@@ -982,6 +982,10 @@ describe('PipelineRunner FSM', () => {
       .update(fs.readFileSync(path.join(implementDir, 'prompt.txt')))
       .digest('hex');
     expect(implementRecord.inputHashes.prompt).toBe(promptHash);
+
+    // Outcome carries retryCount and exitCode from the container result.
+    expect(implementRecord.retryCount).toBe(0);
+    expect(implementRecord).toHaveProperty('exitCode');
   }, 15000);
 
   it('checkpoint resume: skips completed implement, starts at verify', async () => {

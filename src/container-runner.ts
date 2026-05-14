@@ -81,6 +81,8 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  exitCode?: number | null;
+  durationMs?: number;
 }
 
 interface VolumeMount {
@@ -812,6 +814,8 @@ export async function runContainerAgent(
               status: 'success',
               result: null,
               newSessionId,
+              exitCode: code,
+              durationMs: duration,
             });
           });
           return;
@@ -826,6 +830,8 @@ export async function runContainerAgent(
           status: 'error',
           result: null,
           error: `Container timed out after ${configTimeout}ms`,
+          exitCode: code,
+          durationMs: duration,
         });
         return;
       }
@@ -905,6 +911,8 @@ export async function runContainerAgent(
           status: 'error',
           result: null,
           error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
+          exitCode: code,
+          durationMs: duration,
         });
         return;
       }
@@ -920,6 +928,8 @@ export async function runContainerAgent(
             status: 'success',
             result: null,
             newSessionId,
+            exitCode: code,
+            durationMs: duration,
           });
         });
         return;
@@ -938,6 +948,8 @@ export async function runContainerAgent(
           .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
           .trim();
         const output: ContainerOutput = JSON.parse(jsonLine);
+        output.exitCode = code;
+        output.durationMs = duration;
 
         logger.info(
           {
