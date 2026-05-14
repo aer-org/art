@@ -34,6 +34,7 @@ import {
   diffStagePostState,
   diffHostBinariesAvailable,
 } from './run-diff.js';
+import { resolveRetentionLimit, sweepSealedRuns } from './run-registry.js';
 import { generateRunId, type RunManifest } from './run-manifest.js';
 import {
   formatStageMcpAccessSummary,
@@ -661,6 +662,20 @@ export class PipelineRunner {
         failedStages: failed,
       });
       setActiveRecorder(null);
+      // Retention sweep: after this run is sealed, drop older sealed runs
+      // beyond the configured keep limit. Live + crashed runs are never
+      // touched. Skipped on resume (recorder reattached, not new).
+      try {
+        const deleted = sweepSealedRuns(this.stateDir, resolveRetentionLimit());
+        if (deleted.length > 0) {
+          logger.info(
+            { count: deleted.length, deleted },
+            'Retention sweep: removed older sealed runs',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err: (err as Error).message }, 'Retention sweep failed');
+      }
     }
 
     pipelineLogStream.write(

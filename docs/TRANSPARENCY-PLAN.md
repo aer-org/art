@@ -371,9 +371,11 @@ Status: **container metadata + provenance done**. Mount-watchpoint deferred.
 
 ### Phase 7 — Retention + inspect
 
-- [ ] Background retention sweep (config; default keep 10 sealed)
-- [ ] Optional gzip of heavy files on sealed runs
-- [ ] `art inspect <runId>` CLI: print events.jsonl as a readable timeline; dovetail stage stream excerpts at the right moments
+Status: **retention + inspect done**. gzip-on-sealed deferred.
+
+- [x] Retention sweep at run-finalize time. `sweepSealedRuns(stateDir, keep)` in `run-registry.ts`. Default `keep=10` (configurable via `ART_KEEP_RUNS`); negative or non-numeric values disable retention. Live + crashed runs never touched. Best-effort: any rm failure logs once and continues.
+- [ ] Optional gzip of heavy files (`events.jsonl`, `agent.stream.log`, `ipc/*`) on sealed runs. Defer — modest space win compared to retention; revisit if disk pressure becomes a real complaint.
+- [x] `art inspect [runId]` CLI in `src/cli/inspect.ts`. No runId: list recent runs (newest-first) with state + outcome + stage counts. With runId: print header (run.json + summary.json) + per-stage records (stage.json under `nodes/*/stages/*`) + decision timeline (events.jsonl filtered to `decision.*`). `--events` prints the raw events.jsonl. `--project <dir>` targets a different project root. Self-contained: no Docker, no auth, no engine startup. Wired into `art` CLI in `src/cli/index.ts`.
 
 ---
 

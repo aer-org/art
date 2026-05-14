@@ -168,6 +168,73 @@ describe('filter helpers', () => {
   });
 });
 
+describe('resolveRetentionLimit', () => {
+  it('defaults to 10 when ART_KEEP_RUNS unset', async () => {
+    delete process.env.ART_KEEP_RUNS;
+    const { resolveRetentionLimit } = await import('../../src/run-registry.js');
+    expect(resolveRetentionLimit()).toBe(10);
+  });
+
+  it('respects ART_KEEP_RUNS', async () => {
+    process.env.ART_KEEP_RUNS = '3';
+    const { resolveRetentionLimit } = await import('../../src/run-registry.js');
+    expect(resolveRetentionLimit()).toBe(3);
+    delete process.env.ART_KEEP_RUNS;
+  });
+
+  it('disables retention on negative or non-numeric values', async () => {
+    process.env.ART_KEEP_RUNS = '-1';
+    const { resolveRetentionLimit } = await import('../../src/run-registry.js');
+    expect(resolveRetentionLimit()).toBe(Number.POSITIVE_INFINITY);
+    process.env.ART_KEEP_RUNS = 'abc';
+    expect(resolveRetentionLimit()).toBe(Number.POSITIVE_INFINITY);
+    delete process.env.ART_KEEP_RUNS;
+  });
+});
+
+describe('sweepSealedRuns', () => {
+  it('keeps newest N sealed runs and deletes the rest', async () => {
+    for (let i = 1; i <= 5; i++) {
+      makeRun(`run-${1000 + i}-aaaaaa`, { sealed: true });
+    }
+    const { sweepSealedRuns } = await import('../../src/run-registry.js');
+    const deleted = sweepSealedRuns(tmpDir, 2);
+    // Newest two (sorted desc): run-1005-, run-1004-. Older three deleted.
+    expect(deleted.sort()).toEqual(
+      ['run-1001-aaaaaa', 'run-1002-aaaaaa', 'run-1003-aaaaaa'].sort(),
+    );
+    const remaining = fs
+      .readdirSync(path.join(tmpDir, 'runs'))
+      .filter((f) => f.startsWith('run-'))
+      .sort();
+    expect(remaining).toEqual(['run-1004-aaaaaa', 'run-1005-aaaaaa']);
+  });
+
+  it('does not delete live or crashed runs (only sealed are eligible)', async () => {
+    makeRun('run-1-aaaaaa', { sealed: true });
+    makeRun('run-2-aaaaaa', { sealed: true });
+    makeRun('run-3-aaaaaa', { pid: process.pid }); // live
+    makeRun('run-4-aaaaaa', { pid: 2 ** 22 + 9 }); // crashed
+    const { sweepSealedRuns } = await import('../../src/run-registry.js');
+    const deleted = sweepSealedRuns(tmpDir, 1);
+    expect(deleted).toEqual(['run-1-aaaaaa']); // only the older sealed
+    const remaining = fs.readdirSync(path.join(tmpDir, 'runs')).sort();
+    expect(remaining).toEqual(['run-2-aaaaaa', 'run-3-aaaaaa', 'run-4-aaaaaa']);
+  });
+
+  it('returns [] when count is below the keep limit', async () => {
+    makeRun('run-1-aaaaaa', { sealed: true });
+    const { sweepSealedRuns } = await import('../../src/run-registry.js');
+    expect(sweepSealedRuns(tmpDir, 10)).toEqual([]);
+  });
+
+  it('keeps everything when keep is Infinity', async () => {
+    makeRun('run-1-aaaaaa', { sealed: true });
+    const { sweepSealedRuns } = await import('../../src/run-registry.js');
+    expect(sweepSealedRuns(tmpDir, Number.POSITIVE_INFINITY)).toEqual([]);
+  });
+});
+
 describe('findRun', () => {
   it('returns null when run dir does not exist', () => {
     expect(findRun(tmpDir, 'run-nope')).toBeNull();

@@ -52,6 +52,16 @@ async function main(): Promise<void> {
       });
       break;
     }
+    case 'inspect': {
+      const inspectFlags = args.filter((a) => a.startsWith('--'));
+      const inspectPositional = args.filter((a) => !a.startsWith('--'));
+      const events = inspectFlags.includes('--events');
+      const projectIdx = args.indexOf('--project');
+      const project = projectIdx !== -1 ? args[projectIdx + 1] : undefined;
+      const { inspect } = await import('./inspect.js');
+      await inspect(inspectPositional[0], { events, project });
+      break;
+    }
     case 'login':
     case 'signup':
     case 'logout':
@@ -73,6 +83,8 @@ Usage:
   art init [dir]              Create __art__/ scaffold and empty PIPELINE.json
   art run [dir]               Start the agent pipeline engine with Codex
   art run --claude [dir]      Start the agent pipeline engine with Claude Code
+  art inspect [runId]         Inspect archived runs (no runId: list recent)
+  art inspect <id> --events   Print raw events.jsonl for a run
 
 Pending (registry/remote support is currently disabled):
   art signup                  Create a new account
