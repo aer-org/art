@@ -341,11 +341,13 @@ Per-stage `agent.stream.log` / `stdout.log` / `stderr.log` and removal of `conta
 
 ### Phase 4 — L2 decision logs + IPC mirror
 
-- [ ] `parseStageMarkers` returns candidate set; recorder writes `decisions.jsonl`
-- [ ] No-match feedback events
-- [ ] Barrier evaluation events with `{ joinPolicy, settlements, outcome }`
-- [ ] Container retry events
-- [ ] IPC mirror in `nodes/<n>/stages/<s>/ipc/`
+Status: **decisions done, IPC mirror deferred**. All decision events land in `events.jsonl` keyed by `stageName` + `scopeId`. A separate per-stage `decisions.jsonl` is not yet split out — readers can filter `events.jsonl` for `type.startsWith('decision.')`. Split if/when ergonomics demand.
+
+- [x] `parseStageMarkers` decision event: every marker-parse emits `decision.marker` carrying `{ candidates, matched, payloadLen }`. The caller (pipeline-runner) emits — `parseStageMarkers` itself stays pure.
+- [x] No-match feedback event: `decision.no-match` with `{ turn }` when the autonomous-mode runner sends a no-marker retry prompt.
+- [x] Barrier evaluation event: `decision.barrier` emitted from `template-dispatch.ts:runTemplateDispatchBarrier` with `{ barrierId, template, joinPolicy, settlements, outcome }`. Recorder accessed via the process-global hook (template-dispatch is in the same process).
+- [x] Container retry event: `decision.retry` with `{ attempt, maxAttempts, reason, exhausted }` on each container respawn (including the one that exhausts the budget).
+- [ ] IPC mirror in `nodes/<n>/stages/<s>/ipc/`. Defer — IPC messages are currently deleted after read in `stage-ipc.ts:drainFromContainer`; mirroring requires copying before delete. Not blocking on transparency goals (decisions + L1 already give 90% of the diagnostic value).
 
 ### Phase 5 — L3 provider / turn details
 

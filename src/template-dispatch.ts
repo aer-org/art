@@ -9,6 +9,7 @@ import type {
   SchedulerSnapshotOptions,
 } from './node-scheduler.js';
 import { logger } from './logger.js';
+import { getActiveRecorder } from './run-recorder.js';
 import { ROOT_DISPATCH_NODE_ID, type StitchInvocation } from './stitch.js';
 
 export class TemplateDispatchState {
@@ -374,6 +375,23 @@ export async function runTemplateDispatchBarrier(
   );
 
   barrier.status = runtime.state.evaluateBarrierOutcome(barrier);
+  // L2 decision: emit the barrier evaluation result so a future reader can
+  // see "why did this stitch resolve to success/error" — the joinPolicy and
+  // per-child settlements answer that without re-running.
+  getActiveRecorder()?.event({
+    level: 'info',
+    type: 'decision.barrier',
+    scopeId: runtime.scopeId,
+    stageName: barrier.originStage,
+    message: `barrier ${barrier.template} -> ${barrier.status}`,
+    data: {
+      barrierId: barrier.id,
+      template: barrier.template,
+      joinPolicy: barrier.joinPolicy,
+      settlements: barrier.settlements,
+      outcome: barrier.status,
+    },
+  });
   runtime.state.setBarrier(barrier);
   runtime.state.deleteActiveBarrier(barrier.id);
   runtime.saveBlockedState(completedStages, saveSchedulerState);

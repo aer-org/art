@@ -993,6 +993,30 @@ describe('PipelineRunner FSM', () => {
     expect(
       fs.readFileSync(path.join(implementDir, 'prompt.source'), 'utf-8'),
     ).toBe('inline');
+
+    // L2 decision events appear in events.jsonl. Each stage emits a
+    // decision.marker line carrying the matched marker.
+    const events = fs
+      .readFileSync(path.join(runDir, 'events.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line: string) => JSON.parse(line));
+    const markerEvents = events.filter(
+      (e: { type: string }) => e.type === 'decision.marker',
+    );
+    expect(markerEvents.length).toBeGreaterThanOrEqual(2);
+    expect(
+      markerEvents.find(
+        (e: { stageName: string; data: { matched: string } }) =>
+          e.stageName === 'implement',
+      )?.data.matched,
+    ).toBe('IMPL_COMPLETE');
+    expect(
+      markerEvents.find(
+        (e: { stageName: string; data: { matched: string } }) =>
+          e.stageName === 'verify',
+      )?.data.matched,
+    ).toBe('VERIFY_PASS');
   }, 15000);
 
   it('checkpoint resume: skips completed implement, starts at verify', async () => {

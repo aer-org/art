@@ -947,6 +947,14 @@ export class PipelineRunner {
         { stage: currentStageName, turn: turnCount },
         'No stage markers found',
       );
+      this.recorder.event({
+        level: 'warn',
+        type: 'decision.no-match',
+        scopeId: this.scopeId,
+        stageName: currentStageName,
+        message: `no marker matched on turn ${turnCount}; sending retry feedback`,
+        data: { turn: turnCount },
+      });
       handle.pendingResult = createDeferred();
       handle.ipc.sendToContainer(
         `No stage markers found in the previous response. Continue working and emit the appropriate marker when done.\n\n${stageConfig.prompt}\n${commonRules}`,
@@ -966,6 +974,19 @@ export class PipelineRunner {
       await this.notify(
         `⚠️ [Turn ${turnCount}] ${currentStageName} error: ${errorDesc}`,
       );
+      this.recorder.event({
+        level: 'warn',
+        type: 'decision.retry',
+        scopeId: this.scopeId,
+        stageName: currentStageName,
+        message: `container respawn ${ctx.containerRespawnCount + 1}/${ctx.maxContainerRespawns}: ${errorDesc}`,
+        data: {
+          attempt: ctx.containerRespawnCount + 1,
+          maxAttempts: ctx.maxContainerRespawns,
+          reason: errorDesc,
+          exhausted: ctx.containerRespawnCount >= ctx.maxContainerRespawns,
+        },
+      });
       if (ctx.containerRespawnCount >= ctx.maxContainerRespawns) {
         await this.notify(
           `❌ [Turn ${turnCount}] ${currentStageName} container respawn limit exceeded (${ctx.maxContainerRespawns}) — stage failed`,
@@ -1618,6 +1639,20 @@ PAYLOAD FORMATS:
         handle.resultTexts,
         stageConfig.transitions,
       );
+      this.recorder.event({
+        level: 'info',
+        type: 'decision.marker',
+        scopeId: this.scopeId,
+        stageName: stageConfig.name,
+        message: `marker ${markers.matched?.marker ?? '<none>'}`,
+        data: {
+          candidates: stageConfig.transitions
+            .filter((t) => t.marker)
+            .map((t) => t.marker),
+          matched: markers.matched?.marker ?? null,
+          payloadLen: markers.payload ? markers.payload.length : 0,
+        },
+      });
       logger.info(
         { stage: stageConfig.name, matched: markers.matched?.marker ?? null },
         'parseStageMarkers result',
