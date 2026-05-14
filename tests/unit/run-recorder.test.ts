@@ -35,7 +35,7 @@ describe('RunRecorder.create', () => {
     const r = RunRecorder.create({
       stateDir: tmpDir,
       runId: 'run-100-aaaaaa',
-      init: { provider: 'codex', image: 'art-agent:latest', args: ['run'] },
+      init: { provider: 'codex', args: ['run', '/my/project'] },
     });
     expect(r.runId).toBe('run-100-aaaaaa');
     expect(r.runDir).toBe(path.join(tmpDir, 'runs', 'run-100-aaaaaa'));
@@ -45,12 +45,12 @@ describe('RunRecorder.create', () => {
     const meta = JSON.parse(
       fs.readFileSync(path.join(r.runDir, 'run.json'), 'utf-8'),
     );
+    expect(meta.schemaVersion).toBe(1);
     expect(meta.pid).toBe(process.pid);
     expect(meta.hostname).toBe(os.hostname());
     expect(meta.startTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(meta.provider).toBe('codex');
-    expect(meta.image).toBe('art-agent:latest');
-    expect(meta.args).toEqual(['run']);
+    expect(meta.args).toEqual(['run', '/my/project']);
   });
 
   it('auto-generates runId when omitted', () => {
@@ -85,9 +85,11 @@ describe('RunRecorder.event', () => {
     expect(lines).toHaveLength(2);
     const e1 = JSON.parse(lines[0]);
     const e2 = JSON.parse(lines[1]);
+    expect(e1.schemaVersion).toBe(1);
     expect(e1.type).toBe('stage.start');
     expect(e1.stageName).toBe('build');
     expect(e1.time).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(e2.schemaVersion).toBe(1);
     expect(e2.type).toBe('stage.end');
   });
 
@@ -150,6 +152,7 @@ describe('RunRecorder.finalize', () => {
       fs.readFileSync(path.join(r.runDir, 'summary.json'), 'utf-8'),
     );
     expect(summary).toEqual({
+      schemaVersion: 1,
       outcome: 'success',
       endTime: '2026-01-01T00:00:00.000Z',
       durationMs: 1234,

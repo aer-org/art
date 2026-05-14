@@ -14,16 +14,23 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 
+/**
+ * Schema version for run.json / summary.json / events.jsonl records. Bump on
+ * incompatible shape change; readers should refuse unknown versions.
+ */
+export const RECORDER_SCHEMA_VERSION = 1;
+
 export interface RunInitInfo {
+  schemaVersion: number;
   pid: number;
   hostname: string;
   startTime: string;
   provider?: 'codex' | 'claude';
-  image?: string;
   args?: string[];
 }
 
 export interface RunSummary {
+  schemaVersion: number;
   outcome: 'success' | 'error';
   endTime: string;
   durationMs: number;
@@ -44,6 +51,7 @@ export interface RecorderEventInput {
 }
 
 export interface RecorderEvent extends RecorderEventInput {
+  schemaVersion: number;
   time: string;
 }
 
@@ -67,7 +75,7 @@ export class RunRecorder {
   static create(opts: {
     stateDir: string;
     runId?: string;
-    init: Omit<RunInitInfo, 'pid' | 'hostname' | 'startTime'>;
+    init: Omit<RunInitInfo, 'schemaVersion' | 'pid' | 'hostname' | 'startTime'>;
   }): RunRecorder {
     const runId = opts.runId ?? generateRunId();
     const runDir = path.join(opts.stateDir, 'runs', runId);
@@ -75,6 +83,7 @@ export class RunRecorder {
     fs.mkdirSync(path.join(runDir, 'state'), { recursive: true });
 
     const initJson: RunInitInfo = {
+      schemaVersion: RECORDER_SCHEMA_VERSION,
       pid: process.pid,
       hostname: os.hostname(),
       startTime: new Date().toISOString(),
@@ -104,6 +113,7 @@ export class RunRecorder {
   event(input: RecorderEventInput): void {
     if (this.finalized) return;
     const record: RecorderEvent = {
+      schemaVersion: RECORDER_SCHEMA_VERSION,
       time: new Date().toISOString(),
       ...input,
     };
@@ -117,13 +127,17 @@ export class RunRecorder {
   }
 
   /** Write summary.json + sealed marker. Idempotent. */
-  finalize(summary: RunSummary): void {
+  finalize(summary: Omit<RunSummary, 'schemaVersion'>): void {
     if (this.finalized) return;
     this.finalized = true;
+    const out: RunSummary = {
+      schemaVersion: RECORDER_SCHEMA_VERSION,
+      ...summary,
+    };
     try {
       atomicWrite(
         path.join(this.runDir, 'summary.json'),
-        JSON.stringify(summary, null, 2),
+        JSON.stringify(out, null, 2),
       );
     } catch (err) {
       console.error(

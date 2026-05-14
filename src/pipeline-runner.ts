@@ -204,7 +204,7 @@ export class PipelineRunner {
   private manifest: RunManifest;
   private recorder: RunRecorder;
   private ownsRecorder: boolean;
-  private runStartTime: number = Date.now();
+  private runStartTime: number | null = null;
   private aborted = false;
   private activeHandles = new Map<string, StageHandle>();
   private stageSessionIds = new Map<string, string>();
@@ -260,6 +260,7 @@ export class PipelineRunner {
         init: {
           provider:
             process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex',
+          args: process.argv.slice(2),
         },
       });
       setActiveRecorder(this.recorder);
@@ -288,7 +289,8 @@ export class PipelineRunner {
       this.recorder.finalize({
         outcome: 'error',
         endTime: new Date().toISOString(),
-        durationMs: Date.now() - this.runStartTime,
+        durationMs:
+          this.runStartTime !== null ? Date.now() - this.runStartTime : 0,
         totalStages: this.manifest.stages.length,
         failedStages: this.manifest.stages.filter((s) => s.status === 'error')
           .length,
@@ -302,6 +304,9 @@ export class PipelineRunner {
    * mechanics; this runner supplies stage execution and stitch dispatch hooks.
    */
   async run(): Promise<'success' | 'error'> {
+    if (this.ownsRecorder) {
+      this.runStartTime = Date.now();
+    }
     const init = await this.initRun();
     if (!init) return 'error';
 
@@ -620,7 +625,8 @@ export class PipelineRunner {
       this.recorder.finalize({
         outcome: lastResult,
         endTime: new Date().toISOString(),
-        durationMs: Date.now() - this.runStartTime,
+        durationMs:
+          this.runStartTime !== null ? Date.now() - this.runStartTime : 0,
         totalStages: this.manifest.stages.length,
         failedStages: failed,
       });
