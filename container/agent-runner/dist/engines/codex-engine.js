@@ -339,6 +339,23 @@ export class CodexEngine {
                 }
             }
             else if (event.type === 'turn.completed') {
+                // Codex SDK turn.completed carries usage on the event itself. Surface
+                // it before the normalized turn.result so the host recorder writes
+                // turns/NNN.json before the stage advances.
+                const ev = event;
+                const usage = ev.usage ?? {};
+                yield {
+                    type: 'turn.completed',
+                    meta: {
+                        provider: 'codex',
+                        model: typeof ev.model === 'string' ? ev.model : undefined,
+                        tokensIn: usage.input_tokens ?? usage.prompt_tokens,
+                        tokensOut: usage.output_tokens ?? usage.completion_tokens,
+                        cacheReadTokens: usage.cached_input_tokens,
+                        latencyMs: typeof ev.duration_ms === 'number' ? ev.duration_ms : undefined,
+                        finishReason: 'success',
+                    },
+                };
                 yield { type: 'assistant.checkpoint', messageId: lastMessageId };
                 yield { type: 'turn.result', result: finalResponse };
             }
@@ -349,7 +366,10 @@ export class CodexEngine {
                 };
             }
             else if (event.type === 'error') {
-                yield { type: 'turn.error', error: `Codex SDK error: ${event.message}` };
+                yield {
+                    type: 'turn.error',
+                    error: `Codex SDK error: ${event.message}`,
+                };
             }
         }
     }
@@ -527,6 +547,27 @@ export class CodexEngine {
                 if (event.method === 'turn/completed') {
                     if (event.params?.turn?.id !== turnId)
                         continue;
+                    // Surface per-turn metadata. Codex app-server's turn carries
+                    // usage + model info on the turn object. Read defensively.
+                    const turn = event.params
+                        ?.turn;
+                    const usage = (turn?.usage ?? {});
+                    yield {
+                        type: 'turn.completed',
+                        meta: {
+                            provider: 'codex',
+                            model: typeof turn?.model === 'string' ? turn.model : undefined,
+                            tokensIn: usage.input_tokens ?? usage.prompt_tokens,
+                            tokensOut: usage.output_tokens ?? usage.completion_tokens,
+                            cacheReadTokens: usage.cached_input_tokens,
+                            latencyMs: typeof turn?.duration_ms === 'number'
+                                ? turn.duration_ms
+                                : undefined,
+                            finishReason: typeof turn?.status === 'string'
+                                ? turn.status
+                                : undefined,
+                        },
+                    };
                     if (lastMessageId) {
                         yield { type: 'assistant.checkpoint', messageId: lastMessageId };
                     }

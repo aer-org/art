@@ -1818,6 +1818,18 @@ PAYLOAD FORMATS:
 
   private async drainStageOutboundMessages(handle: StageHandle): Promise<void> {
     for (const message of handle.ipc.drainFromContainer()) {
+      if (
+        message.type === 'turn' &&
+        message.meta &&
+        typeof message.meta === 'object'
+      ) {
+        // L3 per-turn metadata. Write to runs/<id>/nodes/<n>/stages/<s>/turns/NNN.json.
+        this.recordStageTurn(
+          handle.name,
+          message.meta as Record<string, unknown>,
+        );
+        continue;
+      }
       if (message.type !== 'message' || typeof message.text !== 'string') {
         logger.warn(
           { stage: handle.name, type: message.type },
@@ -1830,6 +1842,41 @@ PAYLOAD FORMATS:
           ? message.sender
           : handle.name;
       await this.notify(`[${sender}] ${message.text}`);
+    }
+  }
+
+  private stageTurnCounters = new Map<string, number>();
+
+  private recordStageTurn(
+    stageName: string,
+    meta: Record<string, unknown>,
+  ): void {
+    const next = (this.stageTurnCounters.get(stageName) ?? 0) + 1;
+    this.stageTurnCounters.set(stageName, next);
+    const idx = String(next).padStart(3, '0');
+    const turnsDir = path.join(
+      this.recorder.stagePath(this.scopeId, stageName),
+      'turns',
+    );
+    try {
+      fs.mkdirSync(turnsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(turnsDir, `${idx}.json`),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            index: next,
+            recordedAt: new Date().toISOString(),
+            ...meta,
+          },
+          null,
+          2,
+        ),
+      );
+    } catch (err) {
+      console.error(
+        `[recorder] failed to write turn record for ${stageName}: ${(err as Error).message}`,
+      );
     }
   }
 

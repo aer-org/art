@@ -102,6 +102,7 @@ vi.mock('../../src/mcp-registry.js', () => ({
 interface OutputSequenceEntry {
   result: string | null;
   outbound?: string;
+  turn?: Record<string, unknown>; // simulates per-turn IPC metadata from agent-runner
 }
 
 // Each stage name maps to a list of "invocations". Each invocation is an array
@@ -169,6 +170,21 @@ vi.mock('../../src/container-runner.js', () => ({
                       text: entry.outbound,
                       sender: 'worker',
                     }),
+                  );
+                }
+                if (entry.turn) {
+                  const messagesDir = path.join(
+                    TEST_IPC_BASE,
+                    group.folder,
+                    'messages',
+                  );
+                  fs.mkdirSync(messagesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(
+                      messagesDir,
+                      `${Date.now()}-turn-${Math.random()}.json`,
+                    ),
+                    JSON.stringify({ type: 'turn', meta: entry.turn }),
                   );
                 }
                 await onOutput({ status: 'success', result: entry.result });
@@ -1032,6 +1048,12 @@ describe('PipelineRunner FSM', () => {
     expect(containerInfo.mode).toBe('agent');
     expect(Array.isArray(containerInfo.mounts)).toBe(true);
 
+    // L3 turn records written when the container emits {type:'turn', meta}.
+    // This test path doesn't inject turns (the basic L1 case), so the
+    // turns/ dir should be absent. Coverage for actual turn capture is in
+    // the dedicated test below.
+    expect(fs.existsSync(path.join(implementDir, 'turns'))).toBe(false);
+
     // Provenance + pipeline snapshot at run root.
     expect(fs.existsSync(path.join(runDir, 'pipeline.snap.json'))).toBe(true);
     const provenance = JSON.parse(
@@ -1041,6 +1063,83 @@ describe('PipelineRunner FSM', () => {
     expect(Array.isArray(provenance.agents)).toBe(true);
     expect(Array.isArray(provenance.templates)).toBe(true);
     expect(typeof provenance.env).toBe('object');
+  }, 15000);
+
+  it('writes per-turn L3 records when the container emits turn metadata', async () => {
+    const config = makeTwoStagePipelineConfig();
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.writeFileSync(
+      path.join(groupDir, 'PIPELINE.json'),
+      JSON.stringify(config, null, 2),
+    );
+
+    // implement emits two turn IPC messages then the success marker. verify
+    // emits one turn and succeeds. The mock writes type:'turn' files to the
+    // per-stage messages dir; the runner picks them up and writes
+    // runs/<id>/nodes/root/stages/<stage>/turns/NNN.json.
+    enqueueStageOutput('implement', [
+      {
+        result: '[IMPL_COMPLETE]',
+        turn: {
+          provider: 'claude',
+          model: 'claude-sonnet-4-6',
+          tokensIn: 100,
+          tokensOut: 50,
+          latencyMs: 1200,
+        },
+      },
+    ]);
+    enqueueStageOutput('verify', [
+      {
+        result: '[VERIFY_PASS]',
+        turn: { provider: 'codex', tokensIn: 30, tokensOut: 20 },
+      },
+    ]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    await runner.run();
+
+    const runDir = path.join(groupDir, '.state', 'runs', runner.getRunId());
+    const implementTurnsDir = path.join(
+      runDir,
+      'nodes',
+      'root',
+      'stages',
+      'implement',
+      'turns',
+    );
+    expect(fs.existsSync(implementTurnsDir)).toBe(true);
+    const files = fs.readdirSync(implementTurnsDir).sort();
+    expect(files).toEqual(['001.json']);
+    const t1 = JSON.parse(
+      fs.readFileSync(path.join(implementTurnsDir, '001.json'), 'utf-8'),
+    );
+    expect(t1.schemaVersion).toBe(1);
+    expect(t1.index).toBe(1);
+    expect(t1.provider).toBe('claude');
+    expect(t1.tokensIn).toBe(100);
+    expect(t1.tokensOut).toBe(50);
+    expect(t1.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const verifyTurnsDir = path.join(
+      runDir,
+      'nodes',
+      'root',
+      'stages',
+      'verify',
+      'turns',
+    );
+    const v1 = JSON.parse(
+      fs.readFileSync(path.join(verifyTurnsDir, '001.json'), 'utf-8'),
+    );
+    expect(v1.provider).toBe('codex');
   }, 15000);
 
   it('checkpoint resume: skips completed implement, starts at verify', async () => {

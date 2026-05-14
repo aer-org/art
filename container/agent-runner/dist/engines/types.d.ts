@@ -37,6 +37,19 @@ export interface RunTurnInput {
     pollIpcMessages?: () => string[];
     preCompactHookFactory?: (assistantName?: string) => HookCallback;
 }
+/** Per-turn provider metadata captured at LLM-call boundary. */
+export interface TurnMeta {
+    provider: 'claude' | 'codex';
+    model?: string;
+    tokensIn?: number;
+    tokensOut?: number;
+    cacheReadTokens?: number;
+    cacheCreateTokens?: number;
+    latencyMs?: number;
+    costUsd?: number;
+    finishReason?: string;
+    numTurns?: number;
+}
 export type NormalizedEvent = {
     type: 'session.started';
     sessionId: string;
@@ -63,6 +76,9 @@ export type NormalizedEvent = {
     taskId: string;
     status: string;
     summary: string;
+} | {
+    type: 'turn.completed';
+    meta: TurnMeta;
 } | {
     type: 'turn.result';
     result: string | null;

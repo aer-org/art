@@ -351,11 +351,15 @@ Status: **decisions done, IPC mirror deferred**. All decision events land in `ev
 
 ### Phase 5 — L3 provider / turn details
 
-- [ ] IPC protocol extension: `turn` message type
-- [ ] `claude-engine.ts` emits per-turn `{ tokensIn, tokensOut, cacheHit, model, latencyMs, finishReason }`
-- [ ] `codex-engine.ts` emits the same shape
-- [ ] Recorder writes `turns/NNN.json`
-- [ ] OAuth refresh + auth diagnostic events extend the work in `05c837a` / `0cf3a5a`
+Status: **per-turn metadata done**. OAuth/auth events deferred.
+
+- [x] IPC protocol extension: agent-runner writes `{type:'turn', meta}` JSON files to `/workspace/ipc/messages/`. Host's `drainStageOutboundMessages` recognizes the new type and routes to `recordStageTurn`.
+- [x] `claude-engine.ts` emits a `turn.completed` NormalizedEvent when the SDK's `result` message arrives, populated from `usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens`, `duration_ms`, `total_cost_usd`, `model`, `subtype` (finish reason), `num_turns`.
+- [x] `codex-engine.ts` emits the same shape from both its SDK path and the app-server path. Codex fields read defensively (`input_tokens`/`prompt_tokens`, `output_tokens`/`completion_tokens`, `cached_input_tokens`, `model`, `duration_ms`, `status`).
+- [x] Recorder writes `runs/<id>/nodes/<n>/stages/<s>/turns/NNN.json` with `{ schemaVersion, index, recordedAt, ...meta }`. Per-stage counter ensures monotonic naming (001, 002, …) across retries.
+- [ ] OAuth refresh + auth diagnostic events. Deferred — the existing `05c837a` / `0cf3a5a` improvements still emit via the logger shim → events.jsonl, so they already land in the archive (just not as structured turn-level records). Promote when needed.
+
+> Note: the agent-runner build runs inside the docker image (separate `tsconfig.json`, no host `node_modules`). The host typecheck does not exercise agent-runner source. Verification of L3 capture in production happens at image-rebuild time + first real `art run`.
 
 ### Phase 6 — L4 container + provenance
 

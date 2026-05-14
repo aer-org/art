@@ -510,6 +510,17 @@ function handleNormalizedEvent(
         `Task notification: task=${event.taskId} status=${event.status} summary=${event.summary}`,
       );
       return;
+    case 'turn.completed':
+      // Surface per-turn provider metadata to the host via the outbound IPC
+      // channel. Best-effort: failure here just loses one telemetry row.
+      try {
+        writeIpcMessage({ type: 'turn', meta: event.meta });
+      } catch (err) {
+        log(
+          `Failed to emit turn IPC: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return;
     case 'turn.result':
       incrementResultCount();
       if (event.result) resultTexts.push(event.result);
@@ -528,6 +539,7 @@ function handleNormalizedEvent(
 }
 
 const IPC_TASKS_DIR = '/workspace/ipc/tasks';
+const IPC_MESSAGES_DIR = '/workspace/ipc/messages';
 
 function writeIpcTask(data: Record<string, unknown>): void {
   fs.mkdirSync(IPC_TASKS_DIR, { recursive: true });
@@ -536,6 +548,20 @@ function writeIpcTask(data: Record<string, unknown>): void {
   const tmp = filepath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data));
   fs.renameSync(tmp, filepath); // atomic
+}
+
+/**
+ * Outbound IPC message channel — host drains these via stage-ipc.drainFromContainer.
+ * Used for typed events the host should surface beyond the stdout stream
+ * (e.g. per-turn LLM metadata for the L3 transparency layer).
+ */
+function writeIpcMessage(data: Record<string, unknown>): void {
+  fs.mkdirSync(IPC_MESSAGES_DIR, { recursive: true });
+  const filename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.json`;
+  const filepath = path.join(IPC_MESSAGES_DIR, filename);
+  const tmp = filepath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data));
+  fs.renameSync(tmp, filepath);
 }
 
 function computeInputHash(tool: string, input: unknown): string {
