@@ -1,9 +1,10 @@
 /**
- * Run manifest and current-run persistence.
+ * Run manifest CRUD (legacy format).
  *
- * CRUD helpers for pipeline run tracking:
- * - _current.json: which run is active (PID guard)
- * - {runId}.json: per-run manifest with stage history
+ * Per-run manifest at `<stateDir>/runs/{runId}.json` with stage history.
+ * The newer transparency layer (RunRecorder + run-registry) coexists with
+ * this in transitional form; later work migrates the server controller to
+ * read from `runs/<id>/run.json` and `summary.json` instead.
  */
 import fs from 'fs';
 import path from 'path';

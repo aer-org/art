@@ -27,16 +27,9 @@ export async function setupEngine(opts: {
     ensureImages = false,
   } = opts;
 
-  // Ensure TUI env vars are set (callers should set these before importing engine modules,
-  // but set here as fallback so logger always routes to file)
-  if (!process.env.ART_TUI_MODE) {
-    process.env.ART_TUI_MODE = 'true';
-    process.env.ART_TUI_LOG_DIR = path.join(artDir, '.state', 'logs');
-  }
-
   const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
-  // Import engine modules (logger will see ART_TUI_LOG_DIR)
+  // Import engine modules
   const { setDataDir, setCredentialProxyPort, getPackageAssetPath } =
     await import('../config.js');
   const { initRuntime } = await import('../container-runtime.js');

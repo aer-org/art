@@ -106,10 +106,6 @@ export async function run(
 
   const stateDir = path.join(artDir, '.state');
 
-  // Set TUI env vars before any engine import so logger routes to file
-  process.env.ART_TUI_MODE = 'true';
-  process.env.ART_TUI_LOG_DIR = path.join(stateDir, 'logs');
-
   const { generateRunId } = await import('../run-manifest.js');
 
   // Generate run ID for this execution

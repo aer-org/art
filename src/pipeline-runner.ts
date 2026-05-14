@@ -24,6 +24,11 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  RunRecorder,
+  getActiveRecorder,
+  setActiveRecorder,
+} from './run-recorder.js';
+import {
   generateRunId,
   writeRunManifest,
   type RunManifest,
@@ -197,6 +202,9 @@ export class PipelineRunner {
   private runId: string;
   private scopeId: string | undefined;
   private manifest: RunManifest;
+  private recorder: RunRecorder;
+  private ownsRecorder: boolean;
+  private runStartTime: number = Date.now();
   private aborted = false;
   private activeHandles = new Map<string, StageHandle>();
   private stageSessionIds = new Map<string, string>();
@@ -241,6 +249,31 @@ export class PipelineRunner {
       status: 'running',
       stages: [],
     };
+
+    // Recorder lifecycle: root PipelineRunner (no scopeId) owns the recorder
+    // and writes runs/<runId>/. Stitched-child runners share the parent's
+    // recorder via the process-global hook.
+    if (scopeId === undefined) {
+      this.recorder = RunRecorder.create({
+        stateDir: this.stateDir,
+        runId: this.runId,
+        init: {
+          provider:
+            process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex',
+        },
+      });
+      setActiveRecorder(this.recorder);
+      this.ownsRecorder = true;
+    } else {
+      const active = getActiveRecorder();
+      if (!active) {
+        throw new Error(
+          'Stitched child PipelineRunner constructed without an active recorder',
+        );
+      }
+      this.recorder = active;
+      this.ownsRecorder = false;
+    }
   }
 
   getRunId(): string {
@@ -251,6 +284,17 @@ export class PipelineRunner {
     this.aborted = true;
     const handles = [...this.activeHandles.values()];
     await Promise.all(handles.map((h) => this.closeAndWait(h)));
+    if (this.ownsRecorder && !this.recorder.isFinalized()) {
+      this.recorder.finalize({
+        outcome: 'error',
+        endTime: new Date().toISOString(),
+        durationMs: Date.now() - this.runStartTime,
+        totalStages: this.manifest.stages.length,
+        failedStages: this.manifest.stages.filter((s) => s.status === 'error')
+          .length,
+      });
+      setActiveRecorder(null);
+    }
   }
 
   /**
@@ -567,6 +611,21 @@ export class PipelineRunner {
     this.manifest.endTime = new Date().toISOString();
     this.manifest.status = lastResult;
     writeRunManifest(this.stateDir, this.manifest);
+
+    // Finalize recorder: only the root runner that owns it.
+    if (this.ownsRecorder) {
+      const failed = this.manifest.stages.filter(
+        (s) => s.status === 'error',
+      ).length;
+      this.recorder.finalize({
+        outcome: lastResult,
+        endTime: new Date().toISOString(),
+        durationMs: Date.now() - this.runStartTime,
+        totalStages: this.manifest.stages.length,
+        failedStages: failed,
+      });
+      setActiveRecorder(null);
+    }
 
     pipelineLogStream.write(
       `\n=== Pipeline ${lastResult === 'success' ? 'completed' : 'failed'}: ${new Date().toISOString()} ===\n`,
