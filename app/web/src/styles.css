@@ -854,6 +854,27 @@ input, textarea {
   color: #e35a5a;
 }
 
+.runs-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.runs-search {
+  flex: 0 1 320px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 0;
+}
+.runs-state-chips {
+  display: flex;
+  gap: 4px;
+}
+
 .runs-table {
   width: 100%;
   border-collapse: collapse;

@@ -8,16 +8,21 @@
  * No filters yet; sort is server-side (newest first). Phase J adds search
  * + filter chips.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { api, type RunHeader } from '../lib/api.ts';
+import { api, type RunHeader, type RunState } from '../lib/api.ts';
 import { hrefFor } from '../router.tsx';
 
 const POLL_MS = 5000;
+const STATES: RunState[] = ['live', 'crashed', 'sealed'];
 
 export function RunsListPage(props: { projectDir: string | null }): JSX.Element {
   const [runs, setRuns] = useState<RunHeader[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [stateFilter, setStateFilter] = useState<Set<RunState>>(
+    () => new Set(STATES),
+  );
 
   useEffect(() => {
     if (!props.projectDir) return;
@@ -79,20 +84,108 @@ export function RunsListPage(props: { projectDir: string | null }): JSX.Element 
 
   return (
     <div className="runs-page">
-      <table className="runs-table">
-        <thead>
-          <tr>
-            <th>Run ID</th>
-            <th>State</th>
-            <th>Started</th>
-            <th>Duration</th>
-            <th>Outcome</th>
-            <th>Stages</th>
-            <th>Provider</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((r) => (
+      <RunsFilterBar
+        query={query}
+        setQuery={setQuery}
+        stateFilter={stateFilter}
+        setStateFilter={setStateFilter}
+        total={runs.length}
+      />
+      <RunsTable
+        runs={runs}
+        query={query}
+        stateFilter={stateFilter}
+      />
+    </div>
+  );
+}
+
+function RunsFilterBar({
+  query,
+  setQuery,
+  stateFilter,
+  setStateFilter,
+  total,
+}: {
+  query: string;
+  setQuery: (s: string) => void;
+  stateFilter: Set<RunState>;
+  setStateFilter: (s: Set<RunState>) => void;
+  total: number;
+}): JSX.Element {
+  return (
+    <div className="runs-filter">
+      <input
+        className="runs-search"
+        placeholder="search runId / provider / outcome…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        spellCheck={false}
+      />
+      <div className="runs-state-chips">
+        {STATES.map((s) => (
+          <button
+            key={s}
+            className={`mount-tab ${stateFilter.has(s) ? 'active' : ''}`}
+            onClick={() => {
+              const next = new Set(stateFilter);
+              if (next.has(s)) next.delete(s);
+              else next.add(s);
+              setStateFilter(next);
+            }}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+      <span className="muted" style={{ marginLeft: 'auto', fontSize: 11 }}>
+        {total} total
+      </span>
+    </div>
+  );
+}
+
+function RunsTable({
+  runs,
+  query,
+  stateFilter,
+}: {
+  runs: RunHeader[];
+  query: string;
+  stateFilter: Set<RunState>;
+}): JSX.Element {
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return runs.filter((r) => {
+      if (!stateFilter.has(r.state)) return false;
+      if (!q) return true;
+      return (
+        r.runId.toLowerCase().includes(q) ||
+        (r.provider ?? '').toLowerCase().includes(q) ||
+        (r.outcome ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [runs, query, stateFilter]);
+
+  if (filtered.length === 0) {
+    return <p className="muted">No runs match the current filter.</p>;
+  }
+
+  return (
+    <table className="runs-table">
+      <thead>
+        <tr>
+          <th>Run ID</th>
+          <th>State</th>
+          <th>Started</th>
+          <th>Duration</th>
+          <th>Outcome</th>
+          <th>Stages</th>
+          <th>Provider</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filtered.map((r) => (
             <tr key={r.runId}>
               <td>
                 <a href={hrefFor(`/runs/${encodeURIComponent(r.runId)}`)}>
@@ -115,7 +208,6 @@ export function RunsListPage(props: { projectDir: string | null }): JSX.Element 
           ))}
         </tbody>
       </table>
-    </div>
   );
 }
 

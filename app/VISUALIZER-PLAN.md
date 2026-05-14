@@ -230,14 +230,13 @@ Top toolbar row exposes 5 buttons (`info | timeline | decisions | cost | events`
 - Server: new `GET /api/runs/:runId/stages` returns `Array<{nodeId, stageName, stage, turnCount, turnSum}>` with turns aggregated server-side; reused by Timeline + Cost.
 
 ### Phase I — Live-mode parity
-- [ ] Convert `LivePage` to use the new RunDetailPage with 5s polling and the latest non-sealed run
-- [ ] Eventually deprecate the old NodeModal once feature parity confirmed
+- [ ] **Deferred.** Live and Runs tabs serve different intents (live monitoring vs. historical inspection) and the existing LivePage works reliably. Unifying them is a significant refactor with limited user-visible gain; revisit if cross-tab inconsistency becomes a real complaint.
 
 ### Phase J — Polish
-- [ ] Shareable URLs (`/runs/:id?stage=foo&panel=diff`)
-- [ ] Search across runs
-- [ ] Export run as tarball
-- [ ] Keyboard navigation (arrow keys between stages)
+- [x] **Shareable URLs**: query params on `#/runs/:runId` — `?stage=foo&panel=diff&mount=src&l4=cost`. Selecting a stage / opening an L3 panel / opening an L4 overlay all push the params via `history.replaceState`. Reload or paste-share preserves the exact view. One-way push (URL is only read on mount); user-driven hash changes (back/forward) still navigate normally.
+- [x] **Search + state filter** on Runs list. Substring match across runId/provider/outcome + state chips toggle for `live | crashed | sealed`. Total count shown.
+- [ ] Export run as tarball — deferred (CLI alternative: `tar czf - __art__/.state/runs/<id>`).
+- [ ] Keyboard navigation (arrow keys between stages) — deferred.
 
 ---
 

@@ -30,6 +30,7 @@ import {
   type GraphNode,
   type RunDetail,
 } from '../lib/api.ts';
+import { replaceRunDetailParams } from '../router.tsx';
 
 const LIVE_POLL_MS = 5000;
 
@@ -43,18 +44,60 @@ const L4_TITLES: Record<L4Kind, string> = {
   events: 'Events (raw)',
 };
 
-export function RunDetailPage(props: { runId: string }): JSX.Element {
+const L3_KINDS: L3PanelKind[] = [
+  'prompt',
+  'initial',
+  'command',
+  'mounts',
+  'diff',
+  'turns',
+  'decisions',
+  'stream',
+];
+const L4_KINDS: L4Kind[] = ['info', 'timeline', 'decisions', 'cost', 'events'];
+
+export function RunDetailPage(props: {
+  runId: string;
+  initialParams?: URLSearchParams;
+}): JSX.Element {
+  const init = props.initialParams;
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [graph, setGraph] = useState<{
     nodes: GraphNode[];
     edges: GraphEdge[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedStage, setSelectedStage] = useState<string | null>(null);
-  const [l3, setL3] = useState<{ kind: L3PanelKind; mount?: string } | null>(
-    null,
+  const [selectedStage, setSelectedStage] = useState<string | null>(
+    init?.get('stage') ?? null,
   );
-  const [l4, setL4] = useState<L4Kind | null>(null);
+  const [l3, setL3] = useState<{ kind: L3PanelKind; mount?: string } | null>(
+    () => {
+      const p = init?.get('panel');
+      if (p && L3_KINDS.includes(p as L3PanelKind)) {
+        return {
+          kind: p as L3PanelKind,
+          mount: init?.get('mount') ?? undefined,
+        };
+      }
+      return null;
+    },
+  );
+  const [l4, setL4] = useState<L4Kind | null>(() => {
+    const k = init?.get('l4');
+    return k && L4_KINDS.includes(k as L4Kind) ? (k as L4Kind) : null;
+  });
+
+  // Sync URL ←→ state. One-way push (state → URL via replaceState); URL
+  // is only read on mount. Reloading restores the same view; copying the
+  // URL shares the exact panel a teammate should see.
+  useEffect(() => {
+    replaceRunDetailParams(props.runId, {
+      stage: selectedStage,
+      panel: l3?.kind ?? null,
+      mount: l3?.mount ?? null,
+      l4: l4 ?? null,
+    });
+  }, [props.runId, selectedStage, l3, l4]);
 
   useEffect(() => {
     let cancelled = false;

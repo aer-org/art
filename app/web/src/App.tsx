@@ -77,7 +77,7 @@ export function App(): JSX.Element {
       )}
       {route.kind === 'runs-list' && <RunsListPage projectDir={projectDir} />}
       {route.kind === 'run-detail' && (
-        <RunDetailPage runId={route.runId} />
+        <RunDetailPage runId={route.runId} initialParams={route.params} />
       )}
     </>
   );
