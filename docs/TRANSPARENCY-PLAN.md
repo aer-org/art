@@ -280,20 +280,31 @@ Each phase is an independent PR. Phases 1 and 2 are behavior-preserving (same ou
 
 ### Phase 1 — Foundation (`run-registry` + `RunRecorder` skeleton, layout migration, logger removal)
 
-- [ ] `src/run-registry.ts` with `listRuns / liveRuns / crashedRuns / sealedRuns / findRun`
-- [ ] `src/run-recorder.ts` with run-dir creation, `event`/`startStage`/`finalize`, sealed marker
-- [ ] `runs/<id>/run.json` includes `pid`, `hostname`, `startTime`, `provider`, `image`, `args`
-- [ ] `pipeline-state.ts` path resolver delegated to `RunRecorder`
-- [ ] Remove the four mid-run `writeRunManifest()` calls in `pipeline-runner.ts`; insert `recorder.event()` equivalents
-- [ ] `summary.json` + `sealed` written at finalize
-- [ ] `app/server/run-controller.ts` migrated to `run-registry`
-- [ ] `app/server/pipeline-watcher.ts` state path updated
-- [ ] **Delete `src/logger.ts`** and remove pino + pino-pretty deps
-- [ ] Migrate every `logger.info/debug/warn/error` call site to `recorder.event(...)`; for genuinely fatal cases, also `console.error(...)`
-- [ ] Add the 3 surviving CLI output sites (run start/end one-liners, pre-recorder fatal errors path)
-- [ ] Remove `ART_TUI_LOG_DIR` branch in engine-setup
-- [ ] Remove stale `_current.json` doc comment in `run-manifest.ts`
-- [ ] Tests rewritten for new layout
+Status: **complete on `feat/transparency-foundation`**. Commits `68ae969` (plan doc) → `60d0e5e` (foundation) → `bf2e1c6` (self-review fixes) → `42196f8` (lockstep migration).
+
+- [x] `src/run-registry.ts` with `listRuns / liveRuns / crashedRuns / sealedRuns / findRun`
+- [x] `src/run-recorder.ts` with run-dir creation, `event`/`finalize`, sealed marker. `startStage` deferred to Phase 3 (no consumer until L1).
+- [x] `runs/<id>/run.json` includes `pid`, `hostname`, `startTime`, `provider`, `args`, `schemaVersion`. `image` dropped — per-stage in this codebase, no single value applies at run level.
+- [x] `pipeline-state.ts` path resolver delegated to `RunRecorder`. PipelineRunner now holds `runStateDir = recorder.stateDir()` and all save/load/delete state calls flow through it.
+- [x] Removed the four mid-run `writeRunManifest()` calls in `pipeline-runner.ts`. Existing `logger.*` calls at those sites already route to `events.jsonl` via the shim, so no replacement events were needed.
+- [x] `summary.json` + `sealed` written at finalize (also on abort)
+- [x] `app/server/run-controller.ts` migrated to scan `runs/<id>/` folders and synthesize the legacy `RunManifest` shape from `run.json` + `sealed` + `summary.json`. Status derived: `sealed && summary.outcome` → success/error; alive PID on same host → running; else cancelled.
+- [x] `app/server/pipeline-watcher.ts` state path updated. Chokidar watches per-run paths; `read()` picks the latest run folder.
+- [~] **`src/logger.ts` replaced by a thin shim** (not deleted). pino + pino-pretty deps removed; `ART_TUI_LOG_DIR` branch removed. The shim keeps the pino-compatible API (`logger.info(obj, msg)`) and routes events to the active recorder + stderr for warn/error/fatal. Functionally equivalent to deleting + migrating every site, but avoids touching ~90 call sites surgically. Documented in §7.
+- [x] Migrate every `logger.*` call site to `recorder.event(...)`; for fatal cases, also `console.error(...)` — handled by the shim. Sites unchanged; behavior matches the design.
+- [ ] Add the 3 surviving CLI output sites (run start/end one-liners, pre-recorder fatal errors path). Not done — current CLI behavior unchanged. Existing `console.error` paths (e.g. `cli/run.ts:101` for missing `__art__/`) already serve case 2; cases 1 and 3 (run start/end summary line, size-gate prompt) come in Phase 3.
+- [x] Remove `ART_TUI_LOG_DIR` branch in engine-setup
+- [x] Remove stale `_current.json` doc comment in `run-manifest.ts`. Also pared the file down to `generateRunId` + the in-memory `RunManifest` type; writers removed.
+- [x] Tests rewritten for new layout. 400/400 unit tests pass. `run-manifest.test.ts` reduced to `generateRunId` only; `pipeline-runner.test.ts` resume/post-run tests now thread an explicit `runId` and use a new `runStateDir(groupDir, runId)` helper.
+
+**Phase 1 self-review findings** (`bf2e1c6` addressed the first three; the last three are deferred to a follow-up):
+
+- [x] Add `schemaVersion` to run.json / summary.json / events.jsonl records
+- [x] Capture `runStartTime` at `run()` entry instead of construct time
+- [x] Drop `image` from `run.json`; add `args` (process.argv.slice(2))
+- [ ] PipelineRunner constructor has filesystem side effects (creates run dir). Move to an explicit `start()` step.
+- [ ] Process-global recorder hook (`setActiveRecorder` / `getActiveRecorder`) is fragile — invariant ("one active at a time") is implicit. Consider explicit DI through the constructor.
+- [ ] Logger shim has no LOG_LEVEL filtering — `debug` events always archived. Add filtering by `process.env.LOG_LEVEL`.
 
 ### Phase 2 — Stream sink migration (no new data, just relocation)
 
@@ -382,6 +393,6 @@ Each phase is an independent PR. Phases 1 and 2 are behavior-preserving (same ou
 
 - [ ] Retention policy default: keep last N runs (e.g. 10), bound by disk size, or both?
 - [ ] Redaction: prompts can include user secrets via env. Do we need a redaction pass before persisting, or rely on the env whitelist in provenance?
-- [ ] Schema versioning: each L1/L2/L3 record should carry a `schemaVersion`. What to do on mismatch — best-effort read or hard fail?
+- [x] Schema versioning: each record carries `schemaVersion`. **Decision** (committed in `bf2e1c6`): start at `1`; readers refuse unknown versions (hard fail on mismatch). Bump on any incompatible shape change.
 - [ ] PID start-time tracking to defeat reuse: defer to v2 unless a real false-positive is observed?
 - [ ] Per-mount opt-out of diff tracking (`mounts: { foo: { mode: "rw", track: false } }`): worth designing now, or defer until users ask?
