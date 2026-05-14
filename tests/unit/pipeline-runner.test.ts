@@ -3018,8 +3018,7 @@ describe('Stitch integration', () => {
       'outer',
     );
     const outerNode = (i: number) => dispatchChildNodeId(outerDispatch, i);
-    const outerMid = (i: number) =>
-      dispatchStageName(outerDispatch, i, 'mid');
+    const outerMid = (i: number) => dispatchStageName(outerDispatch, i, 'mid');
 
     const innerDispatch = (i: number) =>
       stitchInvocation(outerNode(i), outerMid(i), 'inner');
