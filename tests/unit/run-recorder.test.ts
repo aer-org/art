@@ -225,6 +225,44 @@ describe('RunRecorder.reattach', () => {
   });
 });
 
+describe('RunRecorder.stagePath', () => {
+  it('returns runs/<id>/nodes/<n>/stages/<s>/ and creates the dir', () => {
+    const r = RunRecorder.create({
+      stateDir: tmpDir,
+      runId: 'run-1-aaaaaa',
+      init: {},
+    });
+    const p = r.stagePath('d_abc12_0', 'build');
+    expect(p).toBe(
+      path.join(r.runDir, 'nodes', 'd_abc12_0', 'stages', 'build'),
+    );
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it('normalizes undefined nodeId to "root"', () => {
+    const r = RunRecorder.create({
+      stateDir: tmpDir,
+      runId: 'run-1-aaaaaa',
+      init: {},
+    });
+    const p = r.stagePath(undefined, 'init');
+    expect(p).toBe(path.join(r.runDir, 'nodes', 'root', 'stages', 'init'));
+  });
+
+  it('joins a filename when provided', () => {
+    const r = RunRecorder.create({
+      stateDir: tmpDir,
+      runId: 'run-1-aaaaaa',
+      init: {},
+    });
+    const f = r.stagePath('d_abc_0', 'build', 'prompt.txt');
+    expect(f).toBe(
+      path.join(r.runDir, 'nodes', 'd_abc_0', 'stages', 'build', 'prompt.txt'),
+    );
+    expect(fs.existsSync(path.dirname(f))).toBe(true);
+  });
+});
+
 describe('active recorder hook', () => {
   it('setActiveRecorder / getActiveRecorder roundtrip', () => {
     const r = RunRecorder.create({

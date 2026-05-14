@@ -8,6 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { createHash } from 'crypto';
 
 import { spawn } from 'child_process';
 
@@ -1033,10 +1034,18 @@ export class PipelineRunner {
 
     // Track completed stage
     completedStages.push(currentStageName);
+    const stageDuration = Date.now() - stageStartTime;
     this.manifest.stages.push({
       name: currentStageName,
       status: isErrorTransition ? 'error' : 'success',
-      duration: Date.now() - stageStartTime,
+      duration: stageDuration,
+    });
+    this.recordStageOutcome(currentStageName, {
+      result: isErrorTransition ? 'error' : 'success',
+      matchedMarker: matched.marker,
+      transitionTarget: targetName,
+      durationMs: stageDuration,
+      payloadLen: payload ? payload.length : undefined,
     });
 
     // Close the container first, then retrieve session ID
@@ -1172,6 +1181,23 @@ PAYLOAD FORMATS:
     completedStages: string[],
     saveSchedulerState?: (options?: SchedulerSnapshotOptions) => void,
   ): Promise<TransitionOutcome> {
+    // L1 stitch invocation event. Captured before children run so the
+    // events.jsonl timeline shows fan-out before fan-in.
+    this.recorder.event({
+      level: 'info',
+      type: 'stitch.invoked',
+      scopeId: this.scopeId,
+      nodeId: this.scopeId ?? 'root',
+      stageName: invocation.barrier.originStage,
+      message: `stitch ${invocation.barrier.template} × ${invocation.children.length}`,
+      data: {
+        template: invocation.barrier.template,
+        joinPolicy: invocation.barrier.joinPolicy,
+        childCount: invocation.children.length,
+        childNodeIds: invocation.children.map((c) => c.node.id),
+        downstreamNext: invocation.barrier.downstreamNext,
+      },
+    });
     return runTemplateStitchInvocation(
       this.templateDispatchRuntime(),
       invocation,
@@ -1254,6 +1280,127 @@ PAYLOAD FORMATS:
     return null;
   }
 
+  /**
+   * Write the L1 stage I/O record at spawn time.
+   *
+   * Captures the post-substitution prompt / command / payload handoff that
+   * the stage actually executes, plus the dispatch coordinates of the
+   * stitched lane if any. The exit-side fields (matched marker, exit code,
+   * duration) are filled in by `recordStageOutcome` when the stage finishes.
+   *
+   * Best-effort: any individual write that fails is logged via console.error
+   * (see RunRecorder write-failure policy) and the stage continues. The
+   * record is not part of run integrity — losing it doesn't corrupt the run.
+   */
+  private recordStageInputs(
+    stageConfig: PipelineStage,
+    initialPrompt: string,
+    ephemeralSystemPrompt: string | undefined,
+  ): void {
+    const stageDir = this.recorder.stagePath(this.scopeId, stageConfig.name);
+
+    try {
+      if (stageConfig.prompt) {
+        fs.writeFileSync(path.join(stageDir, 'prompt.txt'), stageConfig.prompt);
+      }
+      if (stageConfig.command) {
+        fs.writeFileSync(
+          path.join(stageDir, 'command.sh'),
+          stageConfig.command,
+        );
+      }
+      if (initialPrompt || ephemeralSystemPrompt) {
+        const blocks: string[] = [];
+        if (initialPrompt) blocks.push(initialPrompt);
+        if (ephemeralSystemPrompt) {
+          blocks.push('\n--- ephemeral system prompt ---\n');
+          blocks.push(ephemeralSystemPrompt);
+        }
+        fs.writeFileSync(path.join(stageDir, 'initial.txt'), blocks.join(''));
+      }
+      if (stageConfig.dispatch) {
+        fs.writeFileSync(
+          path.join(stageDir, 'substitutions.json'),
+          JSON.stringify(
+            {
+              insertId: stageConfig.dispatch.nodeId,
+              index: stageConfig.dispatch.copyIndex ?? 0,
+              invocationId: stageConfig.dispatch.invocationId,
+              parentNodeId: stageConfig.dispatch.parentNodeId,
+              localName: stageConfig.dispatch.localName,
+            },
+            null,
+            2,
+          ),
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[recorder] failed to write L1 stage inputs for ${stageConfig.name}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Write the L1 stage outcome record at stage completion. Aggregates start
+   * info (prompt/command refs implied by the existing files in stageDir) with
+   * the runtime outcome (matched marker, transition target, exit code,
+   * duration, retry count). Best-effort — see recordStageInputs.
+   */
+  private recordStageOutcome(
+    stageName: string,
+    outcome: {
+      result: 'success' | 'error';
+      matchedMarker?: string;
+      transitionTarget?: string | string[] | null;
+      durationMs: number;
+      retryCount?: number;
+      payloadLen?: number;
+    },
+  ): void {
+    const stageDir = this.recorder.stagePath(this.scopeId, stageName);
+    // Provenance hashes of the per-stage input files (prompt.txt /
+    // initial.txt / command.sh). These let a future reader verify "the
+    // on-disk prompt is the one this stage actually ran with".
+    const hashOf = (filename: string): string | undefined => {
+      const fp = path.join(stageDir, filename);
+      if (!fs.existsSync(fp)) return undefined;
+      try {
+        return createHash('sha256').update(fs.readFileSync(fp)).digest('hex');
+      } catch {
+        return undefined;
+      }
+    };
+    const record = {
+      schemaVersion: 1,
+      stageName,
+      nodeId: this.scopeId ?? 'root',
+      result: outcome.result,
+      matchedMarker: outcome.matchedMarker,
+      transitionTarget: outcome.transitionTarget,
+      durationMs: outcome.durationMs,
+      retryCount: outcome.retryCount,
+      payloadLen: outcome.payloadLen,
+      finishedAt: new Date().toISOString(),
+      inputHashes: {
+        prompt: hashOf('prompt.txt'),
+        initial: hashOf('initial.txt'),
+        command: hashOf('command.sh'),
+        substitutions: hashOf('substitutions.json'),
+      },
+    };
+    try {
+      fs.writeFileSync(
+        path.join(stageDir, 'stage.json'),
+        JSON.stringify(record, null, 2),
+      );
+    } catch (err) {
+      console.error(
+        `[recorder] failed to write L1 stage outcome for ${stageName}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   // --- Stage Containers ---
 
   /**
@@ -1267,6 +1414,11 @@ PAYLOAD FORMATS:
     ephemeralSystemPrompt?: string,
   ): StageHandle {
     const subFolder = this.stageSubFolder(stageConfig.name);
+
+    // L1 capture: write per-stage I/O record at spawn time. We write the
+    // *post-substitution* prompt/command because that's what the stage
+    // actually executes.
+    this.recordStageInputs(stageConfig, initialPrompt, ephemeralSystemPrompt);
 
     // Build internal mounts (group + project + sub-path overrides)
     const internalMounts = this.buildStageMounts(stageConfig);

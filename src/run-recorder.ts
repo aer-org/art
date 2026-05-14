@@ -109,6 +109,26 @@ export class RunRecorder {
     return path.join(this.runDir, 'state');
   }
 
+  /**
+   * Path to a stage's per-stage folder under runs/<id>/nodes/<n>/stages/<s>/.
+   * Creates the folder if it doesn't exist. With `filename`, joins it on
+   * the result. nodeId === undefined refers to the root dispatch node.
+   */
+  stagePath(
+    nodeId: string | undefined,
+    stageName: string,
+    filename?: string,
+  ): string {
+    const node = nodeId ?? 'root';
+    const base = path.join(this.runDir, 'nodes', node, 'stages', stageName);
+    try {
+      fs.mkdirSync(base, { recursive: true });
+    } catch {
+      // best-effort; subsequent writes will surface real failures
+    }
+    return filename ? path.join(base, filename) : base;
+  }
+
   /** Append one event to events.jsonl. Best-effort (telemetry loss < run integrity). */
   event(input: RecorderEventInput): void {
     if (this.finalized) return;

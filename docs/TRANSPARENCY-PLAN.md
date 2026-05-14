@@ -314,10 +314,12 @@ Status: **complete on `feat/transparency-foundation`**. Commits `68ae969` (plan 
 
 ### Phase 3 — L1 stage I/O
 
-- [ ] Capture `promptSource` (path + sha256) and `resolvedSystemPrompt` (hash in record, full text in `prompt.txt`)
-- [ ] Capture `initialPrompt` / `ephemeralSystemPrompt` from `buildPayloadHandoff`
-- [ ] Capture `substitutions` map (`{ insertId, index, payloadFields }`)
-- [ ] Capture `resolvedCommand`, `shell`, `timeout`, env snapshot for command mode
+Status: **base subset done**. Per-stage I/O records written at `runs/<id>/nodes/<n>/stages/<s>/`. Artifact diff + size gate deferred (significant new infrastructure: shadow git, host requirement on git binary).
+
+- [~] Capture `promptSource` (path + sha256) and `resolvedSystemPrompt`. Full text written to `prompt.txt`; sha256 captured in `stage.json.inputHashes.prompt`. `promptSource` path (which `agents/<ref>.md` was resolved from) **not yet captured** — needs threading through `pipeline-config.ts` agent-ref resolution.
+- [x] Capture `initialPrompt` / `ephemeralSystemPrompt` from `buildPayloadHandoff` → `initial.txt`
+- [~] Capture `substitutions` map. `insertId`/`index`/`invocationId`/`parentNodeId`/`localName` written to `substitutions.json` for stitched stages. Per-lane payload fields **not yet captured** — would require exposing the substitution map on `PipelineStageDispatch`.
+- [~] Capture `resolvedCommand`. Full command written to `command.sh`; sha256 in `stage.json.inputHashes.command`. `shell` / `timeout` / `env` snapshot **not yet captured** — straightforward follow-up; add to stage.json or a separate `command.json`.
 - [ ] Artifact diff per writeable mount:
   - [ ] At stage start, hardlink-copy each rw mount into `runs/<id>/.tmp/<stage>/`
   - [ ] At stage end, `git diff --no-index` against current rw mount → save to `diff/<mount>.diff` + numstat to `diff/summary.json`
@@ -330,8 +332,12 @@ Status: **complete on `feat/transparency-foundation`**. Commits `68ae969` (plan 
   Continue? [y/N]
   ```
   Non-interactive (`--yes`, `CI=1`, or stdin not a TTY) skips the prompt but emits the warning to stderr. `--no-diff` flag disables artifact diff entirely (and the gate).
-- [ ] Capture matched marker, payload, selected transition index, retry count, exit code
-- [ ] Stitch invocation event in `events.jsonl`
+- [~] Capture matched marker, payload, selected transition index. `stage.json` carries `matchedMarker`, `transitionTarget`, `payloadLen`, `durationMs`, `result`. **retry count, container exit code** still missing — wired through `container-runner.ts` close handler in a follow-up.
+- [x] Stitch invocation event in `events.jsonl`. `recorder.event({ type: 'stitch.invoked', ... })` emitted when a stage triggers a template stitch; carries template, joinPolicy, child count, child node ids.
+
+### Phase 2 — Stream sink migration (deferred)
+
+Per-stage `agent.stream.log` / `stdout.log` / `stderr.log` and removal of `container-runner.ts` per-container log files: **deferred**. The pipeline-watcher UI live-tail tails the legacy `pipeline-{ts}.log`; migrating cleanly requires the watcher to switch to per-stage files in lockstep. Defer until UI redesign needs it or per-stage tailing becomes a request.
 
 ### Phase 4 — L2 decision logs + IPC mirror
 

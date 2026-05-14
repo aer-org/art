@@ -920,6 +920,70 @@ describe('PipelineRunner FSM', () => {
     expect(verifyPrompt).toContain('files changed: main.ts, utils.ts');
   }, 15000);
 
+  it('writes per-stage L1 records (prompt.txt, initial.txt, stage.json)', async () => {
+    const config = makeTwoStagePipelineConfig();
+
+    enqueueStageOutput('implement', [
+      { result: '[IMPL_COMPLETE: payload-from-implement]' },
+    ]);
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await runner.run();
+
+    const runDir = path.join(groupDir, '.state', 'runs', runner.getRunId());
+    const implementDir = path.join(
+      runDir,
+      'nodes',
+      'root',
+      'stages',
+      'implement',
+    );
+    const verifyDir = path.join(runDir, 'nodes', 'root', 'stages', 'verify');
+
+    // Both stages write their system prompts.
+    expect(fs.existsSync(path.join(implementDir, 'prompt.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(verifyDir, 'prompt.txt'))).toBe(true);
+
+    // verify receives an initial payload handoff from implement.
+    expect(fs.existsSync(path.join(verifyDir, 'initial.txt'))).toBe(true);
+
+    // stage.json captures outcome + matched marker + duration.
+    const implementRecord = JSON.parse(
+      fs.readFileSync(path.join(implementDir, 'stage.json'), 'utf-8'),
+    );
+    expect(implementRecord.schemaVersion).toBe(1);
+    expect(implementRecord.stageName).toBe('implement');
+    expect(implementRecord.nodeId).toBe('root');
+    expect(implementRecord.result).toBe('success');
+    expect(implementRecord.matchedMarker).toBe('IMPL_COMPLETE');
+    expect(implementRecord.transitionTarget).toBe('verify');
+    expect(typeof implementRecord.durationMs).toBe('number');
+
+    const verifyRecord = JSON.parse(
+      fs.readFileSync(path.join(verifyDir, 'stage.json'), 'utf-8'),
+    );
+    expect(verifyRecord.result).toBe('success');
+    expect(verifyRecord.transitionTarget).toBe(null);
+
+    // Provenance hash pairs with on-disk prompt.txt so future readers can
+    // detect "did the prompt file get edited after the run?".
+    const { createHash } = await import('crypto');
+    const promptHash = createHash('sha256')
+      .update(fs.readFileSync(path.join(implementDir, 'prompt.txt')))
+      .digest('hex');
+    expect(implementRecord.inputHashes.prompt).toBe(promptHash);
+  }, 15000);
+
   it('checkpoint resume: skips completed implement, starts at verify', async () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
