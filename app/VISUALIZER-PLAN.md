@@ -199,9 +199,10 @@ web/src/
 - [~] Stitch lanes are rendered as separate nodes with `stitched` sub-label (existing buildGraph behavior). **Dashed subgraph box** wrapping lanes (ReactFlow parent-node grouping) deferred — material for a Phase E polish along with the L3 panels.
 
 ### Phase D — L2 stage sidebar
-- [ ] `StageSidebar.tsx` with Input / Output / Internal accordion sections
-- [ ] Summary widgets only (no L3 yet)
-- [ ] Tooltips (L1) for graph nodes + edges
+- [x] `StageSidebar.tsx` with three sections (Input / Output / Internal). All visible (no accordion collapse needed yet — ~25 fields total, scroll inside). Slides in from the right with a grid-push transition; Esc closes.
+- [x] Summary widgets only — `OutcomeChip`, `RetryExit`, `SubsLine`, `ContainerLine`, `DiffSummaryLine`, `TurnsLine`, `DecisionsLine`, `StreamsLine`. Each row has a "view" link that opens the L3 panel (wired but panels themselves stub until Phase E).
+- [x] `useStageDetail` hook fetches stage.json + container.json + filtered events + turns + diff summary in parallel; refetches whenever selection changes.
+- [~] Tooltips (L1) for graph nodes + edges — not yet. ReactFlow nodes already get implicit cursor feedback via hover styles, and the sidebar gives the full detail one click away. Implicit tooltips deferred to a Phase J polish.
 
 ### Phase E — L3 panel — Input (smallest first)
 - [ ] `L3PromptViewer.tsx`, `L3CommandViewer.tsx`, `L3ContainerInfo.tsx`

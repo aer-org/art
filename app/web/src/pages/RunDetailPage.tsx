@@ -1,19 +1,21 @@
 /**
  * RunDetailPage — inspector view of an archived (or live) run.
  *
- * - Top header: runId + state + outcome + duration + host (with a 1px
- *   colored hairline above keyed to outcome).
- * - Body: ReactFlow DAG reconstructed from runs/<id>/pipeline.snap.json +
- *   PIPELINE_STATE.json, with stage nodes augmented from per-stage
- *   stage.json (retry pip, exit-code awareness, dispatch nodeId).
+ * Layout (CSS grid): header / [canvas | sidebar?].
+ *   - Header: runId + state + outcome + duration + host.
+ *   - Canvas: ReactFlow DAG from runs/<id>/pipeline.snap.json + state.
+ *   - Sidebar: opens when a stage is clicked; grid-push, never overlay.
  *
- * Live runs poll every 5s; sealed/crashed runs load once. L2 sidebar +
- * L3 panels arrive in Phase D.
+ * Live runs poll every 5s for header + graph; sealed/crashed runs load
+ * once. Stage detail in the sidebar refetches whenever the selection
+ * changes.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { PipelineGraph } from '../components/PipelineGraph.tsx';
 import { RunDetailHeader } from '../components/RunDetailHeader.tsx';
+import { StageSidebar } from '../components/StageSidebar.tsx';
+import { useStageDetail } from '../hooks/useStageDetail.ts';
 import {
   api,
   type GraphEdge,
@@ -46,7 +48,6 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
         setDetail(d);
         setGraph(g);
         setError(null);
-        // Poll only while the run is still moving.
         if (d.state === 'live') {
           pollTimer = window.setTimeout(load, LIVE_POLL_MS);
         }
@@ -61,6 +62,25 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
       if (pollTimer !== null) window.clearTimeout(pollTimer);
     };
   }, [props.runId]);
+
+  // Resolve nodeId for the selected stage via the graph augmentation.
+  const selectedNodeId = useMemo(() => {
+    if (!selectedStage || !graph) return null;
+    const node = graph.nodes.find((n) => n.name === selectedStage);
+    return node?.nodeId ?? 'root';
+  }, [selectedStage, graph]);
+
+  const stageData = useStageDetail(detail, selectedNodeId, selectedStage);
+
+  // Esc closes the sidebar.
+  useEffect(() => {
+    if (!selectedStage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedStage(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedStage]);
 
   if (error) {
     return (
@@ -81,29 +101,39 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
     );
   }
 
+  const sidebarOpen =
+    !!selectedStage && !!selectedNodeId && stageData.stage !== null;
+
   return (
-    <div className="inspector">
+    <div
+      className={`inspector ${sidebarOpen ? 'inspector-with-sidebar' : ''}`}
+    >
       <RunDetailHeader run={detail} />
-      <div className="inspector-canvas">
-        {graph && graph.nodes.length > 0 ? (
-          <PipelineGraph
-            nodes={graph.nodes}
-            edges={graph.edges}
-            onNodeClick={setSelectedStage}
+      <div className="inspector-body">
+        <div className="inspector-canvas">
+          {graph && graph.nodes.length > 0 ? (
+            <PipelineGraph
+              nodes={graph.nodes}
+              edges={graph.edges}
+              onNodeClick={setSelectedStage}
+            />
+          ) : (
+            <div className="inspector-empty">
+              <p className="muted">
+                No graph data archived for this run (missing pipeline.snap.json).
+              </p>
+            </div>
+          )}
+        </div>
+        {selectedStage && selectedNodeId && (
+          <StageSidebar
+            nodeId={selectedNodeId}
+            stageName={selectedStage}
+            data={stageData}
+            onClose={() => setSelectedStage(null)}
           />
-        ) : (
-          <div className="inspector-empty">
-            <p className="muted">
-              No graph data archived for this run (missing pipeline.snap.json).
-            </p>
-          </div>
         )}
       </div>
-      {selectedStage && (
-        <div className="inspector-selection-hint">
-          Selected: <code>{selectedStage}</code> · sidebar arrives in Phase D
-        </div>
-      )}
     </div>
   );
 }
