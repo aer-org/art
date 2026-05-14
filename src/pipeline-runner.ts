@@ -29,6 +29,11 @@ import {
   getActiveRecorder,
   setActiveRecorder,
 } from './run-recorder.js';
+import {
+  captureStagePreState,
+  diffStagePostState,
+  diffHostBinariesAvailable,
+} from './run-diff.js';
 import { generateRunId, type RunManifest } from './run-manifest.js';
 import {
   formatStageMcpAccessSummary,
@@ -158,6 +163,10 @@ interface StageHandle {
     resolve: (r: StageMarkerResult) => void;
   } | null;
   resultTexts: string[];
+  // L1 artifact diff: pre-state snapshot dir (null if diff disabled) and the
+  // rw mount set used for it. Consumed at stage completion to produce diffs.
+  preStateDir: string | null;
+  rwMounts: { name: string; hostPath: string }[];
 }
 
 function readUserInput(promptText: string): Promise<string> {
@@ -203,6 +212,7 @@ export class PipelineRunner {
   private recorder: RunRecorder;
   private ownsRecorder: boolean;
   private runStartTime: number | null = null;
+  private diffEnabled: boolean = true;
   private aborted = false;
   private activeHandles = new Map<string, StageHandle>();
   private stageSessionIds = new Map<string, string>();
@@ -263,6 +273,8 @@ export class PipelineRunner {
       });
       setActiveRecorder(this.recorder);
       this.ownsRecorder = true;
+      this.diffEnabled =
+        process.env.ART_NO_DIFF !== '1' && diffHostBinariesAvailable();
     } else {
       const active = getActiveRecorder();
       if (!active) {
@@ -272,8 +284,24 @@ export class PipelineRunner {
       }
       this.recorder = active;
       this.ownsRecorder = false;
+      this.diffEnabled =
+        process.env.ART_NO_DIFF !== '1' && diffHostBinariesAvailable();
     }
     this.runStateDir = this.recorder.stateDir();
+  }
+
+  private resolveRwMountsForDiff(
+    stageConfig: PipelineStage,
+  ): { name: string; hostPath: string }[] {
+    const out: { name: string; hostPath: string }[] = [];
+    for (const [key, policy] of Object.entries(stageConfig.mounts)) {
+      if (policy !== 'rw') continue;
+      // Skip project (parent of __art__/, can be huge) and sub-path mounts.
+      // L1 diff aims at the common case: small artifact mounts under __art__/.
+      if (key === 'project' || key.includes(':')) continue;
+      out.push({ name: key, hostPath: path.join(this.groupDir, key) });
+    }
+    return out;
   }
 
   getRunId(): string {
@@ -1048,6 +1076,14 @@ export class PipelineRunner {
     }
     this.activeHandles.delete(currentStageName);
 
+    // L1 artifact diff: container is closed, rw mounts are now in the
+    // post-state. Generate diff/<mount>.diff against the snapshot we took
+    // at spawn time and remove the snapshot.
+    if (handle.preStateDir) {
+      const stageDir = this.recorder.stagePath(this.scopeId, currentStageName);
+      diffStagePostState(stageDir, handle.preStateDir, handle.rwMounts);
+    }
+
     this.recordStageOutcome(currentStageName, {
       result: isErrorTransition ? 'error' : 'success',
       matchedMarker: matched.marker,
@@ -1497,6 +1533,16 @@ PAYLOAD FORMATS:
     const ipc = createStageIpcEndpoint(subFolder);
     ipc.clearCloseSentinel();
 
+    // Snapshot rw mounts BEFORE the container runs. The snapshot is removed
+    // after the post-state diff is computed at stage completion. Project
+    // mount and sub-path mounts are intentionally excluded for v1.
+    const rwMounts = this.resolveRwMountsForDiff(stageConfig);
+    const stageDir = this.recorder.stagePath(this.scopeId, stageConfig.name);
+    const preStateDir =
+      this.diffEnabled && rwMounts.length > 0
+        ? captureStagePreState(stageDir, rwMounts)
+        : null;
+
     const handle: StageHandle = {
       name: stageConfig.name,
       ipc,
@@ -1504,6 +1550,8 @@ PAYLOAD FORMATS:
       outboundPoller: null,
       pendingResult: createDeferred(),
       resultTexts: [],
+      preStateDir,
+      rwMounts,
     };
 
     let outboundDrainRunning = false;

@@ -60,6 +60,17 @@ Each stage declares mount policies for `__art__/` subdirectories and the host pr
 
 Containers never see real API keys. A host-side HTTP proxy intercepts all Anthropic API calls and injects real credentials. Supports both API key and OAuth token modes. See `SECURITY.md` for details.
 
+### Host Binaries
+
+The runtime expects the following on PATH:
+
+- **Node.js ≥ 20** — the host process
+- **Docker** or **Podman** (or `udocker` for unprivileged Linux) — container runtime
+- **`git`** — used by the L1 artifact-diff capture (`git diff --no-index`). If absent, artifact diff is silently disabled and the rest of the run still works.
+- **`cp` with `-l` (hardlink mode)** and **`du -sb`** — also used by L1 artifact diff. Standard on Linux/macOS. Absence disables diff (same fallback as missing git).
+
+Disable artifact diff explicitly with `--no-diff` on `art run`, or with `ART_NO_DIFF=1`. The diff size gate threshold is `ART_DIFF_SIZE_LIMIT` (default `1G`; accepts e.g. `500M`, `2G`).
+
 ---
 
 ## Architecture Decisions

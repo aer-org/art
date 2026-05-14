@@ -10,6 +10,91 @@ function resolveProvider(): 'claude' | 'codex' {
   return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
+/** Parse ART_DIFF_SIZE_LIMIT (e.g. "1G", "500M", "2GiB") → bytes. */
+function parseSizeLimit(): number {
+  const raw = process.env.ART_DIFF_SIZE_LIMIT ?? '1G';
+  const m = /^(\d+(?:\.\d+)?)\s*([KMGT]i?)?B?$/i.exec(raw.trim());
+  if (!m) return 1 << 30; // 1 GiB default on parse error
+  const n = Number(m[1]);
+  const unit = (m[2] ?? '').toUpperCase();
+  const map: Record<string, number> = {
+    '': 1,
+    K: 1024,
+    KI: 1024,
+    M: 1024 ** 2,
+    MI: 1024 ** 2,
+    G: 1024 ** 3,
+    GI: 1024 ** 3,
+    T: 1024 ** 4,
+    TI: 1024 ** 4,
+  };
+  return Math.floor(n * (map[unit] ?? 1));
+}
+
+async function runArtifactDiffSizeGate(
+  artDir: string,
+  assumeYes: boolean,
+): Promise<void> {
+  const limit = parseSizeLimit();
+  const { dirSizeBytes } = await import('../run-diff.js');
+
+  const pipelinePath = path.join(artDir, 'PIPELINE.json');
+  let stages: { mounts?: Record<string, string | null> }[] = [];
+  try {
+    const raw = fs.readFileSync(pipelinePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.stages)) stages = parsed.stages;
+  } catch {
+    return; // pipeline missing/invalid — the runner will surface the real error
+  }
+
+  // Collect the union of rw mount keys (excluding project + sub-path).
+  const rwKeys = new Set<string>();
+  for (const s of stages) {
+    for (const [key, policy] of Object.entries(s.mounts ?? {})) {
+      if (policy !== 'rw') continue;
+      if (key === 'project' || key.includes(':')) continue;
+      rwKeys.add(key);
+    }
+  }
+
+  const oversized: { name: string; bytes: number }[] = [];
+  for (const key of rwKeys) {
+    const p = path.join(artDir, key);
+    const bytes = dirSizeBytes(p);
+    if (bytes > limit) oversized.push({ name: key, bytes });
+  }
+  if (oversized.length === 0) return;
+
+  const fmt = (b: number): string =>
+    b >= 1 << 30
+      ? `${(b / (1 << 30)).toFixed(2)} GB`
+      : b >= 1 << 20
+        ? `${(b / (1 << 20)).toFixed(1)} MB`
+        : `${b} B`;
+
+  for (const m of oversized) {
+    console.error(
+      `Warning: rw mount '${m.name}' is ${fmt(m.bytes)}. Preserving pre-state for diff will use roughly the same temporary disk space per stage. Pass --no-diff to disable.`,
+    );
+  }
+
+  if (assumeYes || process.env.CI || !process.stdin.isTTY) return;
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const answer = await new Promise<string>((resolve) =>
+    rl.question('Continue? [y/N] ', resolve),
+  );
+  rl.close();
+  if (answer.trim().toLowerCase() !== 'y') {
+    console.error('Aborted.');
+    process.exit(1);
+  }
+}
+
 function preflight(opts?: { skipProviderCli?: boolean }): void {
   const errors: string[] = [];
   const provider = resolveProvider();
@@ -89,7 +174,7 @@ async function askConfirmation(prompt: string): Promise<boolean> {
 
 export async function run(
   targetDir: string,
-  opts?: { skipPreflight?: boolean; stage?: string },
+  opts?: { skipPreflight?: boolean; stage?: string; assumeYes?: boolean },
 ): Promise<void> {
   preflight({ skipProviderCli: opts?.skipPreflight });
 
@@ -102,6 +187,15 @@ export async function run(
       `No ${artDirName}/ found in ${projectDir}. Run 'art init .' first.`,
     );
     process.exit(1);
+  }
+
+  // L1 artifact-diff size gate. We snapshot rw mounts via hardlink-copy
+  // before each stage; the temporary space is roughly the modified
+  // portion. For mounts that are already very large (multi-GB), warn the
+  // user before stage 0 starts so the disk cost isn't a surprise mid-run.
+  // Skip entirely if --no-diff is set or no rw mounts are huge.
+  if (process.env.ART_NO_DIFF !== '1') {
+    await runArtifactDiffSizeGate(artDir, !!opts?.assumeYes);
   }
 
   const { generateRunId } = await import('../run-manifest.js');

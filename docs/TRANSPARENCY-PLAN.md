@@ -320,18 +320,18 @@ Status: **base subset done**. Per-stage I/O records written at `runs/<id>/nodes/
 - [x] Capture `initialPrompt` / `ephemeralSystemPrompt` from `buildPayloadHandoff` → `initial.txt`
 - [x] Capture `substitutions` map. `substitutions.json` carries `insertId`/`index`/`invocationId`/`parentNodeId`/`localName` plus the full per-lane substitution map under `substitutions` (insertId, index, plus any `countFrom: 'payload'` fields). Stitch baking populates `PipelineStageDispatch.substitutions` so the record is complete.
 - [x] Capture `resolvedCommand`. Full command written to `command.sh`; sha256 in `stage.json.inputHashes.command`. `shell` / `timeout` / `env` snapshot in a sibling `command.json`.
-- [ ] Artifact diff per writeable mount:
-  - [ ] At stage start, hardlink-copy each rw mount into `runs/<id>/.tmp/<stage>/`
-  - [ ] At stage end, `git diff --no-index` against current rw mount → save to `diff/<mount>.diff` + numstat to `diff/summary.json`
-  - [ ] Delete tmpdir on success; preserve on failure for inspection
-  - [ ] Add `git` to host requirements doc
-- [ ] **`art run` size gate (pre-flight)**: at startup, after mount resolution, before any stage runs, measure `du -sb` of each rw-mounted dir on the host. If any single mount exceeds 1 GiB (configurable via `ART_DIFF_SIZE_LIMIT`, accepts e.g. `500M`, `2G`), prompt:
+- [x] Artifact diff per writeable mount:
+  - [x] At stage start, hardlink-copy each rw mount into `runs/<id>/nodes/<n>/stages/<s>/.pre/` via `cp -al`
+  - [x] At stage end, `git diff --no-index --no-color` against current rw mount → save unified diff to `diff/<mount>.diff` plus `diff/summary.json` (`{mount, changed, bytes}` per mount)
+  - [x] Remove `.pre/` snapshot after diff is written (always, even on failure paths)
+  - [x] Add `git`, `cp -l`, `du -sb` to host requirements doc
+  - [x] Scoped to top-level `mounts: { <key>: "rw" }` entries only. `project` mount and sub-path mounts excluded for v1 (project can be huge; sub-paths complicate snapshot semantics).
+  - [x] Best-effort throughout. Missing binaries or any individual cp/git failure logs a single line via `console.error` and silently disables diff for the run; no abort. `ART_NO_DIFF=1` or `--no-diff` opts out explicitly.
+- [x] **`art run` size gate (pre-flight)**: at startup, before any stage runs, `du -sb` each rw mount key referenced by any stage. If any exceeds the threshold (`ART_DIFF_SIZE_LIMIT`, default `1G`; accepts `500M`, `2G`, `2GiB`, …), emit the warning per mount to stderr and prompt:
   ```
-  Warning: rw mount '<name>' is <X.X> GB. Preserving pre-state for diff
-  will use roughly the same temporary disk space per stage.
   Continue? [y/N]
   ```
-  Non-interactive (`--yes`, `CI=1`, or stdin not a TTY) skips the prompt but emits the warning to stderr. `--no-diff` flag disables artifact diff entirely (and the gate).
+  `--yes` / `-y`, `CI=1`, or non-TTY stdin skip the prompt (warning still emitted). `--no-diff` skips the gate entirely.
 - [x] Capture matched marker, payload, selected transition index, retry count, container exit code. `stage.json` carries `matchedMarker`, `transitionTarget`, `payloadLen`, `durationMs`, `result`, `retryCount`, `exitCode`. `ContainerOutput` was extended with `exitCode` + `durationMs` so the close handler propagates the kernel exit code up to the recorder.
 - [x] Stitch invocation event in `events.jsonl`. `recorder.event({ type: 'stitch.invoked', ... })` emitted when a stage triggers a template stitch; carries template, joinPolicy, child count, child node ids.
 

@@ -39,12 +39,16 @@ async function main(): Promise<void> {
       applyProviderFlag(runFlags);
       const runPositional = args.filter((a) => !a.startsWith('--'));
       const skipPreflight = runFlags.includes('--skip-preflight');
+      const noDiff = runFlags.includes('--no-diff');
+      const yes = runFlags.includes('--yes') || runFlags.includes('-y');
       const stageIdx = args.indexOf('--stage');
       const stageName = stageIdx !== -1 ? args[stageIdx + 1] : undefined;
+      if (noDiff) process.env.ART_NO_DIFF = '1';
       const { run } = await import('./run.js');
       await run(runPositional[0] || '.', {
         skipPreflight,
         stage: stageName,
+        assumeYes: yes,
       });
       break;
     }
