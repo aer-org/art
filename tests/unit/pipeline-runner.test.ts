@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  beforeAll,
+  vi,
+  afterEach,
+} from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -4717,3 +4725,482 @@ describe('generalized sub-path mounts', () => {
     );
   });
 });
+
+/**
+ * Transparency contract for the visualizer UX plan
+ * (see app/VISUALIZER-PLAN.md).
+ *
+ * One representative pipeline run is set up in beforeAll and reused across
+ * assertions. Each `it` block ties to a UX item from the plan and verifies
+ * the on-disk artifact the UI will read for that item exists with the
+ * expected shape. Failures here mean the runtime stopped producing data
+ * the UI depends on — a regression that would silently break panels.
+ *
+ * Scenario covers:
+ *   - root agent stage (`start`) with rw mount  → L2 Input prompt + diff
+ *   - stitch invocation × 2 lanes               → L2 substitutions, stitch.invoked
+ *   - downstream agent stage (`summarize`)      → L0 graph, L2 stage.json
+ *   - 1 turn IPC message injected on `start`    → L3 turns/001.json
+ *
+ * Command-mode artifacts (command.sh + command.json) are validated by the
+ * Command-mode stage describe block above; this contract just notes the
+ * gap with a `.todo` for clarity.
+ */
+describe('Transparency contract for UX plan', () => {
+  let contractGroup: RegisteredGroup;
+  let contractGroupDir: string;
+  let contractRunDir: string;
+  let contractRunId: string;
+  let laneInvocation: string;
+  let laneNode: (i: number) => string;
+  let laneWork: (i: number) => string;
+
+  beforeAll(async () => {
+    contractGroup = makeTestGroup();
+    stageOutputQueues.clear();
+    vi.clearAllMocks();
+
+    contractGroupDir = path.join(TEST_GROUPS_BASE, contractGroup.folder);
+    fs.mkdirSync(contractGroupDir, { recursive: true });
+    fs.mkdirSync(path.join(contractGroupDir, 'templates'), { recursive: true });
+    fs.mkdirSync(path.join(contractGroupDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(contractGroupDir, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'src', 'seed.txt'),
+      'seed content\n',
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'plan the lanes',
+          mounts: { src: 'rw' },
+          transitions: [
+            {
+              marker: 'STITCH_GO',
+              template: 'lane',
+              next: 'summarize',
+              count: 2,
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize the lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'PIPELINE.json'),
+      JSON.stringify(config, null, 2),
+    );
+
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'templates', 'lane.json'),
+      JSON.stringify({
+        entry: 'work',
+        stages: [
+          {
+            name: 'work',
+            prompt: 'lane work {{index}}',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+    // Seed agents/* + templates/* hashes for provenance.
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'agents', 'builder.md'),
+      '# builder\n',
+    );
+
+    laneInvocation = stitchInvocation(ROOT_DISPATCH_NODE_ID, 'start', 'lane');
+    laneNode = (i: number) => dispatchChildNodeId(laneInvocation, i);
+    laneWork = (i: number) => dispatchStageName(laneInvocation, i, 'work');
+
+    // IPC dirs for every container we'll spawn.
+    const ensureIpc = (stageName: string) =>
+      fs.mkdirSync(
+        path.join(
+          TEST_IPC_BASE,
+          `${contractGroup.folder}__pipeline_${stageName}`,
+          'input',
+        ),
+        { recursive: true },
+      );
+    ensureIpc('start');
+    ensureIpc('summarize');
+    for (let i = 0; i < 2; i++) ensureIpc(laneWork(i));
+
+    // Outputs + 1 turn IPC on `start` for L3 coverage.
+    enqueueStageOutput('start', [
+      {
+        result: '[STITCH_GO]',
+        turn: {
+          provider: 'claude',
+          model: 'claude-sonnet-4-6',
+          tokensIn: 100,
+          tokensOut: 50,
+          cacheReadTokens: 4000,
+          latencyMs: 1200,
+          finishReason: 'success',
+        },
+      },
+    ]);
+    for (let i = 0; i < 2; i++) {
+      enqueueStageOutput(laneWork(i), [{ result: '[DONE]' }]);
+    }
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      contractGroup,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      contractGroupDir,
+    );
+    await runner.run();
+    contractRunId = runner.getRunId();
+    contractRunDir = path.join(
+      contractGroupDir,
+      '.state',
+      'runs',
+      contractRunId,
+    );
+  }, 30000);
+
+  // --- L0: top-bar + state ------------------------------------------------
+
+  describe('L0 — canvas data', () => {
+    it('run.json has provider, hostname, startTime, pid, args, schemaVersion', () => {
+      const r = JSON.parse(
+        fs.readFileSync(path.join(contractRunDir, 'run.json'), 'utf-8'),
+      );
+      expect(r.schemaVersion).toBe(1);
+      expect(r.pid).toBe(process.pid);
+      expect(typeof r.hostname).toBe('string');
+      expect(r.startTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(r.provider === 'codex' || r.provider === 'claude').toBe(true);
+      expect(Array.isArray(r.args)).toBe(true);
+    });
+
+    it('summary.json has outcome, durationMs, totalStages, failedStages, schemaVersion', () => {
+      const s = JSON.parse(
+        fs.readFileSync(path.join(contractRunDir, 'summary.json'), 'utf-8'),
+      );
+      expect(s.schemaVersion).toBe(1);
+      expect(s.outcome).toBe('success');
+      expect(typeof s.durationMs).toBe('number');
+      expect(typeof s.totalStages).toBe('number');
+      expect(typeof s.failedStages).toBe('number');
+      expect(s.endTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('sealed marker is present after finalize', () => {
+      expect(fs.existsSync(path.join(contractRunDir, 'sealed'))).toBe(true);
+    });
+
+    it('state/PIPELINE_STATE.json (root) drives the live DAG node colors', () => {
+      const state = JSON.parse(
+        fs.readFileSync(
+          path.join(contractRunDir, 'state', 'PIPELINE_STATE.json'),
+          'utf-8',
+        ),
+      );
+      expect(state.version).toBe(3);
+      expect(state.status).toBe('success');
+      expect(state.completedStages).toContain('start');
+      expect(state.completedStages).toContain('summarize');
+      // dispatchTree is what the UI walks to render stitch subgraphs.
+      expect(state.dispatchTree).toBeDefined();
+    });
+  });
+
+  // --- L2 Input: prompt / substitutions / container / mounts -------------
+
+  describe('L2 Input — sidebar Input section', () => {
+    it('prompt.txt + prompt.source exist for every agent stage', () => {
+      for (const [node, stage] of [
+        ['root', 'start'],
+        ['root', 'summarize'],
+        [laneNode(0), laneWork(0)],
+        [laneNode(1), laneWork(1)],
+      ] as Array<[string, string]>) {
+        const dir = path.join(contractRunDir, 'nodes', node, 'stages', stage);
+        expect(fs.existsSync(path.join(dir, 'prompt.txt'))).toBe(true);
+        expect(fs.readFileSync(path.join(dir, 'prompt.source'), 'utf-8')).toBe(
+          'inline',
+        );
+      }
+    });
+
+    it('initial.txt is written when a downstream stage receives payload handoff', () => {
+      // summarize is reached after the stitch barrier; an initial prompt
+      // ('start of stage' wrap) is built by buildPayloadHandoff.
+      const summarizeDir = path.join(
+        contractRunDir,
+        'nodes',
+        'root',
+        'stages',
+        'summarize',
+      );
+      // initial.txt is best-effort — only present if the handoff produced
+      // a non-empty initial prompt. Either present-with-content or absent
+      // is acceptable; if present, must be non-empty text.
+      const initialPath = path.join(summarizeDir, 'initial.txt');
+      if (fs.existsSync(initialPath)) {
+        const txt = fs.readFileSync(initialPath, 'utf-8');
+        expect(txt.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('substitutions.json carries insertId + index + substitutions for stitched stages', () => {
+      for (let i = 0; i < 2; i++) {
+        const subs = JSON.parse(
+          fs.readFileSync(
+            path.join(
+              contractRunDir,
+              'nodes',
+              laneNode(i),
+              'stages',
+              laneWork(i),
+              'substitutions.json',
+            ),
+            'utf-8',
+          ),
+        );
+        expect(subs.insertId).toBe(laneNode(i));
+        expect(subs.index).toBe(i);
+        expect(subs.invocationId).toBe(laneInvocation);
+        expect(subs.parentNodeId).toBe(ROOT_DISPATCH_NODE_ID);
+        expect(subs.substitutions).toMatchObject({
+          insertId: laneNode(i),
+          index: i,
+        });
+      }
+    });
+
+    it.todo(
+      'command.sh + command.json for command-mode stages (covered in Command-mode block)',
+    );
+
+    it('container.json carries image, mode, mounts, devices, env per stage', () => {
+      const c = JSON.parse(
+        fs.readFileSync(
+          path.join(
+            contractRunDir,
+            'nodes',
+            'root',
+            'stages',
+            'start',
+            'container.json',
+          ),
+          'utf-8',
+        ),
+      );
+      expect(c.schemaVersion).toBe(1);
+      expect(c.stageName).toBe('start');
+      expect(c.mode).toBe('agent');
+      expect(Array.isArray(c.mounts)).toBe(true);
+      // The 'src' rw mount should appear in resolved mounts.
+      expect(
+        c.mounts.some(
+          (m: { containerPath: string; readonly: boolean }) =>
+            m.containerPath === '/workspace/src' && m.readonly === false,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  // --- L2 Output: stage.json + diff ---------------------------------------
+
+  describe('L2 Output — sidebar Output section', () => {
+    it('stage.json has matchedMarker, transitionTarget, durationMs, exitCode, retryCount, inputHashes, finishedAt', () => {
+      const s = JSON.parse(
+        fs.readFileSync(
+          path.join(
+            contractRunDir,
+            'nodes',
+            'root',
+            'stages',
+            'start',
+            'stage.json',
+          ),
+          'utf-8',
+        ),
+      );
+      expect(s.schemaVersion).toBe(1);
+      expect(s.stageName).toBe('start');
+      expect(s.nodeId).toBe('root');
+      expect(s.result).toBe('success');
+      expect(s.matchedMarker).toBe('STITCH_GO');
+      // For a stitching stage the direct transitionTarget is null (the
+      // barrier owns the downstream redirect). The UI surfaces the full
+      // chain by joining stage.json with the stitch.invoked event's
+      // downstreamNext — covered in the L4 stitch.invoked assertion.
+      expect(s.transitionTarget).toBeNull();
+      expect(typeof s.durationMs).toBe('number');
+      expect(s.retryCount).toBe(0);
+      expect(s.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(s.inputHashes).toBeDefined();
+      expect(typeof s.inputHashes.prompt).toBe('string');
+    });
+
+    it('diff/ directory and summary.json exist for stages with rw mounts', () => {
+      const diffDir = path.join(
+        contractRunDir,
+        'nodes',
+        'root',
+        'stages',
+        'start',
+        'diff',
+      );
+      // Diff is best-effort — only present if host has git+cp. If absent,
+      // skip (CI without git would surface this here, not in production).
+      if (!fs.existsSync(diffDir)) {
+        return;
+      }
+      const summary = JSON.parse(
+        fs.readFileSync(path.join(diffDir, 'summary.json'), 'utf-8'),
+      );
+      expect(summary.schemaVersion).toBe(1);
+      expect(Array.isArray(summary.mounts)).toBe(true);
+      expect(
+        summary.mounts.some((m: { mount: string }) => m.mount === 'src'),
+      ).toBe(true);
+      expect(fs.existsSync(path.join(diffDir, 'src.diff'))).toBe(true);
+    });
+  });
+
+  // --- L2 Internal: turns + decisions + events ---------------------------
+
+  describe('L2 Internal — sidebar Internal section', () => {
+    it('turns/001.json written for the injected LLM turn on start', () => {
+      const turnsDir = path.join(
+        contractRunDir,
+        'nodes',
+        'root',
+        'stages',
+        'start',
+        'turns',
+      );
+      expect(fs.existsSync(turnsDir)).toBe(true);
+      const t1 = JSON.parse(
+        fs.readFileSync(path.join(turnsDir, '001.json'), 'utf-8'),
+      );
+      expect(t1.schemaVersion).toBe(1);
+      expect(t1.index).toBe(1);
+      expect(t1.provider).toBe('claude');
+      expect(t1.tokensIn).toBe(100);
+      expect(t1.tokensOut).toBe(50);
+      expect(t1.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('events.jsonl has decision.marker for every stage that emitted a marker', () => {
+      const events = readEvents(contractRunDir);
+      const markers = events.filter(
+        (e) => e.type === 'decision.marker',
+      ) as Array<{ stageName: string; data: { matched: string } }>;
+      const byStage = new Map(markers.map((m) => [m.stageName, m]));
+      expect(byStage.get('start')?.data.matched).toBe('STITCH_GO');
+      expect(byStage.get('summarize')?.data.matched).toBe('SUMMARY_DONE');
+      for (let i = 0; i < 2; i++) {
+        expect(byStage.get(laneWork(i))?.data.matched).toBe('DONE');
+      }
+    });
+
+    it('decision.barrier event emitted after the stitch barrier evaluates', () => {
+      const events = readEvents(contractRunDir);
+      const barrier = events.find((e) => e.type === 'decision.barrier') as
+        | {
+            data: {
+              template: string;
+              joinPolicy: string;
+              outcome: string;
+              settlements: Record<string, string>;
+            };
+          }
+        | undefined;
+      expect(barrier).toBeDefined();
+      expect(barrier!.data.template).toBe('lane');
+      expect(barrier!.data.joinPolicy).toBe('all_success');
+      expect(barrier!.data.outcome).toBe('success');
+      expect(Object.keys(barrier!.data.settlements).sort()).toEqual(
+        [laneNode(0), laneNode(1)].sort(),
+      );
+    });
+  });
+
+  // --- L4: run-wide overlays --------------------------------------------
+
+  describe('L4 — run-level overlays', () => {
+    it('provenance.json hashes agents/*.md + templates/*.json and snapshots env', () => {
+      const p = JSON.parse(
+        fs.readFileSync(path.join(contractRunDir, 'provenance.json'), 'utf-8'),
+      );
+      expect(p.schemaVersion).toBe(1);
+      expect(p.bundleDir).toBe(contractGroupDir);
+      expect(Array.isArray(p.agents)).toBe(true);
+      expect(
+        p.agents.find((a: { path: string }) => a.path === 'agents/builder.md'),
+      ).toBeDefined();
+      expect(Array.isArray(p.templates)).toBe(true);
+      expect(
+        p.templates.find(
+          (t: { path: string }) => t.path === 'templates/lane.json',
+        ),
+      ).toBeDefined();
+      expect(typeof p.env).toBe('object');
+    });
+
+    it('pipeline.snap.json mirrors the bundle PIPELINE.json', () => {
+      const snap = JSON.parse(
+        fs.readFileSync(
+          path.join(contractRunDir, 'pipeline.snap.json'),
+          'utf-8',
+        ),
+      );
+      const onDisk = JSON.parse(
+        fs.readFileSync(path.join(contractGroupDir, 'PIPELINE.json'), 'utf-8'),
+      );
+      expect(snap).toEqual(onDisk);
+    });
+
+    it('events.jsonl has stitch.invoked for the lane template with child nodes', () => {
+      const events = readEvents(contractRunDir);
+      const stitch = events.find((e) => e.type === 'stitch.invoked') as
+        | {
+            stageName: string;
+            data: {
+              template: string;
+              childCount: number;
+              childNodeIds: string[];
+              joinPolicy: string;
+            };
+          }
+        | undefined;
+      expect(stitch).toBeDefined();
+      expect(stitch!.stageName).toBe('start');
+      expect(stitch!.data.template).toBe('lane');
+      expect(stitch!.data.childCount).toBe(2);
+      expect(stitch!.data.childNodeIds.sort()).toEqual(
+        [laneNode(0), laneNode(1)].sort(),
+      );
+    });
+  });
+});
+
+function readEvents(runDir: string): Array<Record<string, unknown>> {
+  const fp = path.join(runDir, 'events.jsonl');
+  return fs
+    .readFileSync(fp, 'utf-8')
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}

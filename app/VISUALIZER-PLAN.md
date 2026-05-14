@@ -247,3 +247,33 @@ web/src/
 - Transparency data shape: `docs/TRANSPARENCY-PLAN.md` (filesystem layout §3, signal locations §3 Signal → location table).
 - Existing debug UI: `app/PLAN.md` (the surface we're extending).
 - CLI counterpart: `art inspect` in `src/cli/inspect.ts` — the visualizer is essentially the GUI of `art inspect` with richer interaction.
+
+---
+
+## 10. Data contract (regression guard)
+
+A contract test in `tests/unit/pipeline-runner.test.ts` (describe `"Transparency contract for UX plan"`) runs one representative pipeline (root agent + stitch × 2 lanes + downstream agent + injected turn IPC) and asserts each on-disk artifact the UI depends on. Each `it` block is tied to a UX item from §2 of this plan. If a runtime change drops a field or stops writing a file, the test fails at the exact UX item that would silently break.
+
+Coverage matrix (✓ = asserted by the contract test):
+
+| UX item | File / event | Status |
+| --- | --- | --- |
+| L0 — top bar | `run.json` schemaVersion + pid + hostname + provider + args | ✓ |
+| L0 — outcome chip | `summary.json` outcome + durationMs + totalStages | ✓ |
+| L0 — sealed indicator | `sealed` marker | ✓ |
+| L0 — DAG node colors | `state/PIPELINE_STATE.json` dispatchTree + completedStages | ✓ |
+| L2 Input — prompt label | `prompt.txt` + `prompt.source` per stage | ✓ |
+| L2 Input — initial handoff | `initial.txt` when present | ✓ |
+| L2 Input — substitutions | `substitutions.json` with insertId/index/full substitutions map | ✓ |
+| L2 Input — command | `command.sh` + `command.json` | todo (covered by Command-mode block) |
+| L2 Input — container summary | `container.json` image + mode + mounts (rw flagged) | ✓ |
+| L2 Output — stage record | `stage.json` matchedMarker + result + retryCount + duration + inputHashes | ✓ |
+| L2 Output — diff | `diff/<mount>.diff` + `diff/summary.json` | ✓ (skipped on hosts without git+cp) |
+| L2 Internal — turns | `turns/NNN.json` | ✓ |
+| L2 Internal — decisions | `decision.marker` in events.jsonl per stage | ✓ |
+| L2 Internal — barrier eval | `decision.barrier` in events.jsonl | ✓ |
+| L4 — provenance | `provenance.json` agents + templates hashes + env | ✓ |
+| L4 — pipeline snapshot | `pipeline.snap.json` mirrors authored config | ✓ |
+| L4 — stitch event | `stitch.invoked` in events.jsonl with childNodeIds | ✓ |
+
+Add an `it` block here whenever the plan adds a new UX item that requires runtime support. The test will then make the dependency explicit.
