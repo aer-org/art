@@ -52,11 +52,19 @@ export interface PipelineStageDispatch {
   invocationId: string;
   copyIndex?: number;
   localName: string;
+  /**
+   * The full substitution map applied to this stage at stitch time
+   * (insertId, index, plus any per-lane payload fields). Captured for L1
+   * provenance so a reader can answer "why did this lane differ from its
+   * siblings". Runtime-only.
+   */
+  substitutions?: Record<string, unknown>;
 }
 
 export interface PipelineStage {
   name: string;
   agent?: string; // Local agents/<name>.md prompt ref. Resolved while loading config.
+  promptSource?: string; // Runtime-only. Set by resolveAgentRefs to `agents/<name>.md` (or omitted for inline prompts) for L1 provenance.
   prompt?: string;
   image?: string; // Registry key (agent mode) or image name (command mode)
   command?: string; // Shell command mode (runs sh -c, no agent)

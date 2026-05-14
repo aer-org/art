@@ -316,9 +316,9 @@ Status: **complete on `feat/transparency-foundation`**. Commits `68ae969` (plan 
 
 Status: **base subset done**. Per-stage I/O records written at `runs/<id>/nodes/<n>/stages/<s>/`. Artifact diff + size gate deferred (significant new infrastructure: shadow git, host requirement on git binary).
 
-- [~] Capture `promptSource` (path + sha256) and `resolvedSystemPrompt`. Full text written to `prompt.txt`; sha256 captured in `stage.json.inputHashes.prompt`. `promptSource` path (which `agents/<ref>.md` was resolved from) **not yet captured** — needs threading through `pipeline-config.ts` agent-ref resolution.
+- [x] Capture `promptSource` (path + sha256) and `resolvedSystemPrompt`. Full text in `prompt.txt`; sha256 in `stage.json.inputHashes.prompt`. `promptSource` written to a sibling `prompt.source` file containing either `agents/<name>.md` (resolved from a ref) or `inline`.
 - [x] Capture `initialPrompt` / `ephemeralSystemPrompt` from `buildPayloadHandoff` → `initial.txt`
-- [~] Capture `substitutions` map. `insertId`/`index`/`invocationId`/`parentNodeId`/`localName` written to `substitutions.json` for stitched stages. Per-lane payload fields **not yet captured** — would require exposing the substitution map on `PipelineStageDispatch`.
+- [x] Capture `substitutions` map. `substitutions.json` carries `insertId`/`index`/`invocationId`/`parentNodeId`/`localName` plus the full per-lane substitution map under `substitutions` (insertId, index, plus any `countFrom: 'payload'` fields). Stitch baking populates `PipelineStageDispatch.substitutions` so the record is complete.
 - [x] Capture `resolvedCommand`. Full command written to `command.sh`; sha256 in `stage.json.inputHashes.command`. `shell` / `timeout` / `env` snapshot in a sibling `command.json`.
 - [ ] Artifact diff per writeable mount:
   - [ ] At stage start, hardlink-copy each rw mount into `runs/<id>/.tmp/<stage>/`

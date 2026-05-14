@@ -40,6 +40,8 @@ export function resolveAgentRefs(
     }
 
     stage.prompt = fs.readFileSync(agentPath, 'utf-8');
+    // Stash provenance for L1 stage records before clearing the ref.
+    stage.promptSource = `agents/${stage.agent}.md`;
     delete stage.agent;
   }
 }

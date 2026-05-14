@@ -1304,6 +1304,12 @@ PAYLOAD FORMATS:
     try {
       if (stageConfig.prompt) {
         fs.writeFileSync(path.join(stageDir, 'prompt.txt'), stageConfig.prompt);
+        // Provenance: where the prompt came from. `agents/<name>.md` if the
+        // config resolved an agent ref, otherwise "inline".
+        fs.writeFileSync(
+          path.join(stageDir, 'prompt.source'),
+          stageConfig.promptSource ?? 'inline',
+        );
       }
       if (stageConfig.command) {
         fs.writeFileSync(
@@ -1344,6 +1350,10 @@ PAYLOAD FORMATS:
               invocationId: stageConfig.dispatch.invocationId,
               parentNodeId: stageConfig.dispatch.parentNodeId,
               localName: stageConfig.dispatch.localName,
+              // Per-lane payload substitution fields (e.g. {{id}}, {{kind}}
+              // from countFrom: 'payload'). Empty {} for single stitches
+              // with no extra payload fields.
+              substitutions: stageConfig.dispatch.substitutions ?? {},
             },
             null,
             2,

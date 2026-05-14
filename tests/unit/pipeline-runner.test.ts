@@ -986,6 +986,13 @@ describe('PipelineRunner FSM', () => {
     // Outcome carries retryCount and exitCode from the container result.
     expect(implementRecord.retryCount).toBe(0);
     expect(implementRecord).toHaveProperty('exitCode');
+
+    // For an inline-prompt stage (not loaded from agents/<name>.md),
+    // prompt.source records "inline" so future readers know where the
+    // prompt came from without re-running the pipeline.
+    expect(
+      fs.readFileSync(path.join(implementDir, 'prompt.source'), 'utf-8'),
+    ).toBe('inline');
   }, 15000);
 
   it('checkpoint resume: skips completed implement, starts at verify', async () => {

@@ -258,6 +258,7 @@ function cloneTemplateCopyForNode(
         invocationId,
         copyIndex,
         localName: stage.name,
+        substitutions: { ...subs },
       },
       transitions: stage.transitions.map((t) =>
         rewireTransitionForNode(t, rename),
