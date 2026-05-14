@@ -2964,6 +2964,120 @@ describe('Stitch integration', () => {
     });
   }, 30000);
 
+  it('nested all_success — failure of one grandchild propagates two levels up to the root', async () => {
+    // Root → "outer" × 3 (all_success). Each outer.mid → "inner" × 3 (all_success).
+    // Inner[0] of outer[0] fails; expectation: root resolves to 'error', and the
+    // outer[0] settlement reflects the error while siblings still settle 'success'.
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'outer.json'),
+      JSON.stringify({
+        entry: 'mid',
+        stages: [
+          {
+            name: 'mid',
+            prompt: 'mid {{index}}',
+            mounts: {},
+            transitions: [
+              { marker: 'GO_INNER', template: 'inner', next: null, count: 3 },
+            ],
+          },
+        ],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'inner.json'),
+      JSON.stringify({
+        entry: 'task',
+        stages: [
+          {
+            name: 'task',
+            prompt: 'task {{index}}',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'kick off',
+          mounts: {},
+          transitions: [
+            { marker: 'GO', template: 'outer', next: null, count: 3 },
+          ],
+        },
+      ],
+    };
+
+    const outerDispatch = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      'outer',
+    );
+    const outerNode = (i: number) => dispatchChildNodeId(outerDispatch, i);
+    const outerMid = (i: number) =>
+      dispatchStageName(outerDispatch, i, 'mid');
+
+    const innerDispatch = (i: number) =>
+      stitchInvocation(outerNode(i), outerMid(i), 'inner');
+    const innerNode = (i: number, j: number) =>
+      dispatchChildNodeId(innerDispatch(i), j);
+    const innerTask = (i: number, j: number) =>
+      dispatchStageName(innerDispatch(i), j, 'task');
+
+    ensureIpc('start');
+    for (let i = 0; i < 3; i++) {
+      ensureIpc(outerMid(i));
+      for (let j = 0; j < 3; j++) {
+        ensureIpc(innerTask(i, j));
+      }
+    }
+
+    enqueueStageOutput('start', [{ result: '[GO]' }]);
+    for (let i = 0; i < 3; i++) {
+      enqueueStageOutput(outerMid(i), [{ result: '[GO_INNER]' }]);
+    }
+    // outer[0]'s inner[0] fails by exhausting container-retry budget.
+    enqueueContainerExitLimit(innerTask(0, 0));
+    enqueueStageOutput(innerTask(0, 1), [{ result: '[DONE]' }]);
+    enqueueStageOutput(innerTask(0, 2), [{ result: '[DONE]' }]);
+    // All other inner tasks succeed cleanly.
+    for (let i = 1; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        enqueueStageOutput(innerTask(i, j), [{ result: '[DONE]' }]);
+      }
+    }
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const result = await runner.run();
+    expect(result).toBe('error');
+
+    const state = loadPipelineState(path.join(groupDir, '.state'));
+    // The grandchild barrier under outer[0] sees the failure of inner[0].
+    expect(state?.dispatchBarriers?.[innerDispatch(0)]?.settlements).toEqual({
+      [innerNode(0, 0)]: 'error',
+      [innerNode(0, 1)]: 'success',
+      [innerNode(0, 2)]: 'success',
+    });
+    // The root barrier under "outer" sees outer[0] as 'error' even though
+    // outer[1] and outer[2] independently succeeded.
+    expect(state?.dispatchBarriers?.[outerDispatch]?.settlements).toEqual({
+      [outerNode(0)]: 'error',
+      [outerNode(1)]: 'success',
+      [outerNode(2)]: 'success',
+    });
+  }, 30000);
+
   it('payload-driven fanout — agent emits 3-element payload, 3 lanes spawn with per-lane subs', async () => {
     // Template has one agent stage that uses {{id}} in its prompt. The planner
     // emits a 3-element fanout payload; runtime derives count=3 and maps
