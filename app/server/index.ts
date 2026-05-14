@@ -12,6 +12,7 @@ import { registerStageRoutes } from './routes/stage.ts';
 import { registerPipelineRoutes } from './routes/pipeline.ts';
 import { registerChatRoutes } from './routes/chat.ts';
 import { registerPreflightRoutes } from './routes/preflight.ts';
+import { registerRunsRoutes } from './routes/runs.ts';
 
 async function main() {
   const app = Fastify({ logger: { level: 'info' } });
@@ -24,6 +25,7 @@ async function main() {
   registerPipelineRoutes(app);
   registerChatRoutes(app);
   registerPreflightRoutes(app);
+  registerRunsRoutes(app);
 
   if (fs.existsSync(WEB_DIST)) {
     await app.register(fastifyStatic, {

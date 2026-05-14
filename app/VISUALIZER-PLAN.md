@@ -181,9 +181,9 @@ web/src/
 ## 7. Implementation phases (PR-sized chunks)
 
 ### Phase A — Read API foundation
-- [ ] `app/server/run-reader.ts` with file-system helpers (no chokidar; pure read)
-- [ ] Endpoints from §4 (the 12 routes)
-- [ ] Unit tests for `run-reader.ts` covering missing files, malformed JSON, classification edges
+- [x] `app/server/run-reader.ts` with file-system helpers (no chokidar; pure read). Mirrors the new `runs/<id>/` layout: listRuns, getRun, getStage, readEvents, readStageText/Command/Diff/Turns/Stream, readProvenance, readPipelineSnap.
+- [x] Endpoints from §4 (13 routes registered in `app/server/routes/runs.ts`, wired in `index.ts`).
+- [x] Unit tests for `run-reader.ts` covering missing files, malformed JSON, classification edges (sealed/live/crashed), stitched node walking, event filtering by type prefix + limit, stream tailing. 18 tests passing via `node --test` (Node 22 / `tsx --test` on Node 20).
 
 ### Phase B — Runs list page
 - [ ] `RunsListPage.tsx` + hash router skeleton (`/`, `/runs`, `/runs/:id`)
