@@ -1,64 +1,109 @@
 /**
- * RunDetailPage — Phase C placeholder. Currently just shows the raw header
- * + node tree so we can wire the route plumbing now and fill it in later.
+ * RunDetailPage — inspector view of an archived (or live) run.
+ *
+ * - Top header: runId + state + outcome + duration + host (with a 1px
+ *   colored hairline above keyed to outcome).
+ * - Body: ReactFlow DAG reconstructed from runs/<id>/pipeline.snap.json +
+ *   PIPELINE_STATE.json, with stage nodes augmented from per-stage
+ *   stage.json (retry pip, exit-code awareness, dispatch nodeId).
+ *
+ * Live runs poll every 5s; sealed/crashed runs load once. L2 sidebar +
+ * L3 panels arrive in Phase D.
  */
 import { useEffect, useState } from 'react';
 
-import { api, type RunDetail } from '../lib/api.ts';
-import { hrefFor } from '../router.tsx';
+import { PipelineGraph } from '../components/PipelineGraph.tsx';
+import { RunDetailHeader } from '../components/RunDetailHeader.tsx';
+import {
+  api,
+  type GraphEdge,
+  type GraphNode,
+  type RunDetail,
+} from '../lib/api.ts';
+
+const LIVE_POLL_MS = 5000;
 
 export function RunDetailPage(props: { runId: string }): JSX.Element {
   const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [graph, setGraph] = useState<{
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedStage, setSelectedStage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .runDetail(props.runId)
-      .then((d) => {
-        if (!cancelled) {
-          setDetail(d);
-          setError(null);
+    let pollTimer: number | null = null;
+
+    const load = async () => {
+      try {
+        const [d, g] = await Promise.all([
+          api.runDetail(props.runId),
+          api.runGraph(props.runId).catch(() => null),
+        ]);
+        if (cancelled) return;
+        setDetail(d);
+        setGraph(g);
+        setError(null);
+        // Poll only while the run is still moving.
+        if (d.state === 'live') {
+          pollTimer = window.setTimeout(load, LIVE_POLL_MS);
         }
-      })
-      .catch((err: Error) => {
-        if (!cancelled) setError(err.message);
-      });
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message);
+      }
+    };
+    load();
+
     return () => {
       cancelled = true;
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
     };
   }, [props.runId]);
 
+  if (error) {
+    return (
+      <div className="inspector">
+        <div className="inspector-empty">
+          <p className="error">Failed to load: {error}</p>
+        </div>
+      </div>
+    );
+  }
+  if (!detail) {
+    return (
+      <div className="inspector">
+        <div className="inspector-empty">
+          <p className="muted">Loading run…</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="run-detail-page">
-      <p>
-        <a href={hrefFor('/runs')}>← Back to runs</a>
-      </p>
-      {error && <p className="error">Failed to load: {error}</p>}
-      {detail && (
-        <>
-          <h2>
-            <code>{detail.runId}</code>
-          </h2>
-          <ul className="run-detail-header">
-            <li>State: <strong>{detail.state}</strong></li>
-            <li>Provider: {detail.provider ?? '-'}</li>
-            <li>Started: <code>{detail.startTime ?? '-'}</code></li>
-            <li>Ended: <code>{detail.endTime ?? '-'}</code></li>
-            <li>Outcome: {detail.outcome ?? '-'}</li>
-            <li>Has provenance: {String(detail.hasProvenance)}</li>
-            <li>Has pipeline snap: {String(detail.hasPipelineSnap)}</li>
-            <li>Has events: {String(detail.hasEvents)}</li>
-          </ul>
-          <h3>Nodes</h3>
-          <pre>{JSON.stringify(detail.nodes, null, 2)}</pre>
-          <p className="muted">
-            Full visualizer rendering arrives in Phase C (StageSidebar, L3
-            panels). For now this confirms the route + API plumbing works.
-          </p>
-        </>
+    <div className="inspector">
+      <RunDetailHeader run={detail} />
+      <div className="inspector-canvas">
+        {graph && graph.nodes.length > 0 ? (
+          <PipelineGraph
+            nodes={graph.nodes}
+            edges={graph.edges}
+            onNodeClick={setSelectedStage}
+          />
+        ) : (
+          <div className="inspector-empty">
+            <p className="muted">
+              No graph data archived for this run (missing pipeline.snap.json).
+            </p>
+          </div>
+        )}
+      </div>
+      {selectedStage && (
+        <div className="inspector-selection-hint">
+          Selected: <code>{selectedStage}</code> · sidebar arrives in Phase D
+        </div>
       )}
-      {!detail && !error && <p className="muted">Loading…</p>}
     </div>
   );
 }

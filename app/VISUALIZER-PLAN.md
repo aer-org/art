@@ -193,9 +193,10 @@ web/src/
 - [x] `App.tsx` slimmed to router shell; original body moved to `pages/LivePage.tsx`.
 
 ### Phase C — Run detail header + graph
-- [ ] `RunDetailPage.tsx` with top-bar (L0 from §2) + reuse `PipelineGraph` for completed run
-- [ ] StageNode color/icon/retry-pip enhancements
-- [ ] Stitch group rendering (dashed box + lane count)
+- [x] `RunDetailPage.tsx` with operator-console header (runId + state + provider + outcome + duration + host, with a 1px hairline above keyed to outcome) and a ReactFlow DAG reconstructed from `pipeline.snap.json` + `state/PIPELINE_STATE.json`. Live runs poll every 5s; sealed runs load once.
+- [x] StageNode rewritten (inspector design): 3px left state stripe (pulses on running, dashed border for pending), kind glyph (● agent / ▢ command), retry pip (`↻N` orange badge) when `retryCount > 0`, error glyph for failed stages, JetBrains Mono throughout. Fade-in stagger on load.
+- [x] Server endpoint `/api/runs/:runId/graph` reuses `buildGraph` against the archived pipeline snapshot + state, augments each node with `retryCount` / `exitCode` / `nodeId` from per-stage `stage.json`.
+- [~] Stitch lanes are rendered as separate nodes with `stitched` sub-label (existing buildGraph behavior). **Dashed subgraph box** wrapping lanes (ReactFlow parent-node grouping) deferred — material for a Phase E polish along with the L3 panels.
 
 ### Phase D — L2 stage sidebar
 - [ ] `StageSidebar.tsx` with Input / Output / Internal accordion sections

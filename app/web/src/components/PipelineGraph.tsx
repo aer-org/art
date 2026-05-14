@@ -20,7 +20,7 @@ interface Props {
 
 const nodeTypes = { stage: StageNode };
 
-const NODE_WIDTH = 180;
+const NODE_WIDTH = 220;
 const NODE_HEIGHT = 70;
 
 function layout(nodes: GraphNode[], edges: GraphEdge[]) {
@@ -32,12 +32,12 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
   for (const e of edges) g.setEdge(e.source, e.target);
   dagre.layout(g);
 
-  const rfNodes: Node[] = nodes.map((n) => {
+  const rfNodes: Node[] = nodes.map((n, idx) => {
     const p = g.node(n.id);
     return {
       id: n.id,
       type: 'stage',
-      data: { stage: n },
+      data: { stage: n, revealIndex: idx },
       position: { x: p.x - NODE_WIDTH / 2, y: p.y - NODE_HEIGHT / 2 },
     };
   });

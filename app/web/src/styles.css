@@ -899,3 +899,228 @@ input, textarea {
   font-size: 13px;
 }
 .run-detail-header li code { font-size: 12px; }
+
+/* --- Operator-console layer (RunDetailPage inspector) ---------------- */
+
+:root {
+  --dim: #6b7280;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.inspector,
+.inspector * {
+  font-family: var(--mono);
+  font-feature-settings: 'calt' 1, 'ss01' 1;
+}
+.inspector {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 41px); /* viewport minus top-nav */
+}
+
+.inspector-empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+  padding: 32px;
+}
+
+.inspector-canvas {
+  flex: 1;
+  background-color: var(--bg);
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.04) 1px,
+    transparent 1px
+  );
+  background-size: 16px 16px;
+  min-height: 0;
+}
+/* Reuse existing .graph-container fill */
+.inspector-canvas .graph-container { height: 100%; }
+
+.inspector-selection-hint {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.inspector-selection-hint code { color: var(--fg); }
+
+/* --- Header strip --------------------------------------------------- */
+
+.inspector-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr repeat(5, min-content);
+  column-gap: 32px;
+  align-items: end;
+  height: 56px;
+  padding: 0 24px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+.inspector-header::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: var(--accent);
+}
+.inspector-header.outcome-success::before { background: var(--good); }
+.inspector-header.outcome-error::before { background: var(--bad); }
+.inspector-header.outcome-live::before { background: var(--accent); }
+.inspector-header.outcome-crashed::before { background: var(--warn); }
+
+.inspector-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
+}
+.inspector-cell .label {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.inspector-cell .value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}
+.inspector-cell .value.large {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.run-id-cell {
+  position: relative;
+}
+.inspector-back {
+  position: absolute;
+  top: -36px;
+  left: 0;
+  font-size: 11px;
+  color: var(--dim);
+  text-decoration: none;
+  letter-spacing: 0.04em;
+}
+.inspector-back:hover { color: var(--fg); }
+
+/* --- StageNode (inspector variant) ---------------------------------- */
+
+.stage-node-v2 {
+  position: relative;
+  width: 220px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  padding: 8px 28px 8px 16px;
+  font-family: var(--mono);
+  color: var(--fg);
+  opacity: 0;
+  transform: translateY(2px);
+  animation: stage-node-in 220ms ease-out forwards;
+  animation-delay: var(--reveal-delay, 0ms);
+}
+
+@keyframes stage-node-in {
+  to { opacity: 1; transform: none; }
+}
+
+.stage-node-v2:hover { border-color: var(--fg-dim); }
+
+.stage-node-v2::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--dim);
+}
+
+.stage-node-v2.pending { border-style: dashed; }
+.stage-node-v2.pending::before { background: var(--dim); }
+.stage-node-v2.running::before {
+  background: var(--running);
+  animation: stripe-pulse 1.2s ease-in-out infinite;
+}
+.stage-node-v2.success::before { background: var(--good); }
+.stage-node-v2.error::before { background: var(--bad); }
+.stage-node-v2.unknown::before { background: var(--warn); }
+
+@keyframes stripe-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.stage-node-v2 .stage-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.2;
+}
+.stage-node-v2 .stage-name .name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stage-node-v2 .kind-glyph {
+  color: var(--fg-dim);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.stage-node-v2 .sub {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--dim);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.stage-node-v2 .retry-pip {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  background: rgba(245, 158, 11, 0.08);
+  padding: 1px 5px;
+  line-height: 1;
+}
+.stage-node-v2 .err-glyph {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 11px;
+  color: var(--bad);
+}
+
+.stage-node-v2.template-placeholder {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--accent);
+  opacity: 0.7;
+}
+.stage-node-v2.template-placeholder::before { background: var(--accent); }
+
+/* --- Edge label adjustments in inspector view ----------------------- */
+
+.inspector .react-flow__edge-text {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--fg-dim);
+  letter-spacing: 0.04em;
+}
+.inspector .react-flow__edge-textbg {
+  fill: var(--panel);
+}

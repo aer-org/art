@@ -95,6 +95,10 @@ export interface GraphNode {
   isStitched: boolean;
   isTemplatePlaceholder: boolean;
   templateName?: string;
+  // Transparency layer (run-detail view only).
+  retryCount?: number;
+  nodeId?: string; // dispatch node ('root' or 'd_…')
+  exitCode?: number | null;
 }
 
 export interface GraphEdge {

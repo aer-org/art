@@ -32,6 +32,10 @@ export interface GraphNode {
   isStitched: boolean;
   isTemplatePlaceholder: boolean;
   templateName?: string;
+  // Run-detail mode only.
+  retryCount?: number;
+  nodeId?: string;
+  exitCode?: number | null;
 }
 
 export interface GraphEdge {
@@ -224,6 +228,11 @@ export const api = {
     http<{ turns: Array<Record<string, unknown>> }>(
       'GET',
       `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/turns`,
+    ),
+  runGraph: (runId: string) =>
+    http<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/graph`,
     ),
   stageStream: (
     runId: string,

@@ -21,6 +21,7 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
+import { buildGraph } from '../pipeline-graph.ts';
 import { projectState } from '../project-state.ts';
 import {
   getRun,
@@ -28,14 +29,18 @@ import {
   listRuns,
   readEvents,
   readPipelineSnap,
+  readPipelineSnapConfig,
+  readPipelineStateForRun,
   readProvenance,
   readStageCommand,
   readStageDiff,
   readStageDiffSummary,
   readStageStream,
+  readStageSummaryMap,
   readStageText,
   readStageTurns,
 } from '../run-reader.ts';
+import type { PipelineConfig, PipelineState } from '../types.ts';
 
 interface RunIdParam {
   runId: string;
@@ -115,6 +120,41 @@ export function registerRunsRoutes(app: FastifyInstance): void {
         return reply.code(404).send({ error: 'No pipeline snapshot for run.' });
       }
       return snap;
+    },
+  );
+
+  // Reconstruct the graph for a sealed/crashed/live run from its archived
+  // pipeline.snap.json + state/PIPELINE_STATE.json, augmenting each node
+  // with the transparency-layer fields the inspector StageNode uses
+  // (retryCount, exitCode, nodeId).
+  app.get<{ Params: RunIdParam }>(
+    '/api/runs/:runId/graph',
+    async (req, reply) => {
+      const projectDir = projectOr400(reply);
+      if (!projectDir) return;
+      const config = readPipelineSnapConfig(
+        projectDir,
+        req.params.runId,
+      ) as PipelineConfig | null;
+      if (!config) {
+        return reply
+          .code(404)
+          .send({ error: 'No pipeline.snap.json for run.' });
+      }
+      const state = readPipelineStateForRun(
+        projectDir,
+        req.params.runId,
+      ) as PipelineState | null;
+      const graph = buildGraph(config, state);
+      const summary = readStageSummaryMap(projectDir, req.params.runId);
+      for (const node of graph.nodes) {
+        const rec = summary.get(node.name);
+        if (!rec) continue;
+        node.retryCount = rec.retryCount;
+        node.exitCode = rec.exitCode;
+        node.nodeId = rec.nodeId;
+      }
+      return graph;
     },
   );
 

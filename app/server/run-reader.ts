@@ -448,3 +448,66 @@ export function readPipelineSnap(
     path.join(runDirOf(projectDir, runId), 'pipeline.snap.json'),
   );
 }
+
+/**
+ * Build a map of `stageName -> { retryCount, exitCode, nodeId }` by walking
+ * every nodes/<n>/stages/<s>/stage.json in the run. Used to augment the
+ * graph nodes in the run-detail view with transparency-layer data.
+ *
+ * Multiple stitched lanes can map to the *same* stage name across nodes;
+ * here we collapse to the first occurrence — the graph itself only renders
+ * one node per stage name in the current materialization, so this matches
+ * what the UI will draw.
+ */
+export function readStageSummaryMap(
+  projectDir: string,
+  runId: string,
+): Map<
+  string,
+  { retryCount?: number; exitCode?: number | null; nodeId: string }
+> {
+  const result = new Map<
+    string,
+    { retryCount?: number; exitCode?: number | null; nodeId: string }
+  >();
+  const dir = path.join(runDirOf(projectDir, runId), 'nodes');
+  if (!fs.existsSync(dir)) return result;
+  for (const nodeId of fs.readdirSync(dir)) {
+    const stagesDir = path.join(dir, nodeId, 'stages');
+    if (!fs.existsSync(stagesDir)) continue;
+    for (const stage of fs.readdirSync(stagesDir)) {
+      if (result.has(stage)) continue;
+      const rec = readJson(path.join(stagesDir, stage, 'stage.json'));
+      if (!rec) continue;
+      result.set(stage, {
+        retryCount:
+          typeof rec.retryCount === 'number' ? rec.retryCount : undefined,
+        exitCode: rec.exitCode as number | null | undefined,
+        nodeId,
+      });
+    }
+  }
+  return result;
+}
+
+export function readPipelineSnapConfig(
+  projectDir: string,
+  runId: string,
+): Record<string, unknown> | null {
+  return readJson(
+    path.join(runDirOf(projectDir, runId), 'pipeline.snap.json'),
+  );
+}
+
+export function readPipelineStateForRun(
+  projectDir: string,
+  runId: string,
+): Record<string, unknown> | null {
+  return readJson(
+    path.join(
+      runDirOf(projectDir, runId),
+      'state',
+      'PIPELINE_STATE.json',
+    ),
+  );
+}
