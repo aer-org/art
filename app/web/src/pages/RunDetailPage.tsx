@@ -12,9 +12,13 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 
+import { L3Panel } from '../components/L3Panel.tsx';
 import { PipelineGraph } from '../components/PipelineGraph.tsx';
 import { RunDetailHeader } from '../components/RunDetailHeader.tsx';
-import { StageSidebar } from '../components/StageSidebar.tsx';
+import {
+  StageSidebar,
+  type L3PanelKind,
+} from '../components/StageSidebar.tsx';
 import { useStageDetail } from '../hooks/useStageDetail.ts';
 import {
   api,
@@ -33,6 +37,9 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
+  const [l3, setL3] = useState<{ kind: L3PanelKind; mount?: string } | null>(
+    null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -72,14 +79,21 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
 
   const stageData = useStageDetail(detail, selectedNodeId, selectedStage);
 
-  // Esc closes the sidebar.
+  // Esc: close L3 first, then sidebar.
   useEffect(() => {
     if (!selectedStage) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedStage(null);
+      if (e.key !== 'Escape') return;
+      if (l3) setL3(null);
+      else setSelectedStage(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, [selectedStage, l3]);
+
+  // Closing the stage also closes any L3 panel.
+  useEffect(() => {
+    if (!selectedStage) setL3(null);
   }, [selectedStage]);
 
   if (error) {
@@ -104,10 +118,15 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
   const sidebarOpen =
     !!selectedStage && !!selectedNodeId && stageData.stage !== null;
 
+  const l3Open = sidebarOpen && l3 !== null;
+  const layoutClass = l3Open
+    ? 'inspector-with-l3'
+    : sidebarOpen
+      ? 'inspector-with-sidebar'
+      : '';
+
   return (
-    <div
-      className={`inspector ${sidebarOpen ? 'inspector-with-sidebar' : ''}`}
-    >
+    <div className={`inspector ${layoutClass}`}>
       <RunDetailHeader run={detail} />
       <div className="inspector-body">
         <div className="inspector-canvas">
@@ -115,7 +134,10 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
             <PipelineGraph
               nodes={graph.nodes}
               edges={graph.edges}
-              onNodeClick={setSelectedStage}
+              onNodeClick={(name) => {
+                setSelectedStage(name);
+                setL3(null);
+              }}
             />
           ) : (
             <div className="inspector-empty">
@@ -131,6 +153,21 @@ export function RunDetailPage(props: { runId: string }): JSX.Element {
             stageName={selectedStage}
             data={stageData}
             onClose={() => setSelectedStage(null)}
+            onOpenPanel={(kind, mount) => setL3({ kind, mount })}
+          />
+        )}
+        {l3Open && selectedStage && selectedNodeId && (
+          <L3Panel
+            runId={props.runId}
+            nodeId={selectedNodeId}
+            stageName={selectedStage}
+            kind={l3.kind}
+            mount={l3.mount}
+            stage={stageData.stage}
+            events={stageData.events}
+            turns={stageData.turns}
+            diffSummary={stageData.diffSummary}
+            onClose={() => setL3(null)}
           />
         )}
       </div>

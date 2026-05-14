@@ -204,18 +204,20 @@ web/src/
 - [x] `useStageDetail` hook fetches stage.json + container.json + filtered events + turns + diff summary in parallel; refetches whenever selection changes.
 - [~] Tooltips (L1) for graph nodes + edges — not yet. ReactFlow nodes already get implicit cursor feedback via hover styles, and the sidebar gives the full detail one click away. Implicit tooltips deferred to a Phase J polish.
 
-### Phase E — L3 panel — Input (smallest first)
-- [ ] `L3PromptViewer.tsx`, `L3CommandViewer.tsx`, `L3ContainerInfo.tsx`
-- [ ] Slide-out panel framework — two-layer (sidebar + L3) push
+### Phase E — L3 panel — Input
+- [x] `L3PromptViewer.tsx` — full `prompt.txt` (or `initial.txt`) with source label + sha hint + copy button.
+- [x] `L3CommandViewer.tsx` — `command.sh` + shell/timeout + env table.
+- [x] `L3ContainerInfo.tsx` — image + flags (gpu / privileged / runAsRoot) + mounts table (ro/rw chips) + env table.
+- [x] Slide-out panel framework — third grid column (`1fr | 24% | 44%`); sidebar narrows, L3 takes the right; Esc closes L3 first, then sidebar.
 
 ### Phase F — L3 panel — Output (diff)
-- [ ] `L3DiffViewer.tsx` with react-diff-view, mount selector
-- [ ] Empty-state for unchanged mounts
+- [x] `L3DiffViewer.tsx` with in-house unified-diff renderer (saved the react-diff-view dependency: ~30KB, peer deps). Mount tabs; `unchanged` mounts shown but dimmed; parsed view colors hunk/add/del/context lines; "raw" toggle dumps full text; truncates at 4000 lines to keep render fast.
+- [x] Empty-state for unchanged mounts and for runs without rw mounts.
 
 ### Phase G — L3 panel — Internal
-- [ ] `L3TurnsTable.tsx` + per-turn detail
-- [ ] `L3DecisionsList.tsx` + JSON detail
-- [ ] `L3StreamTail.tsx` with kind toggle
+- [x] `L3TurnsTable.tsx` — `# | model | in | out | cache | latency | finish` with click-to-expand JSON per row + aggregate header.
+- [x] `L3DecisionsList.tsx` — type filter chips (`all`, plus each distinct `decision.*`), HH:MM:SS time column, click-to-expand JSON per row.
+- [x] `L3StreamTail.tsx` — kind toggle (agent/stdout/stderr only if non-empty), tail size dropdown (100/500/2000). Empty-state explains stream sinks are Phase 2-deferred.
 
 ### Phase H — L4 overlays
 - [ ] `L4RunInfo.tsx` — provenance + pipeline.snap
