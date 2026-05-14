@@ -45,7 +45,7 @@ function emit(
   if (recorder) {
     recorder.event({
       level: recorderLevel,
-      type: msg ? `log.${level}` : `log.${level}`,
+      type: `log.${level}`,
       message: msg,
       data,
     });
