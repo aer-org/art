@@ -359,9 +359,11 @@ Status: **decisions done, IPC mirror deferred**. All decision events land in `ev
 
 ### Phase 6 — L4 container + provenance
 
-- [ ] `container.json` per stage with image, resolved mounts, devices, gpu, env, exit code, duration
-- [ ] `provenance.json` + `pipeline.snap.json` at run start
-- [ ] Mount-watchpoint violations array populated from L1 diff
+Status: **container metadata + provenance done**. Mount-watchpoint deferred.
+
+- [x] `container.json` per stage with image, resolved mounts, devices, gpu, env. Written at spawn time (static metadata). Exit code + duration land in `stage.json`; joining the two gives the full container-level picture.
+- [x] `provenance.json` + `pipeline.snap.json` written at run start by the root PipelineRunner. provenance.json hashes every `agents/*.md` + `templates/*.json` and snapshots an allowlisted env var subset (`ART_*`, `LOG_LEVEL`, `CI`, `CONTAINER_*`, `IDLE_TIMEOUT`, `TZ`) with explicit deny list for known secrets (`*_API_KEY`, `_ART_OAUTH_TOKEN`).
+- [ ] Mount-watchpoint violations populated from L1 diff. Defer — current diff implementation only inspects rw mounts; flagging writes to ro mounts would need filesystem audit hooks (inotify or similar). Defer until a security review motivates it.
 
 ### Phase 7 — Retention + inspect
 

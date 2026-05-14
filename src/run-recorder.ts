@@ -12,13 +12,37 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import crypto from 'crypto';
+import crypto, { createHash } from 'crypto';
 
 /**
  * Schema version for run.json / summary.json / events.jsonl records. Bump on
  * incompatible shape change; readers should refuse unknown versions.
  */
 export const RECORDER_SCHEMA_VERSION = 1;
+
+/**
+ * Env vars whose presence/value is safe to record in provenance. Anything
+ * outside this list is omitted because it might carry secrets (API keys,
+ * OAuth tokens, etc). When you add a new ART_* setting that affects
+ * behavior, add it here so it appears in the run record.
+ */
+const PROVENANCE_ENV_PREFIXES = ['ART_'];
+const PROVENANCE_ENV_ALLOW = new Set([
+  'LOG_LEVEL',
+  'CI',
+  'CONTAINER_IMAGE',
+  'CONTAINER_TIMEOUT',
+  'CONTAINER_MAX_OUTPUT_SIZE',
+  'IDLE_TIMEOUT',
+  'TZ',
+]);
+const PROVENANCE_ENV_DENY = new Set([
+  // Even ART_* fields that look like secrets stay out.
+  'ART_OAUTH_TOKEN',
+  '_ART_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+]);
 
 export interface RunInitInfo {
   schemaVersion: number;
@@ -142,6 +166,89 @@ export class RunRecorder {
     } catch (err) {
       console.error(
         `[recorder] failed to write event: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Snapshot PIPELINE.json verbatim at run start so a later reader sees the
+   * exact authored config even if the on-disk file was edited afterwards.
+   * Best-effort.
+   */
+  snapshotPipeline(pipelinePath: string): void {
+    try {
+      if (!fs.existsSync(pipelinePath)) return;
+      const content = fs.readFileSync(pipelinePath);
+      fs.writeFileSync(path.join(this.runDir, 'pipeline.snap.json'), content);
+    } catch (err) {
+      console.error(
+        `[recorder] failed to snapshot PIPELINE.json: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Write provenance.json: sha256 of every file under `agents/` and
+   * `templates/` in the bundle, plus an env-var whitelist. Lets a future
+   * reader verify "the agents/foo.md on disk today matches what this run
+   * loaded" without re-running.
+   */
+  captureRunProvenance(bundleDir: string): void {
+    const hashFilesIn = (
+      sub: string,
+      ext: string,
+    ): Array<{ path: string; sha256: string; bytes: number }> => {
+      const dir = path.join(bundleDir, sub);
+      if (!fs.existsSync(dir)) return [];
+      const out: Array<{ path: string; sha256: string; bytes: number }> = [];
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        return [];
+      }
+      for (const entry of entries) {
+        if (!entry.endsWith(ext)) continue;
+        const fp = path.join(dir, entry);
+        try {
+          const buf = fs.readFileSync(fp);
+          out.push({
+            path: `${sub}/${entry}`,
+            sha256: createHash('sha256').update(buf).digest('hex'),
+            bytes: buf.length,
+          });
+        } catch {
+          // skip unreadable
+        }
+      }
+      return out;
+    };
+
+    const envSnapshot: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (typeof v !== 'string') continue;
+      if (PROVENANCE_ENV_DENY.has(k)) continue;
+      const isPrefixed = PROVENANCE_ENV_PREFIXES.some((p) => k.startsWith(p));
+      const isAllowed = PROVENANCE_ENV_ALLOW.has(k);
+      if (!isPrefixed && !isAllowed) continue;
+      envSnapshot[k] = v;
+    }
+
+    const record = {
+      schemaVersion: RECORDER_SCHEMA_VERSION,
+      bundleDir,
+      agents: hashFilesIn('agents', '.md'),
+      templates: hashFilesIn('templates', '.json'),
+      env: envSnapshot,
+    };
+    try {
+      atomicWrite(
+        path.join(this.runDir, 'provenance.json'),
+        JSON.stringify(record, null, 2),
+      );
+    } catch (err) {
+      console.error(
+        `[recorder] failed to write provenance.json: ${(err as Error).message}`,
       );
     }
   }

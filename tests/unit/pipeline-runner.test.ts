@@ -929,6 +929,11 @@ describe('PipelineRunner FSM', () => {
     enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
 
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    // Provenance snapshot reads PIPELINE.json from the bundle dir if present.
+    fs.writeFileSync(
+      path.join(groupDir, 'PIPELINE.json'),
+      JSON.stringify(config, null, 2),
+    );
     const runner = new PipelineRunner(
       group,
       'test@g.us',
@@ -1017,6 +1022,25 @@ describe('PipelineRunner FSM', () => {
           e.stageName === 'verify',
       )?.data.matched,
     ).toBe('VERIFY_PASS');
+
+    // L4 container.json captures static container metadata per stage.
+    const containerInfo = JSON.parse(
+      fs.readFileSync(path.join(implementDir, 'container.json'), 'utf-8'),
+    );
+    expect(containerInfo.schemaVersion).toBe(1);
+    expect(containerInfo.stageName).toBe('implement');
+    expect(containerInfo.mode).toBe('agent');
+    expect(Array.isArray(containerInfo.mounts)).toBe(true);
+
+    // Provenance + pipeline snapshot at run root.
+    expect(fs.existsSync(path.join(runDir, 'pipeline.snap.json'))).toBe(true);
+    const provenance = JSON.parse(
+      fs.readFileSync(path.join(runDir, 'provenance.json'), 'utf-8'),
+    );
+    expect(provenance.schemaVersion).toBe(1);
+    expect(Array.isArray(provenance.agents)).toBe(true);
+    expect(Array.isArray(provenance.templates)).toBe(true);
+    expect(typeof provenance.env).toBe('object');
   }, 15000);
 
   it('checkpoint resume: skips completed implement, starts at verify', async () => {

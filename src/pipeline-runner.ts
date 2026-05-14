@@ -275,6 +275,13 @@ export class PipelineRunner {
       this.ownsRecorder = true;
       this.diffEnabled =
         process.env.ART_NO_DIFF !== '1' && diffHostBinariesAvailable();
+      // Provenance snapshot at run start: PIPELINE.json verbatim + sha256
+      // of agents/templates + env whitelist. Stitched-child runners skip
+      // this — the root already captured it for the run.
+      this.recorder.snapshotPipeline(
+        path.join(this.bundleDir, 'PIPELINE.json'),
+      );
+      this.recorder.captureRunProvenance(this.bundleDir);
     } else {
       const active = getActiveRecorder();
       if (!active) {
@@ -1563,6 +1570,40 @@ PAYLOAD FORMATS:
       this.diffEnabled && rwMounts.length > 0
         ? captureStagePreState(stageDir, rwMounts)
         : null;
+
+    // L4 container metadata: image, resolved mounts, devices, gpu, env.
+    // Static at spawn time. Exit code + duration land in stage.json at
+    // the end of the stage, so a reader joining the two has the full
+    // container-level picture.
+    try {
+      fs.writeFileSync(
+        path.join(stageDir, 'container.json'),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            stageName: stageConfig.name,
+            mode: stageConfig.command ? 'command' : 'agent',
+            image: resolvedImage ?? stageConfig.image ?? null,
+            mounts: internalMounts.map((m) => ({
+              hostPath: m.hostPath,
+              containerPath: m.containerPath,
+              readonly: m.readonly,
+            })),
+            devices: stageConfig.devices ?? [],
+            gpu: stageConfig.gpu === true,
+            runAsRoot: stageConfig.runAsRoot === true,
+            privileged: stageConfig.privileged === true,
+            env: stageConfig.env ?? {},
+          },
+          null,
+          2,
+        ),
+      );
+    } catch (err) {
+      console.error(
+        `[recorder] failed to write container.json for ${stageConfig.name}: ${(err as Error).message}`,
+      );
+    }
 
     const handle: StageHandle = {
       name: stageConfig.name,
