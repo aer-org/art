@@ -23,18 +23,6 @@ function barrierStatusToNodeStatus(
   return 'pending';
 }
 
-// A stage is a "lane terminal" — its completion (possibly mediated by
-// sub-stitches it spawns) is what allows its owning barrier to settle. We
-// detect it statically: every outgoing transition has empty `next`. Sub-
-// stitches use the `template` field with `next: null`, which still counts
-// as terminal because the sub-barrier feeds back via its own join.
-function isLaneTerminal(stage: PipelineStage): boolean {
-  for (const t of stage.transitions ?? []) {
-    if (asArray(t.next).length > 0) return false;
-  }
-  return true;
-}
-
 function inferKind(stage: PipelineStage): 'agent' | 'command' {
   return stage.kind ?? (stage.command ? 'command' : 'agent');
 }
@@ -359,18 +347,30 @@ export function buildGraph(
           isTemplate: true,
         });
       }
+      // For each lane stage, emit one barrier-join edge per pure terminal
+      // transition (next: null AND no template). The marker is preserved
+      // so the reader can tell whether the lane exited via success, error
+      // or some other named outcome.
       for (const s of childNode?.config?.stages ?? []) {
-        if (isLaneTerminal(s)) {
-          edges.push({
-            id: `e${edgeId++}`,
-            source: s.name,
-            target: pseudoId,
-            isTemplate: true,
-          });
+        for (const t of s.transitions ?? []) {
+          if (asArray(t.next).length === 0 && !t.template) {
+            edges.push({
+              id: `e${edgeId++}`,
+              source: s.name,
+              target: pseudoId,
+              marker: t.marker,
+              isTemplate: true,
+            });
+          }
         }
       }
     }
 
+    // Downstream OR cascade. If this barrier has no `downstreamNext`,
+    // resolution propagates up to the barrier that spawned the scope
+    // containing this barrier's origin. We find that parent by looking
+    // for the barrier whose `childNodeIds` includes our `ownerNodeId`
+    // — the dispatch model already encodes this relationship.
     if (barrier.downstreamNext) {
       edges.push({
         id: `e${edgeId++}`,
@@ -378,8 +378,28 @@ export function buildGraph(
         target: barrier.downstreamNext,
         isTemplate: true,
       });
+    } else {
+      const parentId = findParentBarrierId(barrier, dispatchBarriers ?? {});
+      if (parentId && parentId !== barrier.id) {
+        edges.push({
+          id: `e${edgeId++}`,
+          source: pseudoId,
+          target: barrierPseudoId(parentId),
+          isTemplate: true,
+        });
+      }
     }
   }
 
   return { nodes, edges };
+}
+
+function findParentBarrierId(
+  barrier: PipelineDispatchBarrier,
+  all: Record<string, PipelineDispatchBarrier>,
+): string | null {
+  for (const [id, candidate] of Object.entries(all)) {
+    if (candidate.childNodeIds?.includes(barrier.ownerNodeId)) return id;
+  }
+  return null;
 }
