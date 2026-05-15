@@ -115,7 +115,19 @@ function BarrierNode({
           ['--reveal-delay' as never]: `${Math.min(revealIndex, 20) * 30}ms`,
         } as CSSProperties)
       : {};
+  // Live-run barriers carry `childNodeIds` (the spawned lanes). Template
+  // overview barriers carry `templateStageCount` (how many stages the
+  // template definition has) + `templateSelfStitches` (retries). Both
+  // describe what the lane looks like — render whichever we have.
   const fanCount = stage.childNodeIds?.length ?? 0;
+  const stageN = stage.templateStageCount ?? 0;
+  const retries = stage.templateSelfStitches ?? 0;
+  const detail =
+    fanCount > 0
+      ? `${fanCount} lane${fanCount === 1 ? '' : 's'}`
+      : stageN > 0
+        ? `${stageN} stage${stageN === 1 ? '' : 's'}${retries > 0 ? ` · ↻${retries}` : ''}`
+        : '';
   return (
     <div className={cls} style={style} title={stage.barrierId}>
       <Handle type="target" position={Position.Left} />
@@ -123,8 +135,8 @@ function BarrierNode({
       <div className="barrier-meta">
         <div className="barrier-template">{stage.templateName}</div>
         <div className="barrier-policy">
-          {stage.joinPolicy ?? 'all_success'} · {fanCount} lane
-          {fanCount === 1 ? '' : 's'}
+          {stage.joinPolicy ?? 'all_success'}
+          {detail ? ` · ${detail}` : ''}
         </div>
       </div>
       <Handle type="source" position={Position.Right} />

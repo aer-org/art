@@ -24,7 +24,7 @@ import {
   type PipelineSnapshot,
   type PreflightResponse,
 } from '../lib/api.ts';
-import { expandTemplateGraph } from '../lib/templateExpand.ts';
+import { buildTemplateOverviewGraph } from '../lib/templateOverview.ts';
 
 export function LivePage(props: {
   preflight: PreflightResponse | null;
@@ -67,8 +67,12 @@ export function LivePage(props: {
   }, [snapshot.graphMode]);
 
   const displayGraph = useMemo(() => {
-    if (snapshot.graphMode === 'template-overview' && expandedTemplates.size > 0) {
-      return expandTemplateGraph(snapshot, expandedTemplates);
+    // In template-overview mode we always rebuild the graph from
+    // pipeline + templates (server's `graph` is now just a fallback for
+    // clients that haven't been updated). Live mode keeps using the
+    // server-built barrier graph.
+    if (snapshot.graphMode === 'template-overview' && snapshot.templates) {
+      return buildTemplateOverviewGraph(snapshot, expandedTemplates);
     }
     return snapshot.graph ?? { nodes: [], edges: [] };
   }, [snapshot, expandedTemplates]);
@@ -82,8 +86,15 @@ export function LivePage(props: {
 
   function handleGraphNodeClick(nodeId: string): void {
     const node = displayGraph.nodes.find((n) => n.id === nodeId);
-    if (node?.kind === 'template') {
-      const name = node.templateName ?? node.name;
+    // In template-overview mode, the barrier IS the template
+    // placeholder when the template is collapsed. Clicking a barrier
+    // toggles expansion of its associated template.
+    if (
+      snapshot.graphMode === 'template-overview' &&
+      node?.kind === 'barrier' &&
+      node.templateName
+    ) {
+      const name = node.templateName;
       setExpandedTemplates((cur) => {
         const next = new Set(cur);
         if (next.has(name)) next.delete(name);
