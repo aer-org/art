@@ -317,35 +317,46 @@ export function buildTemplateOverviewGraph(
     }
   }
 
-  // 4b) Per-barrier wiring: spawn invocations, fan-out, downstream/cascade.
+  // 4b) Per-barrier wiring:
+  //
+  // The barrier sits AFTER the lane (join point), not before it. So:
+  //   - Spawn: origin → entry(X) directly, OR origin → ⋈X when X is
+  //     collapsed (the barrier doubles as the lane placeholder then).
+  //   - Lane terminals (pure terminals only — sub-stitches cascade) →
+  //     ⋈X. Handled above in 4a for expanded templates.
+  //   - Post-join: ⋈X → downstreamNext OR cascade to ⋈parent.
   for (const b of visibleBarriers.values()) {
-    // Incoming: each spawn site whose origin is currently visible.
+    const isOpen = expanded.has(b.template);
+
+    // Spawn edges: one per visible spawn site.
     for (const site of b.spawnSites) {
       if (!nodeIds.has(site.originId)) continue;
-      addEdge({
-        source: site.originId,
-        target: b.id,
-        marker: site.marker,
-        isTemplate: true,
-      });
-    }
-
-    // Fan-out: when the template is expanded, point at its entry stage.
-    // When collapsed, no fan-out edge — the barrier alone represents
-    // the unopened lane.
-    if (expanded.has(b.template)) {
-      const tpl = templates[b.template];
-      const entryName = tpl?.entry ?? tpl?.stages?.[0]?.name;
-      if (entryName) {
+      if (isOpen) {
+        // Lane is visible — spawn straight into the entry stage.
+        const tpl = templates[b.template];
+        const entryName = tpl?.entry ?? tpl?.stages?.[0]?.name;
+        if (entryName) {
+          addEdge({
+            source: site.originId,
+            target: stageIdInTpl(b.template, entryName),
+            marker: site.marker,
+            isTemplate: true,
+          });
+        }
+      } else {
+        // Lane is hidden — the barrier stands in for it. Spawn lands
+        // on the barrier itself, which from the user's perspective IS
+        // the collapsed template card.
         addEdge({
-          source: b.id,
-          target: stageIdInTpl(b.template, entryName),
+          source: site.originId,
+          target: b.id,
+          marker: site.marker,
           isTemplate: true,
         });
       }
     }
 
-    // Downstream OR cascade to parent.
+    // Post-join: downstream OR cascade to parent's barrier.
     if (b.downstreamNext) {
       addEdge({
         source: b.id,
@@ -354,7 +365,7 @@ export function buildTemplateOverviewGraph(
       });
     } else if (b.scopeOfPrimary !== BASE_SCOPE) {
       const parent = visibleBarriers.get(b.scopeOfPrimary);
-      // Skip self-cascade (would form a 0-length loop on the same node).
+      // Skip self-cascade.
       if (parent && parent.id !== b.id) {
         addEdge({
           source: b.id,

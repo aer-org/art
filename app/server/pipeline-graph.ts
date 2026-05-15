@@ -216,14 +216,17 @@ export function buildGraph(
   const edges: GraphEdge[] = [];
   let edgeId = 0;
 
-  // Materialized stitches surface as `dispatchBarriers` in state. A
-  // barrier is the single sync point of a `template` transition: the
-  // origin stage feeds into it, the lane entries fan out from it, lane
-  // terminals re-converge at it, and its `downstreamNext` continues the
-  // outer pipeline after join. We pre-index barriers by their origin
-  // (stage + transition index) so the per-stage loop can hand each
-  // matching template transition straight to the barrier pass instead of
-  // emitting a placeholder ghost.
+  // Materialized stitches surface as `dispatchBarriers` in state.
+  //
+  // Barrier semantics: a barrier is the JOIN at the end of a stitched
+  // lane, NOT the spawn point. The origin stage spawns the child
+  // lane directly (one edge per child to its entry stage); lane
+  // terminals converge at the barrier; the barrier's `downstreamNext`
+  // (or cascade target) continues the outer flow.
+  //
+  // We pre-index barriers by their origin (stage + transition index)
+  // so the per-stage loop can emit `origin → entry(child)` straight
+  // from each materialized child of the transition's barrier.
   const dispatchBarriers = effectiveState?.dispatchBarriers;
   const barrierByOrigin = new Map<string, PipelineDispatchBarrier>();
   for (const b of Object.values(dispatchBarriers ?? {})) {
@@ -237,17 +240,23 @@ export function buildGraph(
       const targets = asArray(t.next);
 
       if (t.template) {
-        // Materialized? — find the matching barrier and let the barrier
-        // pass own the lane wiring (entries, terminals, downstream).
+        // Materialized? — emit one spawn edge per child lane,
+        // straight from origin to that lane's entry stage. The
+        // barrier (lane's exit) is emitted by the barrier pass.
         const barrier = barrierByOrigin.get(`${stage.name}#${txIdx}`);
         if (barrier) {
-          edges.push({
-            id: `e${edgeId++}`,
-            source: stage.name,
-            target: barrierPseudoId(barrier.id),
-            marker: t.marker,
-            isTemplate: true,
-          });
+          for (const childId of barrier.childNodeIds) {
+            const childNode = dispatchTree?.[childId];
+            if (childNode?.entryStage) {
+              edges.push({
+                id: `e${edgeId++}`,
+                source: stage.name,
+                target: childNode.entryStage,
+                marker: t.marker,
+                isTemplate: true,
+              });
+            }
+          }
           continue;
         }
 
@@ -337,20 +346,15 @@ export function buildGraph(
       childNodeIds: [...barrier.childNodeIds],
     });
 
+    // Lane terminals → barrier (the join). One edge per pure terminal
+    // transition (next: null AND no template) across all child lanes.
+    // Sub-stitch terminals (transitions with `template`) don't need a
+    // direct edge — their resolution propagates here via the cascade
+    // rule below. The fan-out edge (origin → child entry) was already
+    // emitted in the stage transition loop, so the barrier itself has
+    // no outgoing fan-out: it sits AFTER the lane, not in front of it.
     for (const childId of barrier.childNodeIds) {
       const childNode = dispatchTree?.[childId];
-      if (childNode?.entryStage) {
-        edges.push({
-          id: `e${edgeId++}`,
-          source: pseudoId,
-          target: childNode.entryStage,
-          isTemplate: true,
-        });
-      }
-      // For each lane stage, emit one barrier-join edge per pure terminal
-      // transition (next: null AND no template). The marker is preserved
-      // so the reader can tell whether the lane exited via success, error
-      // or some other named outcome.
       for (const s of childNode?.config?.stages ?? []) {
         for (const t of s.transitions ?? []) {
           if (asArray(t.next).length === 0 && !t.template) {
