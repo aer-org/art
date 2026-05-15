@@ -517,6 +517,49 @@ export function readPipelineSnapConfig(
  *   - lastUpdated: max
  *   - other fields: take from root scope as-is
  */
+function mergeDispatchNode(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing) return { ...incoming };
+  const out: Record<string, unknown> = { ...existing };
+  for (const [k, v] of Object.entries(incoming)) {
+    if (k === 'childIds') {
+      const a = (existing[k] as string[] | undefined) ?? [];
+      const b = (v as string[] | undefined) ?? [];
+      out[k] = [...new Set([...a, ...b])];
+      continue;
+    }
+    if (k === 'stageNames') {
+      const a = (existing[k] as string[] | undefined) ?? [];
+      const b = (v as string[] | undefined) ?? [];
+      out[k] = [...new Set([...a, ...b])];
+      continue;
+    }
+    // For everything else (template, originStage, parentId, status,
+    // config, etc.), only overwrite when the incoming value carries
+    // real info — null/undefined/empty-string is treated as "scope
+    // doesn't know" rather than "the answer is none".
+    const cur = out[k];
+    const curEmpty =
+      cur === undefined ||
+      cur === null ||
+      cur === '' ||
+      (typeof cur === 'object' &&
+        cur !== null &&
+        Object.keys(cur as object).length === 0);
+    const incomingEmpty =
+      v === undefined ||
+      v === null ||
+      v === '' ||
+      (typeof v === 'object' &&
+        v !== null &&
+        Object.keys(v as object).length === 0);
+    if (curEmpty && !incomingEmpty) out[k] = v;
+  }
+  return out;
+}
+
 export function readPipelineStateForRun(
   projectDir: string,
   runId: string,
@@ -557,10 +600,17 @@ export function readPipelineStateForRun(
   for (const s of states) {
     const tree = (s.dispatchTree as Record<string, unknown> | undefined) ?? {};
     for (const [k, v] of Object.entries(tree)) {
-      // Per-scope serializeTree always includes the scope's own self-node;
-      // when two scopes both carry the same nodeId, prefer the deeper one
-      // (it has the up-to-date status + childIds for its own subtree).
-      mergedTree[k] = v;
+      // Each scope writes a SELF-VIEW of its own node (template=null,
+      // childIds=[the spawned lanes inside this scope]) and a PARENT-VIEW
+      // of any node it directly spawned (template=<name>, originStage=...,
+      // childIds=[]). Whichever file we read first must not clobber the
+      // other view, so merge field-by-field: keep an existing non-empty
+      // value rather than letting a null/empty later one overwrite it.
+      const existing = mergedTree[k];
+      mergedTree[k] = mergeDispatchNode(
+        existing as Record<string, unknown> | undefined,
+        v as Record<string, unknown>,
+      );
     }
     const bars =
       (s.dispatchBarriers as Record<string, unknown> | undefined) ?? {};

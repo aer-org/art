@@ -121,6 +121,7 @@ export function buildGraph(
     ...(effectiveState?.insertedStages ?? []),
   ];
   const stageOwner = new Map<string, string>(); // stage name → dispatch nodeId
+  const stageTemplate = new Map<string, string>(); // stage name → template
   for (const s of config?.stages ?? []) stageOwner.set(s.name, 'root');
   if (dispatchTree) {
     for (const [nodeId, dnode] of Object.entries(dispatchTree)) {
@@ -128,6 +129,7 @@ export function buildGraph(
       for (const s of dnode.config?.stages ?? []) {
         stages.push(s);
         stageOwner.set(s.name, nodeId);
+        if (dnode.template) stageTemplate.set(s.name, dnode.template);
       }
     }
   }
@@ -178,6 +180,10 @@ export function buildGraph(
       isStitched: !baseNames.has(stage.name),
       isTemplatePlaceholder: false,
       nodeId: stageOwner.get(stage.name),
+      // For lane stages, expose the template the lane was instantiated
+      // from. The frontend uses this to wrap the lane in a containment
+      // box matching the template-overview style.
+      templateName: stageTemplate.get(stage.name),
     });
   }
   const nodeIds = new Set(nodes.map((node) => node.id));
@@ -284,12 +290,15 @@ export function buildGraph(
           continue;
         }
 
-        // Not materialized yet — show a ghost placeholder.
+        // Not materialized yet — show a ghost placeholder. Rendered as
+        // a collapsed template card so it visually reads as "this
+        // template stitch is queued behind the current stage", same
+        // shape as the template-overview collapsed state.
         const ghostId = `${stage.name}__template:${t.template}`;
         nodes.push({
           id: ghostId,
           name: t.template,
-          kind: 'agent',
+          kind: 'template',
           status: 'pending',
           isStitched: false,
           isTemplatePlaceholder: true,
