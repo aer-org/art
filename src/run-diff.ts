@@ -61,7 +61,10 @@ export function classifyDiffMounts(
       const parentKey = key.slice(0, sepIdx);
       const subPath = key.slice(sepIdx + 1);
       if (parentKey === 'project') {
-        skipped.push({ key, reason: 'project sub-path (too large for snapshot)' });
+        skipped.push({
+          key,
+          reason: 'project sub-path (too large for snapshot)',
+        });
         continue;
       }
       if (!isValidSubPath(subPath)) {
