@@ -41,6 +41,18 @@ function dimsOf(n: GraphNode): { width: number; height: number } {
   return { width: STAGE_W, height: STAGE_H };
 }
 
+// Tell dagre how much space each edge label needs. With this set dagre
+// pushes ranks apart instead of dropping the label onto an adjacent
+// node. Retry edges follow a hand-drawn arc (RetryEdge) so they don't
+// need to participate in dagre's label sizing.
+function edgeAttrs(e: GraphEdge): Record<string, unknown> {
+  if (e.isRetry || !e.marker) return {};
+  // ~7.5 px per char for the 10 px mono label + 16 px of horizontal
+  // padding so the pill background has breathing room.
+  const width = Math.max(60, e.marker.length * 7.5 + 16);
+  return { label: e.marker, width, height: 18, labelpos: 'c' };
+}
+
 function isExpandedLaneStage(n: GraphNode): boolean {
   return (
     (n.kind === 'agent' || n.kind === 'command') &&
@@ -83,13 +95,13 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
   const groupBboxes = new Map<string, Bbox>();
   for (const [tplName, stages] of tplGroups) {
     const sub = new dagre.graphlib.Graph();
-    sub.setGraph({ rankdir: 'LR', nodesep: 30, ranksep: 60 });
+    sub.setGraph({ rankdir: 'LR', nodesep: 30, ranksep: 90 });
     sub.setDefaultEdgeLabel(() => ({}));
     const inTpl = new Set(stages.map((s) => s.id));
     for (const s of stages) sub.setNode(s.id, dimsOf(s));
     for (const e of edges) {
       if (inTpl.has(e.source) && inTpl.has(e.target)) {
-        sub.setEdge(e.source, e.target);
+        sub.setEdge(e.source, e.target, edgeAttrs(e));
       }
     }
     dagre.layout(sub);
@@ -122,7 +134,7 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
 
   // 3) Outer dagre over loose nodes + per-template group blocks.
   const outer = new dagre.graphlib.Graph();
-  outer.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80 });
+  outer.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 110 });
   outer.setDefaultEdgeLabel(() => ({}));
   for (const n of looseNodes) outer.setNode(n.id, dimsOf(n));
   for (const [tplName, bbox] of groupBboxes) {
@@ -144,7 +156,7 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
     const s = outerEndpoint(e.source);
     const t = outerEndpoint(e.target);
     if (s === t) continue; // intra-group edges live in the sub-layout only
-    outer.setEdge(s, t);
+    outer.setEdge(s, t, edgeAttrs(e));
   }
   dagre.layout(outer);
 

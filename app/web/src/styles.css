@@ -817,6 +817,20 @@ input, textarea {
   stroke-dasharray: 3 3;
   opacity: 0.7;
 }
+
+/* Pill behind edge marker labels so they remain readable even when the
+ * curve glances past a node. dagre already reserves rank-space for the
+ * label, but the pill is a safety net for edges that cross diagonally. */
+.react-flow__edge-textbg {
+  fill: var(--bg);
+  rx: 3;
+  ry: 3;
+}
+.react-flow__edge-text {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--fg-dim);
+}
 .react-flow__attribution { display: none; }
 
 /* --- Visualizer (Runs + RunDetail) ------------------------------------ */
