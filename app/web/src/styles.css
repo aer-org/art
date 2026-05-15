@@ -1169,16 +1169,16 @@ input, textarea {
 }
 
 .run-id-cell {
-  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 .inspector-back {
-  position: absolute;
-  top: -36px;
-  left: 0;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--dim);
   text-decoration: none;
   letter-spacing: 0.04em;
+  margin-bottom: 2px;
+  align-self: flex-start;
 }
 .inspector-back:hover { color: var(--fg); }
 
