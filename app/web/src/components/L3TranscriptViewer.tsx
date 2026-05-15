@@ -265,7 +265,20 @@ function normalizeOne(rec: Record<string, unknown>): NormalEntry[] {
       return [{ kind, ts, body, raw: rec }];
     }
     if (pt === 'reasoning') {
-      const body = renderCodexContent(p.summary ?? p.content);
+      // Codex / GPT-5 reasoning models keep the actual chain-of-thought
+      // encrypted (`encrypted_content`) and only surface a plain
+      // `summary` when explicitly requested. When neither summary nor
+      // content is present we surface a placeholder so the reader can
+      // tell reasoning happened, just that the content is opaque.
+      const text = renderCodexContent(p.summary ?? p.content);
+      const enc = typeof p.encrypted_content === 'string'
+        ? p.encrypted_content
+        : '';
+      const body = text
+        ? text
+        : enc
+          ? `(encrypted reasoning · ${enc.length} bytes — content not exposed by the provider)`
+          : '(reasoning record, no content)';
       return [{ kind: 'reasoning', ts, body, raw: rec }];
     }
     if (pt === 'function_call') {
