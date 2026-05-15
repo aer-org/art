@@ -8,6 +8,7 @@ import { loadLastProject } from './last-project.ts';
 import { preflight, terminateClaudeSetupToken } from './preflight.ts';
 import { projectState } from './project-state.ts';
 import { registerBrowseRoutes } from './routes/browse.ts';
+import { registerDebugRoutes } from './routes/debug.ts';
 import { registerLoadRoutes } from './routes/load.ts';
 import { registerStateRoutes } from './routes/state.ts';
 import { registerRunRoutes } from './routes/run.ts';
@@ -21,6 +22,7 @@ async function main() {
   const app = Fastify({ logger: { level: 'info' } });
 
   registerBrowseRoutes(app);
+  registerDebugRoutes(app);
   registerLoadRoutes(app);
   registerStateRoutes(app);
   registerRunRoutes(app);

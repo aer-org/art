@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 
+import { debugStats } from '../debug-stats.ts';
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
 import {
@@ -30,9 +31,18 @@ export function registerStateRoutes(app: FastifyInstance): void {
       'X-Accel-Buffering': 'no',
     });
 
+    debugStats.sseConnections += 1;
+    debugStats.sseTotalConnections += 1;
+
     const send = (event: string, data: unknown) => {
-      reply.raw.write(`event: ${event}\n`);
-      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+      debugStats.sseWritesTotal += 1;
+      const ok = reply.raw.write(payload);
+      if (!ok) debugStats.sseWritesBackpressured += 1;
+      if (event === 'snapshot') {
+        debugStats.snapshotSendsTotal += 1;
+        debugStats.snapshotBytesTotal += payload.length;
+      }
     };
 
     const sendSnapshot = () => {
@@ -180,10 +190,13 @@ export function registerStateRoutes(app: FastifyInstance): void {
 
     // Heartbeat
     const heartbeat = setInterval(() => {
-      reply.raw.write(': heartbeat\n\n');
+      debugStats.sseWritesTotal += 1;
+      const ok = reply.raw.write(': heartbeat\n\n');
+      if (!ok) debugStats.sseWritesBackpressured += 1;
     }, 15000);
 
     req.raw.on('close', () => {
+      debugStats.sseConnections = Math.max(0, debugStats.sseConnections - 1);
       clearInterval(heartbeat);
       clearInterval(checkProjectChange);
       currentProject?.off('snapshot', onSnapshot);
