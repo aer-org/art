@@ -86,7 +86,7 @@ export function dispatchStageName(
   copyIndex: number,
   stageName: string,
 ): string {
-  return `${invocationId}_${copyIndex}__${stageName}`;
+  return `${stageName}__${invocationId}_${copyIndex}`;
 }
 
 export function dispatchChildNodeId(

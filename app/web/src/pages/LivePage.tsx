@@ -1,9 +1,14 @@
 /**
- * LivePage — the original App body. Live run monitoring + chat panel.
- * Extracted unchanged so the hash router can switch between Live and the
- * new Runs/Run-detail pages without touching this behavior.
+ * LivePage — live run monitoring + chat panel.
+ *
+ * Pipeline state (snapshot, runLog, nodeLogs, SSE subscription) is owned
+ * by App via `usePipelineState` and threaded in as `props.pipeline`. This
+ * way the SSE feed and log buffers survive navigation between Live and
+ * Runs — earlier the hook lived here, so switching tabs unmounted the
+ * subscription and dropped any logs that arrived while the user was on
+ * the Runs page.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { ChatPanel } from '../components/ChatPanel.tsx';
 import { DirectoryPicker } from '../components/DirectoryPicker.tsx';
@@ -13,16 +18,18 @@ import { PipelineGraph } from '../components/PipelineGraph.tsx';
 import { RunBar } from '../components/RunBar.tsx';
 import { RunLogTray } from '../components/RunLogTray.tsx';
 import { SetupModal } from '../components/SetupModal.tsx';
-import { usePipelineState } from '../hooks/usePipelineState.ts';
+import type { usePipelineState } from '../hooks/usePipelineState.ts';
 import {
   api,
   type PipelineSnapshot,
   type PreflightResponse,
 } from '../lib/api.ts';
+import { expandTemplateGraph } from '../lib/templateExpand.ts';
 
 export function LivePage(props: {
   preflight: PreflightResponse | null;
   setPreflight: (p: PreflightResponse | null) => void;
+  pipeline: ReturnType<typeof usePipelineState>;
 }): JSX.Element {
   const {
     snapshot,
@@ -35,24 +42,58 @@ export function LivePage(props: {
     clearRunLog,
     setNodeLog,
     clearNodeLog,
-  } = usePipelineState();
+  } = props.pipeline;
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [detailStage, setDetailStage] = useState<string | null>(null);
   const [showPicker, setShowPicker] = useState(true);
   const [showSetup, setShowSetup] = useState(false);
   const [loadNotice, setLoadNotice] = useState<string | null>(null);
+  // Which template-overview pills the user has inline-expanded. Only
+  // meaningful when graphMode === 'template-overview'; cleared on switch
+  // back to live mode so we don't leak stale stage tags.
+  const [expandedTemplates, setExpandedTemplates] = useState<Set<string>>(
+    () => new Set(),
+  );
   const { preflight, setPreflight } = props;
 
   useEffect(() => {
     if (snapshot.projectDir) setShowPicker(false);
   }, [snapshot.projectDir]);
 
+  useEffect(() => {
+    if (snapshot.graphMode !== 'template-overview') {
+      setExpandedTemplates(new Set());
+    }
+  }, [snapshot.graphMode]);
+
+  const displayGraph = useMemo(() => {
+    if (snapshot.graphMode === 'template-overview' && expandedTemplates.size > 0) {
+      return expandTemplateGraph(snapshot, expandedTemplates);
+    }
+    return snapshot.graph ?? { nodes: [], edges: [] };
+  }, [snapshot, expandedTemplates]);
+
   const selectedNode =
-    snapshot.graph?.nodes.find(
+    displayGraph.nodes.find(
       (node) => node.name === selectedStage || node.id === selectedStage,
     ) ?? null;
   const runningNode =
-    snapshot.graph?.nodes.find((node) => node.status === 'running') ?? null;
+    displayGraph.nodes.find((node) => node.status === 'running') ?? null;
+
+  function handleGraphNodeClick(nodeId: string): void {
+    const node = displayGraph.nodes.find((n) => n.id === nodeId);
+    if (node?.kind === 'template') {
+      const name = node.templateName ?? node.name;
+      setExpandedTemplates((cur) => {
+        const next = new Set(cur);
+        if (next.has(name)) next.delete(name);
+        else next.add(name);
+        return next;
+      });
+      return;
+    }
+    setSelectedStage(nodeId);
+  }
 
   useEffect(() => {
     if (!selectedStage && runningNode) setSelectedStage(runningNode.name);
@@ -177,9 +218,9 @@ export function LivePage(props: {
           </div>
         )}
         <PipelineGraph
-          nodes={snapshot.graph?.nodes ?? []}
-          edges={snapshot.graph?.edges ?? []}
-          onNodeClick={(name) => setSelectedStage(name)}
+          nodes={displayGraph.nodes}
+          edges={displayGraph.edges}
+          onNodeClick={handleGraphNodeClick}
         />
         <div className="log-dock has-node-log">
           <RunLogTray lines={runLog} onClear={clearRunLog} />

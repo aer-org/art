@@ -31,6 +31,7 @@ import {
 } from './run-recorder.js';
 import {
   captureStagePreState,
+  classifyDiffMounts,
   diffStagePostState,
   diffHostBinariesAvailable,
 } from './run-diff.js';
@@ -301,15 +302,17 @@ export class PipelineRunner {
   private resolveRwMountsForDiff(
     stageConfig: PipelineStage,
   ): { name: string; hostPath: string }[] {
-    const out: { name: string; hostPath: string }[] = [];
-    for (const [key, policy] of Object.entries(stageConfig.mounts)) {
-      if (policy !== 'rw') continue;
-      // Skip project (parent of __art__/, can be huge) and sub-path mounts.
-      // L1 diff aims at the common case: small artifact mounts under __art__/.
-      if (key === 'project' || key.includes(':')) continue;
-      out.push({ name: key, hostPath: path.join(this.groupDir, key) });
+    const { resolved, skipped } = classifyDiffMounts(
+      stageConfig.mounts,
+      this.groupDir,
+    );
+    for (const s of skipped) {
+      logger.warn(
+        { stage: stageConfig.name, mount: s.key, reason: s.reason },
+        `[diff] skip rw mount "${s.key}": ${s.reason}`,
+      );
     }
-    return out;
+    return resolved;
   }
 
   getRunId(): string {

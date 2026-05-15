@@ -36,10 +36,13 @@ async function runArtifactDiffSizeGate(
   assumeYes: boolean,
 ): Promise<void> {
   const limit = parseSizeLimit();
-  const { dirSizeBytes } = await import('../run-diff.js');
+  const { dirSizeBytes, classifyDiffMounts } = await import('../run-diff.js');
 
   const pipelinePath = path.join(artDir, 'PIPELINE.json');
-  let stages: { mounts?: Record<string, string | null> }[] = [];
+  let stages: {
+    name?: string;
+    mounts?: Record<string, 'ro' | 'rw' | null | undefined>;
+  }[] = [];
   try {
     const raw = fs.readFileSync(pipelinePath, 'utf-8');
     const parsed = JSON.parse(raw);
@@ -48,23 +51,27 @@ async function runArtifactDiffSizeGate(
     return; // pipeline missing/invalid — the runner will surface the real error
   }
 
-  // Collect the union of rw mount keys (excluding project + sub-path).
-  const rwKeys = new Set<string>();
+  // Per-stage classification: which rw mounts we'd snapshot, which we skip.
+  // Aggregate keys uniquely for the size probe + skip-warning list.
+  const rwHostPaths = new Map<string, string>(); // diff name → hostPath
+  const skips = new Map<string, { stages: string[]; reason: string }>();
   for (const s of stages) {
-    for (const [key, policy] of Object.entries(s.mounts ?? {})) {
-      if (policy !== 'rw') continue;
-      if (key === 'project' || key.includes(':')) continue;
-      rwKeys.add(key);
+    const { resolved, skipped } = classifyDiffMounts(s.mounts ?? {}, artDir);
+    for (const r of resolved) rwHostPaths.set(r.name, r.hostPath);
+    for (const k of skipped) {
+      const entry = skips.get(k.key) ?? { stages: [], reason: k.reason };
+      entry.stages.push(s.name ?? '<unnamed>');
+      skips.set(k.key, entry);
     }
   }
 
   const oversized: { name: string; bytes: number }[] = [];
-  for (const key of rwKeys) {
-    const p = path.join(artDir, key);
-    const bytes = dirSizeBytes(p);
-    if (bytes > limit) oversized.push({ name: key, bytes });
+  for (const [name, hostPath] of rwHostPaths) {
+    const bytes = dirSizeBytes(hostPath);
+    if (bytes > limit) oversized.push({ name, bytes });
   }
-  if (oversized.length === 0) return;
+
+  if (oversized.length === 0 && skips.size === 0) return;
 
   const fmt = (b: number): string =>
     b >= 1 << 30
@@ -76,6 +83,15 @@ async function runArtifactDiffSizeGate(
   for (const m of oversized) {
     console.error(
       `Warning: rw mount '${m.name}' is ${fmt(m.bytes)}. Preserving pre-state for diff will use roughly the same temporary disk space per stage. Pass --no-diff to disable.`,
+    );
+  }
+  for (const [key, info] of skips) {
+    const stagesList =
+      info.stages.length > 3
+        ? `${info.stages.slice(0, 3).join(', ')}, +${info.stages.length - 3} more`
+        : info.stages.join(', ');
+    console.error(
+      `Warning: rw mount '${key}' will not be diff-captured (${info.reason}). Stages: ${stagesList}.`,
     );
   }
 

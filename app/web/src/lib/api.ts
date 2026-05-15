@@ -20,14 +20,30 @@ export interface PipelineSnapshot {
   state?: any;
   latestRun?: any;
   graph?: { nodes: GraphNode[]; edges: GraphEdge[] };
+  graphMode?: 'live' | 'template-overview';
+  templates?: Record<string, TemplateFile>;
   isRunning?: boolean;
   isRunStarting?: boolean;
+}
+
+export interface TemplateFile {
+  entry?: string;
+  stages: Array<{
+    name: string;
+    kind?: 'agent' | 'command';
+    command?: string;
+    transitions?: Array<{
+      marker?: string;
+      next?: string | string[] | null;
+      template?: string;
+    }>;
+  }>;
 }
 
 export interface GraphNode {
   id: string;
   name: string;
-  kind: 'agent' | 'command';
+  kind: 'agent' | 'command' | 'barrier' | 'template';
   status: 'pending' | 'running' | 'success' | 'error' | 'unknown';
   isStitched: boolean;
   isTemplatePlaceholder: boolean;
@@ -36,6 +52,15 @@ export interface GraphNode {
   retryCount?: number;
   nodeId?: string;
   exitCode?: number | null;
+  // Barrier-only fields (kind === 'barrier').
+  barrierId?: string;
+  ownerNodeId?: string;
+  joinPolicy?: 'all_success' | 'any_success' | 'all_settled';
+  downstreamNext?: string | null;
+  childNodeIds?: string[];
+  // Template-overview-only fields (kind === 'template').
+  templateStageCount?: number;
+  templateSelfStitches?: number;
 }
 
 export interface GraphEdge {

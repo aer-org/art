@@ -7,6 +7,10 @@ import type { FastifyInstance } from 'fastify';
 import { ART_BIN, ART_DIR_NAME, childProcessEnv } from '../config.ts';
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
+import {
+  buildTemplateOverview,
+  collectReferencedTemplates,
+} from '../pipeline-template-overview.ts';
 import { runController } from '../run-controller.ts';
 
 interface LoadBody {
@@ -37,6 +41,23 @@ function snapshotResponse(projectDir: string, initialized: boolean) {
   const isRunning = activeRun !== null;
   const isRunStarting =
     runStarting !== null && !stateCatchesRunStart(snap?.state, runStarting.startedAt);
+  const showLive = isRunning || isRunStarting;
+  const graph = showLive
+    ? buildGraph(snap?.pipeline ?? null, snap?.state ?? null, {
+        isRunning,
+        isRunStarting,
+        activeRunStartedAt:
+          activeRun?.startedAt ??
+          (isRunStarting ? runStarting?.startedAt : null) ??
+          null,
+      })
+    : project
+      ? buildTemplateOverview(snap?.pipeline ?? null, project.artDir)
+      : { nodes: [], edges: [] };
+  const templates =
+    !showLive && project
+      ? collectReferencedTemplates(snap?.pipeline ?? null, project.artDir)
+      : undefined;
   return {
     projectDir,
     initialized,
@@ -44,11 +65,9 @@ function snapshotResponse(projectDir: string, initialized: boolean) {
     pipelineError: snap?.pipelineError,
     state: snap?.state,
     latestRun: snap?.latestRun,
-    graph: buildGraph(snap?.pipeline ?? null, snap?.state ?? null, {
-      isRunning,
-      isRunStarting,
-      activeRunStartedAt: activeRun?.startedAt ?? (isRunStarting ? runStarting?.startedAt : null) ?? null,
-    }),
+    graph,
+    graphMode: showLive ? 'live' : 'template-overview',
+    templates,
     isRunning,
     isRunStarting,
   };
@@ -108,6 +127,20 @@ export function registerLoadRoutes(app: FastifyInstance): void {
     const isRunning = activeRun !== null;
     const isRunStarting =
       runStarting !== null && !stateCatchesRunStart(snap.state, runStarting.startedAt);
+    const showLive = isRunning || isRunStarting;
+    const graph = showLive
+      ? buildGraph(snap.pipeline, snap.state, {
+          isRunning,
+          isRunStarting,
+          activeRunStartedAt:
+            activeRun?.startedAt ??
+            (isRunStarting ? runStarting?.startedAt : null) ??
+            null,
+        })
+      : buildTemplateOverview(snap.pipeline, project.artDir);
+    const templates = showLive
+      ? undefined
+      : collectReferencedTemplates(snap.pipeline, project.artDir);
     return {
       projectDir: abs,
       initialized,
@@ -115,11 +148,9 @@ export function registerLoadRoutes(app: FastifyInstance): void {
       pipelineError: snap.pipelineError,
       state: snap.state,
       latestRun: snap.latestRun,
-      graph: buildGraph(snap.pipeline, snap.state, {
-        isRunning,
-        isRunStarting,
-        activeRunStartedAt: activeRun?.startedAt ?? (isRunStarting ? runStarting?.startedAt : null) ?? null,
-      }),
+      graph,
+      graphMode: showLive ? 'live' : 'template-overview',
+      templates,
       isRunning,
       isRunStarting,
     };

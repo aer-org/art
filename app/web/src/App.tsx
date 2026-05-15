@@ -1,51 +1,30 @@
 /**
  * App shell — hash router + top nav. Body delegates to the right page.
- * Preflight + currentSnapshot are kept at this level so the projectDir
- * known to Live also drives /api/runs queries on the Runs/RunDetail
- * pages (they share the server's projectState singleton).
+ *
+ * Pipeline state + log state are hoisted to this level (`usePipelineState`)
+ * so the SSE subscription survives Live ↔ Runs navigation. Otherwise
+ * LivePage's local state would reset every time the user clicks Runs,
+ * silently dropping all run-log lines that arrived while they were away.
  */
 import { useEffect, useState } from 'react';
 
+import { usePipelineState } from './hooks/usePipelineState.ts';
 import { LivePage } from './pages/LivePage.tsx';
 import { RunDetailPage } from './pages/RunDetailPage.tsx';
 import { RunsListPage } from './pages/RunsListPage.tsx';
-import {
-  api,
-  type PipelineSnapshot,
-  type PreflightResponse,
-} from './lib/api.ts';
+import { api, type PreflightResponse } from './lib/api.ts';
 import { hrefFor, useRoute } from './router.tsx';
 
 export function App(): JSX.Element {
   const route = useRoute();
   const [preflight, setPreflight] = useState<PreflightResponse | null>(null);
-  const [projectDir, setProjectDir] = useState<string | null>(null);
+  const pipeline = usePipelineState();
 
   useEffect(() => {
     api.preflight().then(setPreflight).catch(() => {});
   }, []);
 
-  // Keep projectDir in sync with the server's loaded project; useful for
-  // the Runs tab which needs to know whether a project is mounted.
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      api
-        .current()
-        .then((s: PipelineSnapshot) => {
-          if (!cancelled) setProjectDir(s.projectDir);
-        })
-        .catch(() => {});
-    };
-    load();
-    // Re-poll when the hash changes (cheap; lets the Runs tab notice
-    // a project was loaded over on the Live tab without a hard refresh).
-    const t = window.setInterval(load, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-  }, []);
+  const projectDir = pipeline.snapshot.projectDir;
 
   return (
     <>
@@ -73,7 +52,11 @@ export function App(): JSX.Element {
         )}
       </nav>
       {route.kind === 'live' && (
-        <LivePage preflight={preflight} setPreflight={setPreflight} />
+        <LivePage
+          preflight={preflight}
+          setPreflight={setPreflight}
+          pipeline={pipeline}
+        />
       )}
       {route.kind === 'runs-list' && <RunsListPage projectDir={projectDir} />}
       {route.kind === 'run-detail' && (

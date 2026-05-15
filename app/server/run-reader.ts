@@ -499,17 +499,106 @@ export function readPipelineSnapConfig(
   );
 }
 
+/**
+ * Each PipelineRunner instance writes its own scope-suffixed state file
+ * (`PIPELINE_STATE.<scopeId>.json`); only the root scope writes
+ * `PIPELINE_STATE.json`. A run that stitches into nested lanes therefore
+ * has the *full* dispatch picture split across N files. The graph endpoint
+ * needs the merged view, otherwise stitched grandchildren (powerplan
+ * spawned by floorplan, pnr by powerplan, …) never appear because
+ * `mergeChild` only fires after the child's whole subtree returns.
+ *
+ * Merge policy (chosen to keep the graph live-correct mid-run):
+ *   - dispatchTree / dispatchBarriers: union across scopes
+ *   - completedStages: union (each scope's slice of completions)
+ *   - currentStage: prefer the deepest non-null (still-running scope)
+ *   - status: 'error' if any scope errored; else 'running' if any running
+ *   - activations / completions: per-stage sum
+ *   - lastUpdated: max
+ *   - other fields: take from root scope as-is
+ */
 export function readPipelineStateForRun(
   projectDir: string,
   runId: string,
 ): Record<string, unknown> | null {
-  return readJson(
-    path.join(
-      runDirOf(projectDir, runId),
-      'state',
-      'PIPELINE_STATE.json',
-    ),
-  );
+  const stateDir = path.join(runDirOf(projectDir, runId), 'state');
+  if (!fs.existsSync(stateDir)) return null;
+
+  let scopeFiles: string[];
+  try {
+    scopeFiles = fs
+      .readdirSync(stateDir)
+      .filter((f) => f.startsWith('PIPELINE_STATE') && f.endsWith('.json'));
+  } catch {
+    return null;
+  }
+  if (scopeFiles.length === 0) return null;
+
+  const states: Record<string, unknown>[] = [];
+  for (const f of scopeFiles) {
+    const s = readJson(path.join(stateDir, f));
+    if (s) states.push(s);
+  }
+  if (states.length === 0) return null;
+
+  // Root scope: PIPELINE_STATE.json (no scope suffix).
+  const root =
+    states.find((_s, i) => scopeFiles[i] === 'PIPELINE_STATE.json') ?? states[0];
+
+  const mergedTree: Record<string, unknown> = {};
+  const mergedBarriers: Record<string, unknown> = {};
+  const completed = new Set<string>();
+  const activations = new Map<string, number>();
+  const completions = new Map<string, number>();
+  let currentStage: unknown = null;
+  let status: unknown = 'success';
+  let lastUpdated = '';
+
+  for (const s of states) {
+    const tree = (s.dispatchTree as Record<string, unknown> | undefined) ?? {};
+    for (const [k, v] of Object.entries(tree)) {
+      // Per-scope serializeTree always includes the scope's own self-node;
+      // when two scopes both carry the same nodeId, prefer the deeper one
+      // (it has the up-to-date status + childIds for its own subtree).
+      mergedTree[k] = v;
+    }
+    const bars =
+      (s.dispatchBarriers as Record<string, unknown> | undefined) ?? {};
+    for (const [k, v] of Object.entries(bars)) mergedBarriers[k] = v;
+
+    for (const name of (s.completedStages as string[] | undefined) ?? []) {
+      completed.add(name);
+    }
+    for (const [name, n] of Object.entries(
+      (s.activations as Record<string, number> | undefined) ?? {},
+    )) {
+      activations.set(name, (activations.get(name) ?? 0) + (n ?? 0));
+    }
+    for (const [name, n] of Object.entries(
+      (s.completions as Record<string, number> | undefined) ?? {},
+    )) {
+      completions.set(name, (completions.get(name) ?? 0) + (n ?? 0));
+    }
+
+    // Pick deepest non-null currentStage (the actively running scope).
+    if (s.currentStage != null) currentStage = s.currentStage;
+    if (s.status === 'error') status = 'error';
+    else if (s.status === 'running' && status !== 'error') status = 'running';
+    const u = typeof s.lastUpdated === 'string' ? s.lastUpdated : '';
+    if (u > lastUpdated) lastUpdated = u;
+  }
+
+  return {
+    ...root,
+    dispatchTree: mergedTree,
+    dispatchBarriers: mergedBarriers,
+    completedStages: [...completed],
+    activations: Object.fromEntries(activations),
+    completions: Object.fromEntries(completions),
+    currentStage,
+    status,
+    lastUpdated: lastUpdated || (root.lastUpdated ?? ''),
+  };
 }
 
 export interface AllStageRecord {

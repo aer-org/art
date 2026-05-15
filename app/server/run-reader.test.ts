@@ -515,11 +515,11 @@ test('getStage walks nested dispatch nodes (stitched)', () => {
       'run-1-aaaaaa',
       {
         sealed: true,
-        stages: { 'd_abc_0__work': { stage: { result: 'success' } } },
+        stages: { 'work__d_abc_0': { stage: { result: 'success' } } },
       },
       'd_abc_0',
     );
-    const s = getStage(dir, 'run-1-aaaaaa', 'd_abc_0', 'd_abc_0__work');
+    const s = getStage(dir, 'run-1-aaaaaa', 'd_abc_0', 'work__d_abc_0');
     assert.ok(s);
     assert.equal(s!.stage?.result, 'success');
   } finally {

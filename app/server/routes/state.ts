@@ -2,6 +2,10 @@ import type { FastifyInstance } from 'fastify';
 
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
+import {
+  buildTemplateOverview,
+  collectReferencedTemplates,
+} from '../pipeline-template-overview.ts';
 import { runController } from '../run-controller.ts';
 import type { NodeLogLine } from '../types.ts';
 
@@ -44,17 +48,39 @@ export function registerStateRoutes(app: FastifyInstance): void {
       const isRunning = activeRun !== null;
       const isRunStarting =
         runStarting !== null && !stateCatchesRunStart(snap.state, runStarting.startedAt);
+      // Two graph modes on the Live tab:
+      //   - Live/starting run: post-stitch barrier graph from the active
+      //     run's state (per-stage, materialized lanes).
+      //   - Otherwise (no run yet OR only sealed runs): template overview
+      //     showing the *space* of possible flows. Sealed runs have their
+      //     own detail view (/runs/<id>); we don't want the Live tab to
+      //     freeze on a stale terminal snapshot.
+      const showLive = isRunning || isRunStarting;
+      const graph = showLive
+        ? buildGraph(snap.pipeline, snap.state, {
+            isRunning,
+            isRunStarting,
+            activeRunStartedAt:
+              activeRun?.startedAt ??
+              (isRunStarting ? runStarting?.startedAt : null) ??
+              null,
+          })
+        : buildTemplateOverview(snap.pipeline, project.artDir);
+      // Ship raw template files alongside the overview so the client can
+      // inline-expand a template without a server round-trip. Skipped in
+      // live mode (graph already contains per-stage detail).
+      const templates = showLive
+        ? undefined
+        : collectReferencedTemplates(snap.pipeline, project.artDir);
       send('snapshot', {
         projectDir: project.projectDir,
         pipeline: snap.pipeline,
         pipelineError: snap.pipelineError,
         state: snap.state,
         latestRun: snap.latestRun,
-        graph: buildGraph(snap.pipeline, snap.state, {
-          isRunning,
-          isRunStarting,
-          activeRunStartedAt: activeRun?.startedAt ?? (isRunStarting ? runStarting?.startedAt : null) ?? null,
-        }),
+        graph,
+        graphMode: showLive ? 'live' : 'template-overview',
+        templates,
         isRunning,
         isRunStarting,
       });

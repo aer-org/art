@@ -19,6 +19,66 @@ export interface RwMount {
   hostPath: string; // absolute path on host
 }
 
+export interface DiffMountSkip {
+  key: string;
+  reason: string;
+}
+
+export interface DiffMountDecision {
+  resolved: RwMount[];
+  skipped: DiffMountSkip[];
+}
+
+function isValidSubPath(subPath: string): boolean {
+  if (!subPath) return false;
+  if (subPath.startsWith('/')) return false;
+  const segments = subPath.split('/');
+  return segments.every((s) => s !== '' && s !== '..' && s !== '.');
+}
+
+/**
+ * Decide which of a stage's rw mounts are eligible for pre-state snapshot
+ * + diff. Sub-path mounts (`<parent>:<sub>`) resolve to the subdir on the
+ * host so a stitched lane that only mounts its own slice (e.g.
+ * `sweep:S175x175`) still produces a diff. Anything we cannot diff is
+ * returned in `skipped` with a human-readable reason — the caller logs it
+ * and (at run start) gates on approval.
+ */
+export function classifyDiffMounts(
+  mounts: Record<string, 'ro' | 'rw' | null | undefined>,
+  groupDir: string,
+): DiffMountDecision {
+  const resolved: RwMount[] = [];
+  const skipped: DiffMountSkip[] = [];
+  for (const [key, policy] of Object.entries(mounts ?? {})) {
+    if (policy !== 'rw') continue;
+    if (key === 'project') {
+      skipped.push({ key, reason: 'project mount (too large for snapshot)' });
+      continue;
+    }
+    if (key.includes(':')) {
+      const sepIdx = key.indexOf(':');
+      const parentKey = key.slice(0, sepIdx);
+      const subPath = key.slice(sepIdx + 1);
+      if (parentKey === 'project') {
+        skipped.push({ key, reason: 'project sub-path (too large for snapshot)' });
+        continue;
+      }
+      if (!isValidSubPath(subPath)) {
+        skipped.push({ key, reason: `invalid sub-path "${subPath}"` });
+        continue;
+      }
+      resolved.push({
+        name: key.replace(/[:/]/g, '__'),
+        hostPath: path.join(groupDir, parentKey, subPath),
+      });
+      continue;
+    }
+    resolved.push({ name: key, hostPath: path.join(groupDir, key) });
+  }
+  return { resolved, skipped };
+}
+
 let _hostBinariesChecked = false;
 let _hostBinariesOk = false;
 
