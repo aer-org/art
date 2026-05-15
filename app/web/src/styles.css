@@ -817,6 +817,15 @@ input, textarea {
   stroke-dasharray: 3 3;
   opacity: 0.7;
 }
+/* STAGE_ERROR / GIVE_UP / STAGE_ABANDON edges — paint red regardless
+ * of variant (normal, template, retry). Wins via specificity. */
+.react-flow__edge.marker-error .react-flow__edge-path {
+  stroke: var(--bad);
+  opacity: 0.85;
+}
+.react-flow__edge.marker-error .react-flow__edge-text {
+  fill: var(--bad);
+}
 
 .react-flow__minimap {
   background: var(--bg) !important;

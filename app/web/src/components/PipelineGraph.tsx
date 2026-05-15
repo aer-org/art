@@ -36,6 +36,14 @@ const GROUP_PAD = 16;
 const GROUP_LABEL_H = 22;
 
 // Dagre reads `width`/`height` (not `w`/`h`) off the node value object.
+// Markers that conventionally signal an error / abandonment path —
+// painted red so the failure routes pop visually regardless of which
+// edge variant (normal, template, retry) is carrying them.
+const ERROR_MARKERS = new Set(['STAGE_ERROR', 'GIVE_UP', 'STAGE_ABANDON']);
+function isErrorMarker(m?: string): boolean {
+  return !!m && ERROR_MARKERS.has(m);
+}
+
 function dimsOf(n: GraphNode): { width: number; height: number } {
   if (n.kind === 'barrier') return { width: BARRIER_W, height: BARRIER_H };
   if (n.kind === 'template') return { width: TEMPLATE_W, height: TEMPLATE_H };
@@ -240,6 +248,7 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
     className: [
       e.isTemplate ? 'template' : '',
       e.isRetry ? 'retry' : '',
+      isErrorMarker(e.marker) ? 'marker-error' : '',
     ]
       .filter(Boolean)
       .join(' '),
