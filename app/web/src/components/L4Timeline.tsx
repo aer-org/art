@@ -161,6 +161,11 @@ function buildBars(records: AllStageRecord[]): Bar[] {
     if (!Number.isFinite(endMs)) continue;
     bars.push({ rec, startMs: endMs - dur, endMs });
   }
+  // Source records come in `readdirSync` order (filesystem-dependent),
+  // not execution order. Sort earliest-first so the y-axis reads as
+  // time-of-start top to bottom, matching how a Gantt chart is
+  // conventionally laid out.
+  bars.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
   return bars;
 }
 
