@@ -1201,19 +1201,23 @@ input, textarea {
 }
 
 .run-detail-stop {
+  position: absolute;
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 6px 14px;
   background: transparent;
   color: var(--bad);
   border: 1px solid var(--bad);
-  border-radius: 3px;
+  border-radius: 4px;
   cursor: pointer;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
 }
 .run-detail-stop:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
 }
 .run-detail-stop:disabled {
   opacity: 0.5;

@@ -59,22 +59,14 @@ function StopButton() {
     }
   }
   return (
-    <div className="inspector-cell">
-      <span className="label">control</span>
-      <button
-        className="run-detail-stop"
-        onClick={onClick}
-        disabled={busy}
-        title="SIGTERM the active pipeline runner"
-      >
-        {busy ? 'stopping…' : '■ stop'}
-      </button>
-      {error && (
-        <span className="error" style={{ fontSize: 10 }}>
-          {error}
-        </span>
-      )}
-    </div>
+    <button
+      className="run-detail-stop"
+      onClick={onClick}
+      disabled={busy}
+      title={error ?? 'SIGTERM the active pipeline runner'}
+    >
+      {busy ? 'stopping…' : '■ stop'}
+    </button>
   );
 }
 
