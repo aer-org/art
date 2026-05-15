@@ -261,18 +261,26 @@ export function buildTemplateOverviewGraph(
     return scope === BASE_SCOPE || expanded.has(scope);
   }
 
-  // A barrier is visible if its primary scope is visible (otherwise it
-  // represents a stitch from a still-collapsed inner template). The
-  // template's collapsed pill is replaced by the barrier itself, so
-  // there's no separate pill node — the barrier IS the placeholder.
+  // A barrier-entity is visible if its primary scope is visible
+  // (otherwise it represents a stitch from a still-collapsed inner
+  // template). The node kind shifts with expansion state — these are
+  // two visual roles for the same entity:
+  //   - Collapsed (`kind: 'template'`): substantial card that signals
+  //     "click here to open this template". Doubles as the placeholder
+  //     for the hidden lane: spawn lands on it, cascade exits from it.
+  //   - Expanded (`kind: 'barrier'`): small sync-point lozenge at the
+  //     visible lane's exit. Lane terminals converge here, cascade /
+  //     downstream leaves from here.
+  // Same id in both cases so edges don't have to re-route on toggle.
   const visibleBarriers = new Map<string, BarrierMeta>();
   for (const [tplName, meta] of barriers) {
     if (!scopeVisible(meta.scopeOfPrimary)) continue;
     visibleBarriers.set(tplName, meta);
+    const isOpen = expanded.has(meta.template);
     addNode({
       id: meta.id,
       name: meta.template,
-      kind: 'barrier',
+      kind: isOpen ? 'barrier' : 'template',
       status: 'pending',
       isStitched: false,
       isTemplatePlaceholder: false,

@@ -86,12 +86,13 @@ export function LivePage(props: {
 
   function handleGraphNodeClick(nodeId: string): void {
     const node = displayGraph.nodes.find((n) => n.id === nodeId);
-    // In template-overview mode, the barrier IS the template
-    // placeholder when the template is collapsed. Clicking a barrier
-    // toggles expansion of its associated template.
+    // In template-overview mode, the stitch entity for a template has
+    // two visual forms — `template` (collapsed card) and `barrier`
+    // (expanded sync marker). Clicking either toggles the expansion
+    // of the underlying template.
     if (
       snapshot.graphMode === 'template-overview' &&
-      node?.kind === 'barrier' &&
+      (node?.kind === 'template' || node?.kind === 'barrier') &&
       node.templateName
     ) {
       const name = node.templateName;
