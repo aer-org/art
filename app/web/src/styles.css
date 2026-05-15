@@ -1200,27 +1200,24 @@ input, textarea {
   font-weight: 600;
 }
 
-.run-detail-stop {
-  position: absolute;
-  right: 24px;
-  top: 50%;
-  transform: translateY(-50%);
+.nav-stop {
+  margin-left: 4px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 6px 14px;
+  padding: 4px 12px;
   background: transparent;
   color: var(--bad);
   border: 1px solid var(--bad);
   border-radius: 4px;
   cursor: pointer;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
 }
-.run-detail-stop:hover:not(:disabled) {
+.nav-stop:hover:not(:disabled) {
   background: color-mix(in srgb, var(--bad) 14%, transparent);
 }
-.run-detail-stop:disabled {
-  opacity: 0.5;
+.nav-stop:disabled {
+  opacity: 0.55;
   cursor: progress;
 }
 

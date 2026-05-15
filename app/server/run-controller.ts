@@ -41,11 +41,19 @@ class RunController extends EventEmitter {
   private active: Map<string, RunHandle> = new Map();
   private recentLogs: Map<string, string[]> = new Map();
   private starting: Map<string, RunStartingInfo> = new Map();
+  // Projects whose runner has been SIGTERM'd but hasn't exited yet. Used
+  // so the UI can flip Stop → "Stopping…" immediately on click, instead
+  // of waiting up to 5 s for the runner to finish cleanup.
+  private stopping: Set<string> = new Set();
 
   // Local UI-spawned run only. Use activeRunInfo()/isProjectRunning() when the
   // caller also wants chat/debugger-launched `art run` processes.
   isRunning(projectDir: string): boolean {
     return this.active.has(projectDir);
+  }
+
+  isStopping(projectDir: string): boolean {
+    return this.stopping.has(projectDir);
   }
 
   isProjectRunning(projectDir: string, latestRun?: RunManifest | null): boolean {
@@ -200,26 +208,50 @@ class RunController extends EventEmitter {
     if (!handle) {
       const external = this.findLiveRunningManifest(projectDir);
       if (!external) return { ok: false, reason: 'No active run.' };
-      process.kill(external.pid, 'SIGTERM');
-      const exited = await waitForPidExit(external.pid, 5000);
-      if (!exited) cleanupDockerContainers();
-      return { ok: true };
+      this.markStopping(projectDir);
+      try {
+        process.kill(external.pid, 'SIGTERM');
+        const exited = await waitForPidExit(external.pid, 5000);
+        if (!exited) cleanupDockerContainers();
+        return { ok: true };
+      } finally {
+        this.clearStopping(projectDir);
+      }
     }
 
-    handle.proc.kill('SIGTERM');
+    this.markStopping(projectDir);
+    try {
+      handle.proc.kill('SIGTERM');
 
-    // Wait up to 5s for clean exit.
-    const exited = await new Promise<boolean>((resolve) => {
-      const t = setTimeout(() => resolve(false), 5000);
-      handle.proc.once('exit', () => {
-        clearTimeout(t);
-        resolve(true);
+      // Wait up to 5s for clean exit.
+      const exited = await new Promise<boolean>((resolve) => {
+        const t = setTimeout(() => resolve(false), 5000);
+        handle.proc.once('exit', () => {
+          clearTimeout(t);
+          resolve(true);
+        });
       });
-    });
 
-    // Best-effort container cleanup if SIGTERM didn't finish in time.
-    if (!exited) cleanupDockerContainers();
-    return { ok: true };
+      // Best-effort container cleanup if SIGTERM didn't finish in time.
+      if (!exited) cleanupDockerContainers();
+      return { ok: true };
+    } finally {
+      this.clearStopping(projectDir);
+    }
+  }
+
+  private markStopping(projectDir: string): void {
+    if (this.stopping.has(projectDir)) return;
+    this.stopping.add(projectDir);
+    // Emit so the SSE layer can push a fresh snapshot immediately —
+    // otherwise the UI doesn't flip to "Stopping…" until the runner
+    // finishes cleanup (which is exactly when the user is waiting for
+    // feedback).
+    this.emit('stopping', { projectDir });
+  }
+
+  private clearStopping(projectDir: string): void {
+    this.stopping.delete(projectDir);
   }
 
   log(projectDir: string): string[] {

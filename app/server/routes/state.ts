@@ -56,6 +56,7 @@ export function registerStateRoutes(app: FastifyInstance): void {
       //     showing the *space* of possible flows. Sealed runs have their
       //     own detail view (/runs/<id>); we don't want the Live tab to
       //     freeze on a stale terminal snapshot.
+      const isStopping = runController.isStopping(project.projectDir);
       const showLive = isRunning || isRunStarting;
       // pipeline-watcher only reads root PIPELINE_STATE.json into
       // `snap.state`. For a live run with stitched lanes, the
@@ -101,6 +102,7 @@ export function registerStateRoutes(app: FastifyInstance): void {
         templates,
         isRunning,
         isRunStarting,
+        isStopping,
       });
     };
 
@@ -134,6 +136,13 @@ export function registerStateRoutes(app: FastifyInstance): void {
       cur.refreshNow(false);
       sendSnapshot();
     };
+    const onRunStopping = (payload: { projectDir: string }) => {
+      const cur = projectState.current;
+      if (!cur || cur.projectDir !== payload.projectDir) return;
+      // Push immediately so the UI flips Stop → Stopping… before the
+      // runner actually finishes cleanup.
+      sendSnapshot();
+    };
 
     const onLogLine = (payload: { line: string; kind: 'stdout' | 'stderr' }) => {
       send('run-log', { kind: payload.kind, line: payload.line });
@@ -150,6 +159,7 @@ export function registerStateRoutes(app: FastifyInstance): void {
     currentProject?.on('node-log-line', onNodeLogLine);
     runController.on('starting', onRunStarting);
     runController.on('start', onRunStart);
+    runController.on('stopping', onRunStopping);
     runController.on('log-reset', onRunLogReset);
     runController.on('log', onRunLog);
     runController.on('exit', onRunExit);
@@ -181,6 +191,7 @@ export function registerStateRoutes(app: FastifyInstance): void {
       currentProject?.off('node-log-line', onNodeLogLine);
       runController.off('starting', onRunStarting);
       runController.off('start', onRunStart);
+      runController.off('stopping', onRunStopping);
       runController.off('log-reset', onRunLogReset);
       runController.off('log', onRunLog);
       runController.off('exit', onRunExit);

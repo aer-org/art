@@ -24,6 +24,7 @@ export interface PipelineSnapshot {
   templates?: Record<string, TemplateFile>;
   isRunning?: boolean;
   isRunStarting?: boolean;
+  isStopping?: boolean;
 }
 
 export interface TemplateFile {
