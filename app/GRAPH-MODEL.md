@@ -45,16 +45,26 @@ runtime invocation id.)
 
 ## Edge rules around a barrier B
 
+**Barrier semantics: the barrier is the JOIN at the *end* of the lane,
+not a spawn point in front of it.** A `template: X, next: N` transition
+spawns the child lane directly; the barrier ⋈X collects lane terminals
+and feeds the post-stitch hop. When X is collapsed there are no lane
+stages to draw, so ⋈X also doubles as the visible placeholder for the
+unopened lane — the spawn edge then lands on the barrier itself.
+
 For each barrier B with `templateName = X`:
 
 | Edge | When |
 |---|---|
-| `origin_stage → B` | for each stage S that has a `template: X` transition (one edge per spawn site, labeled with the transition marker) |
-| `B → entry(X)` | when X is expanded (target is X's first stage) |
-| `B → tpl:X` | when X is collapsed (target is the pill placeholder) |
-| `lane_terminal(X) → B` | for each lane terminal of X, **when X is expanded** (a stage is a lane terminal iff every outgoing transition has `next: null`) |
+| `origin_stage → entry(X)` | for each spawn site of X, **when X is expanded**; lands on X's first stage (marker = host transition's marker) |
+| `origin_stage → B` | for each spawn site of X, **when X is collapsed**; the barrier stands in for the hidden lane |
+| `lane_terminal(X) → B` | for every "pure terminal" transition (`next: null` AND no `template`) in any stage of X, **when X is expanded** |
 | `B → downstreamNext` | iff `downstreamNext` is set |
 | `B → parent_barrier` | iff `downstreamNext` is null AND a parent exists (cascade) |
+
+Sub-stitch terminals (transitions with `template`) do NOT get a direct
+lane-terminal edge. Their resolution propagates here via the sub-
+barrier's cascade — drawing both would double-count the join.
 
 ### Cascade rule
 
@@ -68,7 +78,7 @@ containing B's origin stage:
 
 For self-stitches (origin in template T, `template: T`), parent would
 be `B(T)` itself. Filter the self-cascade — the back-edge to entry
-(`origin → B → entry(T)`) already represents the retry loop.
+(`origin → entry(T)`) already represents the retry loop.
 
 ### `downstreamNext` selection (template overview only)
 
@@ -106,51 +116,54 @@ Synthesized barriers:
 Fully collapsed (nothing expanded):
 
 ```
-init  =STAGE_COMPLETE=>  ⋈B(SF)  →  tpl:SF
-                              ↓
-                          summarize
+init  =STAGE_COMPLETE=>  ⋈B(SF)  →  summarize
 ```
 
-`SF` expanded:
+The barrier is the lane placeholder; the unopened lane is hidden
+inside it.
+
+`SF` expanded — the lane spreads between `init` (the spawn) and the
+barrier (the join):
 
 ```
-init  =STAGE_COMPLETE=>  ⋈B(SF)  →  fp-init  →  fp-guard  →  fp-plan  →  fp-run  →  fp-filter
-                            ↑                                                            │
-                            │   (lane terminal join)                                     │
-                            └───────────────────────────────────────────────────────────┤
-                            │                                                            │
-                            │                                       =STAGE_COMPLETE=>   ⋈B(PP)  →  tpl:PP
-                            │                                       =STAGE_ERROR=>      ⋈B(SF) [back-edge: same node]
-                            ↓                                                            │
-                         summarize  ←──────────────────────────────────────[cascade]─────┘
+                                                             [lane abandonment]
+                                                            ┌───────────────────┐
+                                                            │ STAGE_ERROR       │
+                                                            ▼                   ▼
+init =STAGE_COMPLETE=> fp-init → fp-guard → fp-plan → fp-run → fp-filter   ⋈B(SF) → summarize
+                                                            ▲                   ▲
+                                                            │                   │
+                            fp-filter =STAGE_ERROR=> fp-init (retry back-edge)  │ (cascade)
+                            fp-filter =STAGE_COMPLETE=> ⋈B(PP) ─────────────────┘
 ```
 
-`SF` + `PP` expanded (the case the user asked about):
+`SF` + `PP` expanded (both lanes between their respective spawns and
+joins; cascade chain visible):
 
 ```
-init  =STAGE_COMPLETE=>  ⋈B(SF)  →  fp-init … fp-filter  =STAGE_COMPLETE=>  ⋈B(PP)  →  pp-init … pp-filter  =STAGE_COMPLETE=>  ⋈B(PNR)  →  tpl:PNR
-                            ↑                              ↑                                                ↑                                  │
-                            │                              │ (cascade)                                      │ (cascade)                        │
-                            │                              └────────────────[B(PP).next=null → B(SF)]──┐    │                                  │
-                            │                                                                          │    │                                  │
-                            │   (fp-filter as SF lane terminal)─────────────────────────────────────────────┘                                  │
-                            │                                                                                                                  │
-                            ↓                                                                                                                  │
-                         summarize                                                                                                             │
-                            ↑                                                                                                                  │
-                            └──────────────────────────────────────────────────────[B(PNR) cascade → B(PP) → B(SF)]────────────────────────────┘
+init → fp-init → ... → fp-filter →[STAGE_COMPLETE]→ pp-guard → ... → pp-filter →[STAGE_COMPLETE]→ ⋈B(PNR)
+                                                                            │                       │
+                                                                            │ (PP lane abandonment) │ (cascade)
+                                                                            ▼                       ▼
+                                                                          ⋈B(PP)         ←──────────┘
+                                                                            │
+                                                                            │ (cascade, PP.next=null)
+                                                                            ▼
+                                                                          ⋈B(SF) → summarize
 ```
 
-The cascade chain `B(PNR) → B(PP) → B(SF) → summarize` is the
-generalization the user identified: "child template이 모두 종료돼야
-summarize로 갈 수 있고, child가 전부 success여야지 갈 수 있다."
+The cascade chain `⋈B(PNR) → ⋈B(PP) → ⋈B(SF) → summarize` matches the
+user's intuition: "child template이 모두 종료돼야 summarize로 갈 수
+있고, child가 전부 success여야지 갈 수 있다." Each layer of nested
+stitch adds one cascade hop.
 
 ## Why this generalizes
 
 - Arbitrary depth of nested stitches: every barrier whose downstream is
   null cascades one level up. The chain length equals the stitch depth.
-- Retries collapse into a self-loop through the same `B(X)` node
-  (origin → B → entry of X) — no extra retry-barrier needed.
+- Retries collapse into a back-edge to the template's entry
+  (origin → entry(X) inside the expanded template) — no extra
+  retry-barrier needed. The retry still settles into the same `B(X)`.
 - Live runs and template overviews share the same topology — only
   `kind: 'barrier'` node metadata differs (live nodes carry status etc.).
 
@@ -169,10 +182,12 @@ Steps:
    each `t` in `expanded`. Determine which templates are referenced.
 2. For each unique template T referenced anywhere → synthesize `B(T)`
    with `downstreamNext = first non-null next across all spawn
-   transitions for T`.
-3. Add nodes: base stages, expanded template stages, collapsed pills
-   (for referenced but not expanded), synthesized barriers.
-4. Add edges per the rules in the table above.
+   transitions for T`. There are no separate pill nodes — `B(T)` IS
+   the placeholder when T is collapsed.
+3. Add nodes: base stages, expanded template stages, synthesized
+   barriers.
+4. Add edges per the rules in the table above. Spawn-edge target
+   depends on whether T is currently expanded.
 5. For barrier cascades:
    - For each `B(T)` with `downstreamNext = null`, determine its
      parent template T_parent = "the template (or base) containing the
@@ -181,12 +196,13 @@ Steps:
      base spawns always carry an explicit `next`).
    - Skip self-cascades.
 
-Server-side `buildTemplateOverview` is kept as a fallback that produces
-a collapsed-only version of the same graph (no expansion). The client
-overrides it whenever the user toggles a template.
+Server-side `buildTemplateOverview` (still around for snapshot
+fallback) currently emits the legacy pill-based collapsed view; the
+client overrides it whenever `snapshot.templates` is available.
 
-Live-run `buildGraph` already implements the same node/edge shape;
-re-use the existing `kind: 'barrier'` rendering.
+Live-run `buildGraph` implements the same node/edge shape: every
+spawn site emits `origin → child.entryStage` directly, the barrier
+sits at the lane's exit, and downstream/cascade behave as above.
 
 ## Containment box (visual only)
 
