@@ -302,6 +302,16 @@ export class PipelineRunner {
   private resolveRwMountsForDiff(
     stageConfig: PipelineStage,
   ): { name: string; hostPath: string }[] {
+    // Diff capture is opt-out for agent stages, opt-in for command
+    // stages. Command stages are deterministic — the change set is
+    // recoverable from the command itself + inputs — so paying for a
+    // pre-state snapshot of every rw mount they touch is rarely worth
+    // the disk/time hit (especially when hardlink-copy falls back to
+    // full copy on root-owned trees). Agent stages are LLM-driven and
+    // the diff is often the only record of what actually happened.
+    const isCommand = !!stageConfig.command;
+    if (isCommand) return [];
+
     const { resolved, skipped } = classifyDiffMounts(
       stageConfig.mounts,
       this.groupDir,
