@@ -827,6 +827,27 @@ input, textarea {
   fill: var(--bad);
 }
 
+/* ReactFlow controls (zoom +/-/fit) — default svg icons are nearly
+ * invisible on our dark background. Force a high-contrast fg color
+ * on the icon strokes/fills. */
+.react-flow__controls-button {
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  width: 26px !important;
+  height: 26px !important;
+}
+.react-flow__controls-button svg {
+  fill: var(--fg) !important;
+  width: 16px;
+  height: 16px;
+}
+.react-flow__controls-button:hover {
+  background: var(--bg) !important;
+}
+.react-flow__controls-button:hover svg {
+  fill: var(--accent) !important;
+}
+
 .react-flow__minimap {
   background: var(--bg) !important;
   border: 1px solid var(--border) !important;
