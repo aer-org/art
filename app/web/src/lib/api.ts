@@ -69,6 +69,7 @@ export interface GraphEdge {
   target: string;
   marker?: string;
   isTemplate?: boolean;
+  isRetry?: boolean;
 }
 
 export interface PreflightResponse {

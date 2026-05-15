@@ -336,9 +336,13 @@ export function buildTemplateOverviewGraph(
   for (const b of visibleBarriers.values()) {
     const isOpen = expanded.has(b.template);
 
-    // Spawn edges: one per visible spawn site.
+    // Spawn edges: one per visible spawn site. A self-stitch (origin
+    // is itself inside template X) loops the lane back to its entry;
+    // tag it so the renderer can route around instead of cutting
+    // through the lane.
     for (const site of b.spawnSites) {
       if (!nodeIds.has(site.originId)) continue;
+      const isRetry = site.scopeOfOrigin === b.template;
       if (isOpen) {
         // Lane is visible — spawn straight into the entry stage.
         const tpl = templates[b.template];
@@ -349,6 +353,7 @@ export function buildTemplateOverviewGraph(
             target: stageIdInTpl(b.template, entryName),
             marker: site.marker,
             isTemplate: true,
+            isRetry,
           });
         }
       } else {
@@ -360,6 +365,7 @@ export function buildTemplateOverviewGraph(
           target: b.id,
           marker: site.marker,
           isTemplate: true,
+          isRetry,
         });
       }
     }

@@ -84,7 +84,6 @@ function TemplateNode({
         } as CSSProperties)
       : {};
   const stageN = stage.templateStageCount ?? 0;
-  const retries = stage.templateSelfStitches ?? 0;
   return (
     <div className="template-node" style={style} title={stage.templateName}>
       <Handle type="target" position={Position.Left} />
@@ -93,7 +92,6 @@ function TemplateNode({
         <div className="template-name">{stage.templateName}</div>
         <div className="template-sub">
           template · {stageN} stage{stageN === 1 ? '' : 's'}
-          {retries > 0 ? ` · retry ×${retries}` : ''}
         </div>
       </div>
       <Handle type="source" position={Position.Right} />
@@ -121,13 +119,12 @@ function BarrierNode({
   // barrier id) lives in the tooltip.
   const fanCount = stage.childNodeIds?.length ?? 0;
   const stageN = stage.templateStageCount ?? 0;
-  const retries = stage.templateSelfStitches ?? 0;
   const policy = stage.joinPolicy ?? 'all_success';
   const detail =
     fanCount > 0
       ? `${fanCount} lane${fanCount === 1 ? '' : 's'}`
       : stageN > 0
-        ? `${stageN} stage${stageN === 1 ? '' : 's'}${retries > 0 ? ` · ↻${retries}` : ''}`
+        ? `${stageN} stage${stageN === 1 ? '' : 's'}`
         : '';
   const tooltip = [stage.templateName, policy, detail, stage.barrierId]
     .filter(Boolean)

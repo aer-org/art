@@ -9,6 +9,7 @@ import {
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
 
+import { RetryEdge } from './RetryEdge.tsx';
 import { StageNode } from './StageNode.tsx';
 import { TemplateGroupNode } from './TemplateGroupNode.tsx';
 import type { GraphEdge, GraphNode } from '../lib/api.ts';
@@ -20,6 +21,7 @@ interface Props {
 }
 
 const nodeTypes = { stage: StageNode, templateGroup: TemplateGroupNode };
+const edgeTypes = { retry: RetryEdge };
 
 const STAGE_W = 220;
 const STAGE_H = 70;
@@ -197,7 +199,13 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
     source: e.source,
     target: e.target,
     label: e.marker,
-    className: e.isTemplate ? 'template' : '',
+    className: [
+      e.isTemplate ? 'template' : '',
+      e.isRetry ? 'retry' : '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    type: e.isRetry ? 'retry' : undefined,
     animated: false,
   }));
   return { rfNodes, rfEdges };
@@ -220,6 +228,7 @@ export function PipelineGraph({ nodes, edges, onNodeClick }: Props) {
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         fitView
         proOptions={{ hideAttribution: true }}
         onNodeClick={(_, n) => onNodeClick(n.id)}

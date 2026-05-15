@@ -144,6 +144,10 @@ export interface GraphEdge {
   target: string;
   marker?: string;
   isTemplate?: boolean;
+  // Retry self-stitches loop back to the template's entry from a
+  // stage inside the same template. Tagged so the renderer can route
+  // them around the lane instead of slicing through it.
+  isRetry?: boolean;
 }
 
 export interface Graph {
