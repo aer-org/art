@@ -29,6 +29,7 @@ export type L3PanelKind =
   | 'mounts'
   | 'diff'
   | 'turns'
+  | 'transcript'
   | 'decisions'
   | 'stream';
 
@@ -146,6 +147,16 @@ export function StageSidebar({
               <TurnsLine turns={turns} />
               {turns.length > 0 && (
                 <BtnLink onClick={() => onOpenPanel?.('turns')}>view</BtnLink>
+              )}
+            </Field>
+            <Field label="transcript">
+              <span className="muted">
+                {stage?.hasTranscript ? 'archived' : 'n/a'}
+              </span>
+              {stage?.hasTranscript && (
+                <BtnLink onClick={() => onOpenPanel?.('transcript')}>
+                  view
+                </BtnLink>
               )}
             </Field>
             <Field label="decisions">

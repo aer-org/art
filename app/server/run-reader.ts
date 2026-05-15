@@ -64,6 +64,7 @@ export interface StageDetail {
   hasInitial: boolean;
   hasCommand: boolean;
   hasDiff: boolean;
+  hasTranscript: boolean;
   diffMounts: string[];
   turnCount: number;
   streamSizes: { agent: number; stdout: number; stderr: number };
@@ -310,6 +311,7 @@ export function getStage(
     hasInitial: fs.existsSync(path.join(dir, 'initial.txt')),
     hasCommand: fs.existsSync(path.join(dir, 'command.sh')),
     hasDiff: diffMounts.length > 0,
+    hasTranscript: fs.existsSync(path.join(dir, 'transcript.jsonl')),
     diffMounts: diffMounts.sort(),
     turnCount,
     streamSizes: {
@@ -384,6 +386,48 @@ export function readStageDiffSummary(
       'summary.json',
     ),
   );
+}
+
+/**
+ * Read the archived agent transcript (`transcript.jsonl`) and return
+ * one parsed record per line. Both providers land here:
+ *   codex  → records keyed by `type` (session_meta / turn_context /
+ *            response_item / event_msg). The meaty stuff is inside
+ *            `payload.type` (function_call, reasoning, message, ...).
+ *   claude → records keyed by role + content array (tool_use,
+ *            tool_result, thinking, text).
+ *
+ * We return the raw records; the client normalizes per-provider.
+ * Returns null when the file is missing — agent stages have it,
+ * command stages don't.
+ */
+export function readStageTranscript(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+): { records: Array<Record<string, unknown>>; bytes: number } | null {
+  const fp = path.join(
+    stageDirOf(projectDir, runId, nodeId, stageName),
+    'transcript.jsonl',
+  );
+  if (!fs.existsSync(fp)) return null;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(fp, 'utf-8');
+  } catch {
+    return null;
+  }
+  const out: Array<Record<string, unknown>> = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      // skip malformed line
+    }
+  }
+  return { records: out, bytes: raw.length };
 }
 
 export function readStageTurns(

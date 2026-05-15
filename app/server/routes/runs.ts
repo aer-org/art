@@ -37,6 +37,7 @@ import {
   readStageDiff,
   readStageDiffSummary,
   readStageStream,
+  readStageTranscript,
   readStageSummaryMap,
   readStageText,
   readStageTurns,
@@ -291,6 +292,22 @@ export function registerRunsRoutes(app: FastifyInstance): void {
           req.params.stageName,
         ),
       };
+    },
+  );
+
+  app.get<{ Params: StageParam }>(
+    '/api/runs/:runId/stages/:nodeId/:stageName/transcript',
+    async (req, reply) => {
+      const projectDir = projectOr400(reply);
+      if (!projectDir) return;
+      const out = readStageTranscript(
+        projectDir,
+        req.params.runId,
+        req.params.nodeId,
+        req.params.stageName,
+      );
+      if (!out) return reply.code(404).send({ error: 'No transcript.' });
+      return out;
     },
   );
 

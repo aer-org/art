@@ -12,6 +12,7 @@ import { L3DiffViewer } from './L3DiffViewer.tsx';
 import { L3TurnsTable } from './L3TurnsTable.tsx';
 import { L3DecisionsList } from './L3DecisionsList.tsx';
 import { L3StreamTail } from './L3StreamTail.tsx';
+import { L3TranscriptViewer } from './L3TranscriptViewer.tsx';
 import type { L3PanelKind } from './StageSidebar.tsx';
 import type { StageDetail } from '../lib/api.ts';
 
@@ -35,6 +36,7 @@ const TITLES: Record<L3PanelKind, string> = {
   mounts: 'Container mounts',
   diff: 'Artifact diff',
   turns: 'Turns',
+  transcript: 'Transcript',
   decisions: 'Decisions',
   stream: 'Stream tail',
 };
@@ -98,6 +100,13 @@ export function L3Panel({
           />
         )}
         {kind === 'turns' && <L3TurnsTable turns={turns} />}
+        {kind === 'transcript' && (
+          <L3TranscriptViewer
+            runId={runId}
+            nodeId={nodeId}
+            stageName={stageName}
+          />
+        )}
         {kind === 'decisions' && <L3DecisionsList events={events} />}
         {kind === 'stream' && (
           <L3StreamTail

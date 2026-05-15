@@ -51,6 +51,7 @@ const L3_KINDS: L3PanelKind[] = [
   'mounts',
   'diff',
   'turns',
+  'transcript',
   'decisions',
   'stream',
 ];

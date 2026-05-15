@@ -818,6 +818,102 @@ input, textarea {
   opacity: 0.7;
 }
 
+/* --- Transcript viewer (L3) --- */
+.transcript-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-family: var(--mono);
+}
+.transcript-toolbar {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 11px;
+}
+.transcript-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.transcript-entry {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: var(--panel);
+}
+.transcript-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.transcript-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tag-user        { color: var(--accent); }
+.tag-assistant   { color: var(--good); }
+.tag-developer   { color: var(--fg-dim); }
+.tag-reasoning   { color: var(--warn); }
+.tag-tool_call   { color: var(--accent); }
+.tag-tool_result { color: var(--fg-dim); }
+.tag-meta, .tag-other { color: var(--fg-dim); opacity: 0.7; }
+.transcript-entry.kind-assistant {
+  border-left: 2px solid var(--good);
+}
+.transcript-entry.kind-user {
+  border-left: 2px solid var(--accent);
+}
+.transcript-entry.kind-reasoning {
+  border-left: 2px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 4%, var(--panel));
+}
+.transcript-body-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+.transcript-detail-text {
+  margin: 4px 0 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-dim);
+  padding: 4px 6px;
+  background: var(--bg);
+  border-radius: 3px;
+}
+.transcript-raw {
+  margin: 6px 0 0 0;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-dim);
+  padding: 4px 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  opacity: 0.75;
+}
+
 /* Pill behind edge marker labels so they remain readable even when the
  * curve glances past a node. dagre already reserves rank-space for the
  * label, but the pill is a safety net for edges that cross diagonally. */

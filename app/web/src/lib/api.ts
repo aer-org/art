@@ -255,6 +255,14 @@ export const api = {
       'GET',
       `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/turns`,
     ),
+  stageTranscript: (runId: string, nodeId: string, stageName: string) =>
+    http<{
+      records: Array<Record<string, unknown>>;
+      bytes: number;
+    }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/transcript`,
+    ),
   runGraph: (runId: string) =>
     http<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
       'GET',
@@ -352,6 +360,7 @@ export interface StageDetail {
   hasInitial: boolean;
   hasCommand: boolean;
   hasDiff: boolean;
+  hasTranscript: boolean;
   diffMounts: string[];
   turnCount: number;
   streamSizes: { agent: number; stdout: number; stderr: number };
