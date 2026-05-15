@@ -106,9 +106,12 @@ export function diffHostBinariesAvailable(): boolean {
  * Snapshot rw mounts via hardlink copy. Returns the snapshot dir path,
  * or null if snapshot fails or there are no mounts to snapshot.
  *
- * Note: `cp -al` makes a hardlink-only copy. For files the stage doesn't
- * touch, it costs ~one inode each. Files the stage modifies are detached
- * (copy-on-write) by docker volumes / standard write-then-rename patterns.
+ * Strategy: try `cp -al` first (hardlink — instant, near-zero disk).
+ * Linux's `fs.protected_hardlinks` rejects hardlinks from a non-owner
+ * without write access, which trips on root-owned files left behind
+ * by `runAsRoot: true` stages. When that happens for a given mount,
+ * we wipe the partial snapshot and retry with `cp -a` (full copy) for
+ * just that mount.
  */
 export function captureStagePreState(
   stageDir: string,
@@ -122,12 +125,7 @@ export function captureStagePreState(
     for (const m of mounts) {
       if (!fs.existsSync(m.hostPath)) continue;
       const dst = path.join(snapDir, m.name);
-      const r = spawnSync('cp', ['-al', m.hostPath, dst]);
-      if (r.status !== 0) {
-        console.error(
-          `[diff] cp -al failed for ${m.name}: ${r.stderr?.toString() ?? ''}`,
-        );
-        // Clean up partial snapshot so we don't leak inodes.
+      if (!snapshotMount(m.hostPath, dst, m.name)) {
         try {
           fs.rmSync(snapDir, { recursive: true, force: true });
         } catch {
@@ -143,6 +141,38 @@ export function captureStagePreState(
     );
     return null;
   }
+}
+
+function snapshotMount(
+  hostPath: string,
+  dst: string,
+  mountKey: string,
+): boolean {
+  const link = spawnSync('cp', ['-al', hostPath, dst]);
+  if (link.status === 0) return true;
+
+  // Clean whatever the partial hardlink attempt left behind so the
+  // full copy starts from a clean slate.
+  try {
+    fs.rmSync(dst, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+
+  const full = spawnSync('cp', ['-a', hostPath, dst]);
+  if (full.status === 0) {
+    // One line per mount instead of one per file when cp fans out the
+    // permission error to every root-owned entry under the tree.
+    console.error(
+      `[diff] hardlink-copy denied for "${mountKey}" (root-owned files?); fell back to full copy`,
+    );
+    return true;
+  }
+
+  console.error(
+    `[diff] snapshot failed for "${mountKey}" via both cp -al and cp -a: ${full.stderr?.toString().split('\n')[0] ?? ''}`,
+  );
+  return false;
 }
 
 /**
