@@ -1217,6 +1217,34 @@ input, textarea {
   50% { opacity: 1; }
 }
 
+/* Pulsing halo around the active stage / barrier — runs alongside the
+ * stripe pulse so a glance at the graph immediately picks out what's
+ * executing right now. Layered with stage-node-in so the entry reveal
+ * still plays first. */
+.stage-node-v2.running {
+  border-color: var(--accent);
+  animation:
+    stage-node-in 220ms ease-out var(--reveal-delay, 0ms) forwards,
+    running-glow 1.8s ease-in-out 220ms infinite;
+}
+.barrier-node.running {
+  animation:
+    stage-node-in 220ms ease-out var(--reveal-delay, 0ms) forwards,
+    running-glow 1.8s ease-in-out 220ms infinite;
+}
+@keyframes running-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+      0 0 10px 0 color-mix(in srgb, var(--accent) 25%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent),
+      0 0 22px 4px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+}
+
 .stage-node-v2 .stage-name {
   display: flex;
   align-items: center;
