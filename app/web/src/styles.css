@@ -869,9 +869,21 @@ input, textarea {
 .tag-assistant   { color: var(--good); }
 .tag-developer   { color: var(--fg-dim); }
 .tag-reasoning   { color: var(--warn); }
-.tag-tool_call   { color: var(--accent); }
-.tag-tool_result { color: var(--fg-dim); }
+.tag-tool        { color: var(--accent); }
 .tag-meta, .tag-other { color: var(--fg-dim); opacity: 0.7; }
+.transcript-section {
+  margin-top: 6px;
+}
+.transcript-section-label {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  margin-bottom: 2px;
+}
+.transcript-entry.kind-tool {
+  border-left: 2px solid var(--accent);
+}
 .transcript-entry.kind-assistant {
   border-left: 2px solid var(--good);
 }

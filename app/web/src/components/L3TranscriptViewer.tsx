@@ -7,15 +7,17 @@
  * and the claude layout (role + content[]) into a single sequence of
  * NormalEntry items so the renderer stays simple.
  *
- * Each entry kind has its own visual:
+ * Entry kinds after normalization:
  *   - user / developer message  → input block
  *   - assistant message         → markdown-ish body
- *   - reasoning / thinking      → collapsible "thought" block
- *   - tool call                 → tool name + args (collapsible)
- *   - tool result               → result body (collapsible)
+ *   - reasoning / thinking      → "thought" block (default open)
+ *   - tool                      → call + matched result paired into
+ *                                  one entry (matched via call_id /
+ *                                  tool_use_id)
+ *   - meta                      → session_meta, turn_context, event_msg
  *
- * Filter controls let the user hide reasoning/tool noise to focus on
- * the user↔assistant exchange.
+ * Filter controls let the user hide noisy kinds (reasoning / tool /
+ * meta) to focus on the user↔assistant exchange.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.ts';
@@ -31,20 +33,19 @@ type EntryKind =
   | 'developer'
   | 'assistant'
   | 'reasoning'
-  | 'tool_call'
-  | 'tool_result'
+  | 'tool'
   | 'meta'
   | 'other';
 
 interface NormalEntry {
   kind: EntryKind;
   ts?: string;
-  // Display text. For tool_call, this is `<name>(<args summary>)`.
-  // For tool_result, this is the result body.
   body: string;
-  // Optional secondary text (e.g. tool call arguments JSON).
+  // tool-only: arguments (call side) and output (result side). Paired
+  // by call_id / tool_use_id during normalize.
   detail?: string;
-  // Pass-through raw record for the "raw" toggle.
+  result?: string;
+  callId?: string;
   raw: Record<string, unknown>;
 }
 
@@ -59,8 +60,7 @@ export function L3TranscriptViewer({ runId, nodeId, stageName }: Props) {
     developer: false,
     assistant: true,
     reasoning: true,
-    tool_call: true,
-    tool_result: true,
+    tool: true,
     meta: false,
     other: false,
   });
@@ -138,31 +138,46 @@ function TranscriptEntry({
   showRaw: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen(entry.kind));
-  const collapsible = COLLAPSIBLE_KINDS.has(entry.kind);
   return (
     <div className={`transcript-entry kind-${entry.kind}`}>
       <div className="transcript-entry-head">
-        <span className={`transcript-tag tag-${entry.kind}`}>{LABEL[entry.kind]}</span>
+        <span className={`transcript-tag tag-${entry.kind}`}>
+          {LABEL[entry.kind]}
+        </span>
+        {entry.kind === 'tool' && (
+          <span style={{ fontSize: 11, color: 'var(--fg)' }}>{entry.body}</span>
+        )}
         {entry.ts && (
           <span className="muted" style={{ fontSize: 10 }}>
             {formatTs(entry.ts)}
           </span>
         )}
-        {collapsible && (
-          <button
-            className="mount-tab"
-            onClick={() => setOpen((v) => !v)}
-            style={{ marginLeft: 'auto', fontSize: 10 }}
-          >
-            {open ? 'hide' : 'show'}
-          </button>
-        )}
+        <button
+          className="mount-tab"
+          onClick={() => setOpen((v) => !v)}
+          style={{ marginLeft: 'auto', fontSize: 10 }}
+        >
+          {open ? 'hide' : 'show'}
+        </button>
       </div>
-      {(open || !collapsible) && (
+      {open && entry.kind !== 'tool' && (
         <pre className="transcript-body-text">{entry.body}</pre>
       )}
-      {(open || !collapsible) && entry.detail && (
-        <pre className="transcript-detail-text">{entry.detail}</pre>
+      {open && entry.detail && (
+        <div className="transcript-section">
+          <div className="transcript-section-label">
+            {entry.kind === 'tool' ? 'args' : 'detail'}
+          </div>
+          <pre className="transcript-detail-text">{entry.detail}</pre>
+        </div>
+      )}
+      {open && entry.result !== undefined && (
+        <div className="transcript-section">
+          <div className="transcript-section-label">result</div>
+          <pre className="transcript-detail-text">
+            {entry.result || '(empty)'}
+          </pre>
+        </div>
       )}
       {showRaw && (
         <pre className="transcript-raw">{JSON.stringify(entry.raw, null, 2)}</pre>
@@ -176,27 +191,19 @@ const LABEL: Record<EntryKind, string> = {
   developer: 'developer',
   assistant: 'assistant',
   reasoning: 'reasoning',
-  tool_call: 'tool ▶',
-  tool_result: 'tool ◀',
+  tool: 'tool',
   meta: 'meta',
   other: 'other',
 };
 
-const COLLAPSIBLE_KINDS = new Set<EntryKind>([
-  'reasoning',
-  'tool_call',
-  'tool_result',
-  'developer',
-  'meta',
-  'other',
-]);
-
 function defaultOpen(kind: EntryKind): boolean {
-  return kind === 'user' || kind === 'assistant';
+  // Reasoning gets opened by default — the user mostly wants to see
+  // the model's thinking inline with the message turns. Tool calls
+  // stay collapsed because their args/results can be very long.
+  return kind === 'user' || kind === 'assistant' || kind === 'reasoning';
 }
 
 function formatTs(ts: string): string {
-  // ISO → HH:MM:SS for tighter columns.
   const m = /T(\d{2}:\d{2}:\d{2})/.exec(ts);
   return m ? m[1] : ts;
 }
@@ -207,17 +214,41 @@ function normalizeTranscript(
   records: Array<Record<string, unknown>>,
 ): NormalEntry[] {
   const out: NormalEntry[] = [];
+  // Pair tool calls with their results. The result attaches to the
+  // call entry that came earlier in the stream, so the in-stream
+  // position of the merged entry is the *call* position — that's
+  // when the model decided to invoke the tool, which is the natural
+  // anchor when reading the transcript top-to-bottom.
+  const pendingByCallId = new Map<string, NormalEntry>();
+
+  function emit(entry: NormalEntry | null): void {
+    if (!entry) return;
+    if (entry.kind === 'tool' && entry.callId) {
+      // If this is a result and there's a pending call, attach.
+      if (entry.result !== undefined && pendingByCallId.has(entry.callId)) {
+        const call = pendingByCallId.get(entry.callId)!;
+        call.result = entry.result;
+        pendingByCallId.delete(entry.callId);
+        return;
+      }
+      // Otherwise it's a call (or an orphan result). Push and
+      // remember for future pairing.
+      pendingByCallId.set(entry.callId, entry);
+    }
+    out.push(entry);
+  }
+
   for (const r of records) {
-    const entry = normalizeOne(r);
-    if (entry) out.push(entry);
+    const entries = normalizeOne(r);
+    for (const e of entries) emit(e);
   }
   return out;
 }
 
-function normalizeOne(rec: Record<string, unknown>): NormalEntry | null {
+function normalizeOne(rec: Record<string, unknown>): NormalEntry[] {
   const ts = typeof rec.timestamp === 'string' ? rec.timestamp : undefined;
 
-  // Codex shape: `{type: 'response_item', payload: {type, role, content}}` etc.
+  // Codex shape.
   if (typeof rec.type === 'string' && rec.type === 'response_item') {
     const p = (rec.payload ?? {}) as Record<string, unknown>;
     const pt = typeof p.type === 'string' ? p.type : '';
@@ -231,51 +262,59 @@ function normalizeOne(rec: Record<string, unknown>): NormalEntry | null {
           : role === 'developer'
             ? 'developer'
             : 'user';
-      return { kind, ts, body, raw: rec };
+      return [{ kind, ts, body, raw: rec }];
     }
     if (pt === 'reasoning') {
       const body = renderCodexContent(p.summary ?? p.content);
-      return { kind: 'reasoning', ts, body, raw: rec };
+      return [{ kind: 'reasoning', ts, body, raw: rec }];
     }
     if (pt === 'function_call') {
       const name = (p.name as string | undefined) ?? 'call';
       const args = typeof p.arguments === 'string' ? p.arguments : '';
-      return {
-        kind: 'tool_call',
-        ts,
-        body: `${name}`,
-        detail: prettyJson(args),
-        raw: rec,
-      };
+      return [
+        {
+          kind: 'tool',
+          ts,
+          body: name,
+          detail: prettyJson(args),
+          callId: (p.call_id as string | undefined) ?? (p.id as string | undefined),
+          raw: rec,
+        },
+      ];
     }
     if (pt === 'function_call_output') {
       const out = (p.output as Record<string, unknown> | string | undefined) ??
         '';
-      const body =
+      const result =
         typeof out === 'string' ? out : prettyJson(JSON.stringify(out));
-      return { kind: 'tool_result', ts, body, raw: rec };
+      return [
+        {
+          kind: 'tool',
+          ts,
+          body: '',
+          result,
+          callId: (p.call_id as string | undefined) ?? (p.id as string | undefined),
+          raw: rec,
+        },
+      ];
     }
   }
 
-  // Codex meta-events that aren't response_item.
   if (rec.type === 'session_meta' || rec.type === 'turn_context') {
-    return {
-      kind: 'meta',
-      ts,
-      body: String(rec.type),
-      detail: prettyJson(JSON.stringify(rec.payload ?? {})),
-      raw: rec,
-    };
+    return [
+      {
+        kind: 'meta',
+        ts,
+        body: String(rec.type),
+        detail: prettyJson(JSON.stringify(rec.payload ?? {})),
+        raw: rec,
+      },
+    ];
   }
   if (rec.type === 'event_msg') {
     const p = (rec.payload ?? {}) as Record<string, unknown>;
     const pt = typeof p.type === 'string' ? p.type : 'event';
-    return {
-      kind: 'meta',
-      ts,
-      body: `event: ${pt}`,
-      raw: rec,
-    };
+    return [{ kind: 'meta', ts, body: `event: ${pt}`, raw: rec }];
   }
 
   // Claude shape: `{type: 'user'|'assistant'|'system', message: {role, content: [...]}}`.
@@ -287,14 +326,10 @@ function normalizeOne(rec: Record<string, unknown>): NormalEntry | null {
       : null;
   if (claudeRole) {
     const message = (rec.message ?? rec) as Record<string, unknown>;
-    const content = message.content;
-    const parts = renderClaudeContent(content);
-    if (parts.length === 0) return null;
-    const first = parts[0];
-    return { ...first, ts, raw: rec };
+    return renderClaudeContent(message.content, ts);
   }
 
-  return { kind: 'other', ts, body: prettyJson(JSON.stringify(rec)), raw: rec };
+  return [{ kind: 'other', ts, body: prettyJson(JSON.stringify(rec)), raw: rec }];
 }
 
 function renderCodexContent(content: unknown): string {
@@ -309,12 +344,14 @@ function renderCodexContent(content: unknown): string {
   return parts.join('\n');
 }
 
-function renderClaudeContent(content: unknown): NormalEntry[] {
+function renderClaudeContent(content: unknown, ts: string | undefined): NormalEntry[] {
   if (!Array.isArray(content)) {
     return [
       {
         kind: 'assistant',
-        body: typeof content === 'string' ? content : prettyJson(JSON.stringify(content)),
+        ts,
+        body:
+          typeof content === 'string' ? content : prettyJson(JSON.stringify(content)),
         raw: {},
       },
     ];
@@ -325,12 +362,14 @@ function renderClaudeContent(content: unknown): NormalEntry[] {
     if (t === 'text') {
       out.push({
         kind: 'assistant',
+        ts,
         body: (item.text as string | undefined) ?? '',
         raw: item,
       });
     } else if (t === 'thinking') {
       out.push({
         kind: 'reasoning',
+        ts,
         body: (item.thinking as string | undefined) ?? '',
         raw: item,
       });
@@ -338,16 +377,26 @@ function renderClaudeContent(content: unknown): NormalEntry[] {
       const name = (item.name as string | undefined) ?? 'tool';
       const input = item.input;
       out.push({
-        kind: 'tool_call',
+        kind: 'tool',
+        ts,
         body: name,
         detail: prettyJson(JSON.stringify(input)),
+        callId: item.id as string | undefined,
         raw: item,
       });
     } else if (t === 'tool_result') {
-      const body = typeof item.content === 'string'
-        ? item.content
-        : prettyJson(JSON.stringify(item.content));
-      out.push({ kind: 'tool_result', body, raw: item });
+      const body =
+        typeof item.content === 'string'
+          ? item.content
+          : prettyJson(JSON.stringify(item.content));
+      out.push({
+        kind: 'tool',
+        ts,
+        body: '',
+        result: body,
+        callId: item.tool_use_id as string | undefined,
+        raw: item,
+      });
     }
   }
   return out;
