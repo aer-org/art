@@ -6,8 +6,9 @@ import {
   buildTemplateOverview,
   collectReferencedTemplates,
 } from '../pipeline-template-overview.ts';
+import { readPipelineStateForRun } from '../run-reader.ts';
 import { runController } from '../run-controller.ts';
-import type { NodeLogLine } from '../types.ts';
+import type { NodeLogLine, PipelineState } from '../types.ts';
 
 const RUN_STARTING_CLOCK_SKEW_MS = 1000;
 
@@ -56,8 +57,22 @@ export function registerStateRoutes(app: FastifyInstance): void {
       //     own detail view (/runs/<id>); we don't want the Live tab to
       //     freeze on a stale terminal snapshot.
       const showLive = isRunning || isRunStarting;
+      // pipeline-watcher only reads root PIPELINE_STATE.json into
+      // `snap.state`. For a live run with stitched lanes, the
+      // grandchildren live in scoped state files (PIPELINE_STATE.<scope>.json)
+      // — same data RunDetailPage merges via readPipelineStateForRun.
+      // Use the same source here so Live and Runs/<id> render an
+      // identical graph.
+      const liveRunId = activeRun?.runId ?? snap.latestRun?.runId ?? null;
+      const liveState =
+        showLive && liveRunId
+          ? ((readPipelineStateForRun(
+              project.projectDir,
+              liveRunId,
+            ) as PipelineState | null) ?? snap.state)
+          : snap.state;
       const graph = showLive
-        ? buildGraph(snap.pipeline, snap.state, {
+        ? buildGraph(snap.pipeline, liveState, {
             isRunning,
             isRunStarting,
             activeRunStartedAt:
@@ -76,7 +91,10 @@ export function registerStateRoutes(app: FastifyInstance): void {
         projectDir: project.projectDir,
         pipeline: snap.pipeline,
         pipelineError: snap.pipelineError,
-        state: snap.state,
+        // Ship the merged state for live mode so anything client-side
+        // that reads `snapshot.state` (currentStage, completedStages,
+        // dispatch tree) sees the same picture the graph was built from.
+        state: liveState,
         latestRun: snap.latestRun,
         graph,
         graphMode: showLive ? 'live' : 'template-overview',
