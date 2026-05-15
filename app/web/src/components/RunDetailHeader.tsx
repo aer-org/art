@@ -1,4 +1,6 @@
-import type { RunDetail } from '../lib/api.ts';
+import { useState } from 'react';
+
+import { api, type RunDetail } from '../lib/api.ts';
 import { hrefFor } from '../router.tsx';
 
 function fmtDuration(ms?: number): string {
@@ -35,7 +37,48 @@ export function RunDetailHeader({ run }: { run: RunDetail }) {
       />
       <Cell label="duration" value={fmtDuration(run.durationMs)} />
       <Cell label="host" value={run.hostname ?? '—'} />
+      {run.state === 'live' && <StopButton />}
     </header>
+  );
+}
+
+function StopButton() {
+  // `api.stop()` targets whichever run is active in the server's
+  // currently-loaded project. The RunDetail page only shows Live
+  // state for that same active run (sealed/crashed runs don't
+  // re-enter Live), so the click semantics match the visible run.
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function onClick() {
+    if (busy) return;
+    if (!window.confirm('Send SIGTERM to the running pipeline?')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.stop();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="inspector-cell">
+      <span className="label">control</span>
+      <button
+        className="run-detail-stop"
+        onClick={onClick}
+        disabled={busy}
+        title="SIGTERM the active pipeline runner"
+      >
+        {busy ? 'stopping…' : '■ stop'}
+      </button>
+      {error && (
+        <span className="error" style={{ fontSize: 10 }}>
+          {error}
+        </span>
+      )}
+    </div>
   );
 }
 
