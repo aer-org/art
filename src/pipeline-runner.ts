@@ -1519,6 +1519,61 @@ PAYLOAD FORMATS:
         `[recorder] failed to write L1 stage outcome for ${stageName}: ${(err as Error).message}`,
       );
     }
+    this.archiveStageTranscript(stageName, stageDir);
+  }
+
+  /**
+   * Copy the agent container's session jsonl into the stage dir so the
+   * full thought log (assistant messages, tool calls, reasoning) lives
+   * alongside the rest of the L1 record. codex writes
+   * `.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, claude writes
+   * `.claude/projects/<cwd>/<uuid>.jsonl`; both land under the stage's
+   * per-group session folder. We grab the most recently modified file
+   * to handle the case where the agent resumed an older session in the
+   * same run.
+   *
+   * Best-effort: command stages have no session file → silent no-op.
+   * Failures log but never block run completion.
+   */
+  private archiveStageTranscript(stageName: string, stageDir: string): void {
+    const subFolder = this.stageSubFolder(stageName);
+    const sessionRoot = path.join(getDataDir(), 'sessions', subFolder);
+    if (!fs.existsSync(sessionRoot)) return;
+
+    const jsonls: { path: string; mtime: number }[] = [];
+    const visit = (dir: string): void => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const fp = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          visit(fp);
+        } else if (entry.isFile() && fp.endsWith('.jsonl')) {
+          try {
+            jsonls.push({ path: fp, mtime: fs.statSync(fp).mtimeMs });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    };
+    visit(sessionRoot);
+    if (jsonls.length === 0) return;
+
+    jsonls.sort((a, b) => b.mtime - a.mtime);
+    const src = jsonls[0].path;
+
+    try {
+      fs.copyFileSync(src, path.join(stageDir, 'transcript.jsonl'));
+    } catch (err) {
+      console.error(
+        `[recorder] failed to archive transcript for ${stageName}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // --- Stage Containers ---
