@@ -214,6 +214,7 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
 
   for (let idx = 0; idx < nodes.length; idx++) {
     const n = nodes[idx];
+    const { width: w, height: h } = dimsOf(n);
     if (isExpandedLaneStage(n)) {
       const groupP = outer.node(`group:${n.templateName}`);
       const bbox = groupBboxes.get(n.templateName!)!;
@@ -226,16 +227,21 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
           x: groupP.x - bbox.w / 2 + rel.x,
           y: groupP.y - bbox.h / 2 + rel.y,
         },
+        // Provide dims explicitly so the MiniMap can render dots
+        // before ReactFlow has measured the actual DOM size.
+        width: w,
+        height: h,
       });
     } else {
       const p = outer.node(n.id);
       if (!p) continue;
-      const { width: w, height: h } = dimsOf(n);
       rfNodes.push({
         id: n.id,
         type: 'stage',
         data: { stage: n, revealIndex: idx },
         position: { x: p.x - w / 2, y: p.y - h / 2 },
+        width: w,
+        height: h,
       });
     }
   }
