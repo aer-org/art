@@ -1168,20 +1168,6 @@ input, textarea {
   font-weight: 600;
 }
 
-.run-id-cell {
-  display: flex;
-  flex-direction: column;
-}
-.inspector-back {
-  font-size: 10px;
-  color: var(--dim);
-  text-decoration: none;
-  letter-spacing: 0.04em;
-  margin-bottom: 2px;
-  align-self: flex-start;
-}
-.inspector-back:hover { color: var(--fg); }
-
 .run-detail-stop {
   font-family: var(--mono);
   font-size: 11px;

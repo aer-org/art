@@ -1,7 +1,6 @@
 import { useState } from 'react';
 
 import { api, type RunDetail } from '../lib/api.ts';
-import { hrefFor } from '../router.tsx';
 
 function fmtDuration(ms?: number): string {
   if (typeof ms !== 'number') return '—';
@@ -22,10 +21,7 @@ function outcomeClass(run: RunDetail): string {
 export function RunDetailHeader({ run }: { run: RunDetail }) {
   return (
     <header className={`inspector-header ${outcomeClass(run)}`}>
-      <div className="inspector-cell run-id-cell">
-        <a className="inspector-back" href={hrefFor('/runs')}>
-          ← runs
-        </a>
+      <div className="inspector-cell">
         <span className="label">run id</span>
         <span className="value large">{run.runId}</span>
       </div>
