@@ -35,6 +35,12 @@ interface EventsQuery {
 interface SessionBody {
   model?: string;
   effort?: Effort;
+  // If the client still has a chatId from a previous mount (e.g. it
+  // navigated to /runs and back), pass it here. The server returns
+  // that same chatId when the session is still alive in-memory and
+  // belongs to the currently-loaded project. Otherwise a fresh one
+  // is created — same behavior as no `chatId` at all.
+  chatId?: string;
 }
 
 interface SettingsBody {
@@ -69,6 +75,33 @@ export function registerChatRoutes(app: FastifyInstance): void {
   app.post<{ Body: SessionBody }>('/api/chat/session', async (req, reply) => {
     const project = projectState.current;
     if (!project) return reply.code(400).send({ error: 'No project loaded.' });
+
+    // Reuse the previous chatId when the client supplied one and the
+    // session is still warm in memory for this project. This is what
+    // keeps the chat continuous across Live↔Runs navigation: the
+    // client remembers its chatId in localStorage and asks the server
+    // "still got this one?" on every mount.
+    const requestedChatId = req.body?.chatId;
+    if (requestedChatId) {
+      const existing = chatController.get(requestedChatId);
+      if (existing && existing.projectDir === project.projectDir) {
+        // Apply settings tweaks without losing history (same path the
+        // /api/chat/settings endpoint takes).
+        const updated =
+          chatController.setSettings(requestedChatId, {
+            model: req.body?.model,
+            effort: req.body?.effort,
+          }) ?? existing;
+        return {
+          chatId: updated.id,
+          model: updated.model,
+          effort: updated.effort,
+          chatProtocolVersion: CHAT_PROTOCOL_VERSION,
+          reused: true,
+        };
+      }
+    }
+
     const session = chatController.create(project.projectDir, {
       model: req.body?.model,
       effort: req.body?.effort,
@@ -78,6 +111,7 @@ export function registerChatRoutes(app: FastifyInstance): void {
       model: session.model,
       effort: session.effort,
       chatProtocolVersion: CHAT_PROTOCOL_VERSION,
+      reused: false,
     };
   });
 

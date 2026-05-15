@@ -178,12 +178,14 @@ export const api = {
   stage: (name: string) => http<StageInfoResponse>('GET', `/api/stage/${encodeURIComponent(name)}`),
   pipelineSave: (config: unknown) => http<{ ok: true }>('POST', '/api/pipeline', { config }),
   chatOptions: () => http<ChatOptions>('GET', '/api/chat/options'),
-  chatSession: (opts?: { model?: string; effort?: string }) =>
-    http<{ chatId: string; model: string; effort: string; chatProtocolVersion?: number }>(
-      'POST',
-      '/api/chat/session',
-      opts ?? {},
-    ),
+  chatSession: (opts?: { model?: string; effort?: string; chatId?: string }) =>
+    http<{
+      chatId: string;
+      model: string;
+      effort: string;
+      chatProtocolVersion?: number;
+      reused?: boolean;
+    }>('POST', '/api/chat/session', opts ?? {}),
   chatSettings: (chatId: string, opts: { model?: string; effort?: string }) =>
     http<{ ok: true; model: string; effort: string; chatProtocolVersion?: number }>(
       'POST',
