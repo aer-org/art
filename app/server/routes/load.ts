@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 
 import { ART_BIN, ART_DIR_NAME, childProcessEnv } from '../config.ts';
+import { rememberLastProject } from '../last-project.ts';
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
 import {
@@ -119,6 +120,7 @@ export function registerLoadRoutes(app: FastifyInstance): void {
     }
 
     const project = await projectState.load(abs);
+    rememberLastProject(abs);
     const snap = project.current();
     const activeRun = runController.activeRunInfo(project.projectDir, snap.latestRun);
     const runStarting = activeRun
