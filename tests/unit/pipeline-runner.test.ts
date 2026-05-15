@@ -3448,7 +3448,6 @@ describe('Stitch integration', () => {
 
 describe('Command mode stage', () => {
   let group: RegisteredGroup;
-  const originalTuiMode = process.env.ART_TUI_MODE;
 
   beforeEach(() => {
     group = makeTestGroup();
@@ -3461,11 +3460,6 @@ describe('Command mode stage', () => {
   });
 
   afterEach(() => {
-    if (originalTuiMode === undefined) {
-      delete process.env.ART_TUI_MODE;
-    } else {
-      process.env.ART_TUI_MODE = originalTuiMode;
-    }
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.rmSync(groupDir, { recursive: true, force: true });
   });
@@ -3689,8 +3683,7 @@ describe('Command mode stage', () => {
     }
   }, 15000);
 
-  it('prefixes each streamed stdout line in TUI mode', async () => {
-    process.env.ART_TUI_MODE = 'true';
+  it('prefixes each streamed stdout line with the stage name', async () => {
     const notifications: string[] = [];
     const config: PipelineConfig = {
       stages: [

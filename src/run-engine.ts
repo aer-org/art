@@ -97,7 +97,7 @@ export async function runPipeline(opts: {
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   // Dummy chatJid for pipeline (not used for messaging)
-  const chatJid = process.env.ART_TUI_JID || `art://pipeline`;
+  const chatJid = `art://pipeline`;
 
   // Track spawned processes for cleanup
   const onProcess = (_proc: ChildProcess, _containerName: string) => {

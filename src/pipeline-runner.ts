@@ -1763,7 +1763,7 @@ PAYLOAD FORMATS:
       if (stageConfig.chat) {
         // Chatting stage: show full output so user can read the agent's response
         await this.notify(output.result);
-      } else if (process.env.ART_TUI_MODE) {
+      } else {
         const lines = output.result.split('\n');
         const summary =
           lines.length > 3
@@ -2101,8 +2101,8 @@ PAYLOAD FORMATS:
           if (prefixed) logStream.write(prefixed);
         }
 
-        // Stream output to TUI
-        if (process.env.ART_TUI_MODE) {
+        // Stream output to the user (prefixed with stage name).
+        {
           const { prefixed, remainder } = prefixLogLines(
             chunk,
             stageConfig.name,
@@ -2180,7 +2180,7 @@ PAYLOAD FORMATS:
           );
         }
 
-        if (process.env.ART_TUI_MODE && cmdNotifyRemainder) {
+        if (cmdNotifyRemainder) {
           this.notify(`[${stageConfig.name}] ${cmdNotifyRemainder}`).catch(
             () => {},
           );
@@ -2475,9 +2475,9 @@ PAYLOAD FORMATS:
 
   // --- Notifications ---
 
-  /** Send a visually prominent banner to TUI for stage transitions */
+  /** Send a visually prominent banner for stage transitions. */
   private async notifyBanner(text: string): Promise<void> {
-    if (process.env.ART_TUI_MODE) {
+    if (process.stdout.isTTY) {
       const line = '─'.repeat(50);
       await this.notify(
         `\n\x1b[36m${line}\x1b[0m\n\x1b[1;36m${text}\x1b[0m\n\x1b[36m${line}\x1b[0m`,

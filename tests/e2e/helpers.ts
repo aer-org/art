@@ -92,14 +92,30 @@ export function cleanupFixture(dir: string): void {
 }
 
 /**
- * Read PIPELINE_STATE.json from an __art__ directory.
+ * Read the run's PIPELINE_STATE.json. Caller passes the state root
+ * (`__art__/.state`); the helper finds the per-run state file at
+ * `runs/<runId>/state/PIPELINE_STATE.json`. Fixtures only run once
+ * per tmp dir, so the newest run dir is the right one.
  */
 export function readPipelineState(
-  artDir: string,
+  stateDir: string,
 ): Record<string, unknown> | null {
-  const stateFile = path.join(artDir, 'PIPELINE_STATE.json');
-  if (!fs.existsSync(stateFile)) return null;
-  return JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+  const runsDir = path.join(stateDir, 'runs');
+  if (!fs.existsSync(runsDir)) return null;
+  const runs = fs
+    .readdirSync(runsDir)
+    .map((name) => ({
+      name,
+      mtime: fs.statSync(path.join(runsDir, name)).mtimeMs,
+    }))
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const { name } of runs) {
+    const stateFile = path.join(runsDir, name, 'state', 'PIPELINE_STATE.json');
+    if (fs.existsSync(stateFile)) {
+      return JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+    }
+  }
+  return null;
 }
 
 /**
