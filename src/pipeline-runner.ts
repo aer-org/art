@@ -1525,20 +1525,32 @@ PAYLOAD FORMATS:
   /**
    * Copy the agent container's session jsonl into the stage dir so the
    * full thought log (assistant messages, tool calls, reasoning) lives
-   * alongside the rest of the L1 record. codex writes
-   * `.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, claude writes
-   * `.claude/projects/<cwd>/<uuid>.jsonl`; both land under the stage's
-   * per-group session folder. We grab the most recently modified file
-   * to handle the case where the agent resumed an older session in the
-   * same run.
+   * alongside the rest of the L1 record. Both providers land under
+   * `<dataDir>/sessions/<subFolder>/`, but only the *transcript* jsonl
+   * is interesting — codex also ships `.codex/.tmp/plugins/.../*.jsonl`
+   * fixture data that's louder on mtime than the actual session if a
+   * plugin sync just ran. We restrict the search to the provider's
+   * canonical session directory:
    *
-   * Best-effort: command stages have no session file → silent no-op.
-   * Failures log but never block run completion.
+   *   codex  → `.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`
+   *   claude → `.claude/projects/<cwd-encoded>/<uuid>.jsonl`
+   *
+   * Among matches we pick the most-recently-modified file, which
+   * handles agents that resumed an older session in the same run.
+   *
+   * Best-effort: command stages and stages without a session dir
+   * silently no-op. A failed copy logs but doesn't block the run.
    */
   private archiveStageTranscript(stageName: string, stageDir: string): void {
     const subFolder = this.stageSubFolder(stageName);
     const sessionRoot = path.join(getDataDir(), 'sessions', subFolder);
     if (!fs.existsSync(sessionRoot)) return;
+
+    // Canonical roots per provider. We descend each if it exists.
+    const candidates: string[] = [
+      path.join(sessionRoot, '.codex', 'sessions'),
+      path.join(sessionRoot, '.claude', 'projects'),
+    ];
 
     const jsonls: { path: string; mtime: number }[] = [];
     const visit = (dir: string): void => {
@@ -1561,7 +1573,9 @@ PAYLOAD FORMATS:
         }
       }
     };
-    visit(sessionRoot);
+    for (const root of candidates) {
+      if (fs.existsSync(root)) visit(root);
+    }
     if (jsonls.length === 0) return;
 
     jsonls.sort((a, b) => b.mtime - a.mtime);
