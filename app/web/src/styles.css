@@ -818,6 +818,17 @@ input, textarea {
   opacity: 0.7;
 }
 
+.react-flow__minimap {
+  background: var(--bg) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 4px !important;
+  width: 220px !important;
+  height: 140px !important;
+  margin: 8px !important;
+  opacity: 0.92;
+}
+.react-flow__minimap:hover { opacity: 1; }
+
 /* --- Transcript viewer (L3) --- */
 .transcript-viewer {
   display: flex;
@@ -1027,6 +1038,18 @@ input, textarea {
 }
 .runs-table tr:hover { background: rgba(255, 255, 255, 0.03); }
 .runs-table code { font-size: 12px; }
+.runs-table a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+.runs-table a:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.runs-table a code {
+  color: inherit;
+}
 
 .chip {
   display: inline-block;

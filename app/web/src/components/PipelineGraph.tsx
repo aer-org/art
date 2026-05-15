@@ -3,6 +3,7 @@ import {
   ReactFlow,
   Background,
   Controls,
+  MiniMap,
   type Edge,
   type Node,
 } from '@xyflow/react';
@@ -64,6 +65,31 @@ function isExpandedLaneStage(n: GraphNode): boolean {
 interface Bbox {
   w: number;
   h: number;
+}
+
+// Colors for the minimap dots — pick by node status / kind so the
+// overview map reads at a glance even when zoomed all the way out.
+function miniMapNodeColor(n: Node): string {
+  const data = (n.data ?? {}) as { stage?: GraphNode };
+  const stage = data.stage;
+  if (!stage) return '#3f4350';
+  if (stage.kind === 'barrier' || stage.kind === 'template') return '#5b8def';
+  switch (stage.status) {
+    case 'running':
+      return '#5b8def';
+    case 'success':
+      return '#22c55e';
+    case 'error':
+      return '#ef4444';
+    case 'unknown':
+      return '#eab308';
+    default:
+      return '#9ca3af';
+  }
+}
+function miniMapNodeStroke(n: Node): string {
+  const data = (n.data ?? {}) as { stage?: GraphNode };
+  return data.stage?.status === 'running' ? '#fff' : 'transparent';
 }
 
 function layout(nodes: GraphNode[], edges: GraphEdge[]) {
@@ -250,6 +276,15 @@ export function PipelineGraph({ nodes, edges, onNodeClick }: Props) {
       >
         <Background color="#2a2f3d" gap={20} />
         <Controls showInteractive={false} />
+        <MiniMap
+          position="top-left"
+          pannable
+          zoomable
+          nodeColor={miniMapNodeColor}
+          nodeStrokeColor={miniMapNodeStroke}
+          maskColor="rgba(15, 17, 21, 0.6)"
+          ariaLabel="Pipeline minimap"
+        />
       </ReactFlow>
     </div>
   );
