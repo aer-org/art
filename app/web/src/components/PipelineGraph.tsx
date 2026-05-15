@@ -23,8 +23,10 @@ const nodeTypes = { stage: StageNode, templateGroup: TemplateGroupNode };
 
 const STAGE_W = 220;
 const STAGE_H = 70;
-const BARRIER_W = 168;
-const BARRIER_H = 40;
+// Barriers are compact sync points, not full nodes — tooltip carries
+// joinPolicy / lane count detail.
+const BARRIER_W = 120;
+const BARRIER_H = 22;
 const TEMPLATE_W = 240;
 const TEMPLATE_H = 64;
 const GROUP_PAD = 16;

@@ -1137,42 +1137,36 @@ input, textarea {
 
 .barrier-node {
   position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  width: 168px;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
   background: var(--bg);
-  border: 1px dashed var(--accent);
-  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 11px;
   font-family: var(--mono);
-  color: var(--fg);
-  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--fg-dim);
+  white-space: nowrap;
   opacity: 0;
   transform: translateY(2px);
   animation: stage-node-in 220ms ease-out forwards;
   animation-delay: var(--reveal-delay, 0ms);
 }
-.barrier-node.success { border-color: var(--good); }
-.barrier-node.error   { border-color: var(--bad); }
-.barrier-node.running { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-.barrier-node.pending { border-color: var(--border); border-style: dashed; }
+.barrier-node.success { border-color: var(--good); color: var(--good); }
+.barrier-node.error   { border-color: var(--bad);  color: var(--bad); }
+.barrier-node.running { border-color: var(--accent); color: var(--accent); }
+.barrier-node.pending { border-color: var(--fg-dim); border-style: dashed; }
 .barrier-glyph {
-  font-size: 18px;
-  color: var(--accent);
+  font-size: 11px;
   flex-shrink: 0;
 }
-.barrier-meta { flex: 1; min-width: 0; }
-.barrier-template {
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
+.barrier-name {
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.barrier-policy {
-  font-size: 10px;
-  color: var(--fg-dim);
-  white-space: nowrap;
 }
 
 @keyframes stage-node-in {

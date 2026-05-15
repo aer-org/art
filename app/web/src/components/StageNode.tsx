@@ -115,30 +115,28 @@ function BarrierNode({
           ['--reveal-delay' as never]: `${Math.min(revealIndex, 20) * 30}ms`,
         } as CSSProperties)
       : {};
-  // Live-run barriers carry `childNodeIds` (the spawned lanes). Template
-  // overview barriers carry `templateStageCount` (how many stages the
-  // template definition has) + `templateSelfStitches` (retries). Both
-  // describe what the lane looks like — render whichever we have.
+  // Compact "sync point" rendering — the barrier shouldn't read as a
+  // full stage node (which it isn't). Just a glyph + template name on
+  // one short line. The full metadata (joinPolicy, stage/lane counts,
+  // barrier id) lives in the tooltip.
   const fanCount = stage.childNodeIds?.length ?? 0;
   const stageN = stage.templateStageCount ?? 0;
   const retries = stage.templateSelfStitches ?? 0;
+  const policy = stage.joinPolicy ?? 'all_success';
   const detail =
     fanCount > 0
       ? `${fanCount} lane${fanCount === 1 ? '' : 's'}`
       : stageN > 0
         ? `${stageN} stage${stageN === 1 ? '' : 's'}${retries > 0 ? ` · ↻${retries}` : ''}`
         : '';
+  const tooltip = [stage.templateName, policy, detail, stage.barrierId]
+    .filter(Boolean)
+    .join(' · ');
   return (
-    <div className={cls} style={style} title={stage.barrierId}>
+    <div className={cls} style={style} title={tooltip}>
       <Handle type="target" position={Position.Left} />
-      <div className="barrier-glyph">⋈</div>
-      <div className="barrier-meta">
-        <div className="barrier-template">{stage.templateName}</div>
-        <div className="barrier-policy">
-          {stage.joinPolicy ?? 'all_success'}
-          {detail ? ` · ${detail}` : ''}
-        </div>
-      </div>
+      <span className="barrier-glyph">⋈</span>
+      <span className="barrier-name">{stage.templateName}</span>
       <Handle type="source" position={Position.Right} />
     </div>
   );
