@@ -139,7 +139,11 @@ export function buildTemplateOverview(
     queue.push(t);
   }
 
-  // Seed: every `template:` reference in the base pipeline.
+  // Seed: emit every base-stage transition (plain edges + template
+  // references). Plain transitions with `next: "B"` or `next: ["B", "C"]`
+  // produce one edge per target so fan-out is visible in the static
+  // overview view too. Template transitions also drop a `tpl:` node and
+  // a post-stitch return edge for each `next` target.
   for (const s of config?.stages ?? []) {
     for (const t of s.transitions ?? []) {
       if (t.template) {
@@ -158,6 +162,14 @@ export function buildTemplateOverview(
             source: `tpl:${t.template}`,
             target: n,
             isTemplate: true,
+          });
+        }
+      } else {
+        for (const target of asArray(t.next)) {
+          addEdge({
+            source: s.name,
+            target,
+            marker: t.marker,
           });
         }
       }

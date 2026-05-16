@@ -310,19 +310,48 @@ export function loadPipelineConfig(
             'Transition "marker" is required unless "afterTimeout" is true',
           );
         }
-        if (Array.isArray(t.next)) {
-          return invalid(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "next" must be a string or null — multi-target arrays are produced only by parallel stitch at runtime',
-          );
-        }
         if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
           return invalid(
             { groupFolder, stage: stage.name, marker: transitionName },
             'Transition "next" is required (use null to end the current scope)',
           );
         }
-        if (t.next !== null && typeof t.next !== 'string') {
+        const isNextArray = Array.isArray(t.next);
+        if (isNextArray) {
+          const arr = t.next as unknown[];
+          if (arr.length === 0) {
+            return invalid(
+              { groupFolder, stage: stage.name, marker: transitionName },
+              'Transition "next" array must contain at least one target (use null to end the current scope)',
+            );
+          }
+          const seen = new Set<string>();
+          for (const entry of arr) {
+            if (typeof entry !== 'string' || entry.length === 0) {
+              return invalid(
+                {
+                  groupFolder,
+                  stage: stage.name,
+                  marker: transitionName,
+                  next: t.next,
+                },
+                'Transition "next" array entries must be non-empty strings',
+              );
+            }
+            if (seen.has(entry)) {
+              return invalid(
+                {
+                  groupFolder,
+                  stage: stage.name,
+                  marker: transitionName,
+                  duplicate: entry,
+                },
+                `Transition "next" array contains duplicate target "${entry}"`,
+              );
+            }
+            seen.add(entry);
+          }
+        } else if (t.next !== null && typeof t.next !== 'string') {
           return invalid(
             {
               groupFolder,
@@ -330,11 +359,17 @@ export function loadPipelineConfig(
               marker: transitionName,
               next: t.next,
             },
-            'Transition "next" must be a string or null',
+            'Transition "next" must be a string, an array of strings, or null',
           );
         }
         const hasNextString = typeof t.next === 'string';
         const hasTemplate = t.template !== undefined;
+        if (isNextArray && hasTemplate) {
+          return invalid(
+            { groupFolder, stage: stage.name, marker: transitionName },
+            'Transition "next" array cannot be combined with "template" — template stitch produces its own per-lane downstream',
+          );
+        }
         if (hasTemplate) {
           if (typeof t.template !== 'string' || t.template.length === 0) {
             return invalid(
@@ -434,6 +469,16 @@ export function loadPipelineConfig(
             { groupFolder, stage: stage.name, target: t.next },
             'Transition "next" must reference an existing stage in this pipeline',
           );
+        }
+        if (isNextArray) {
+          for (const entry of t.next as string[]) {
+            if (!stageNames.has(entry)) {
+              return invalid(
+                { groupFolder, stage: stage.name, target: entry },
+                `Transition "next" array entry "${entry}" does not reference an existing stage in this pipeline`,
+              );
+            }
+          }
         }
       }
       if (afterTimeoutTransitions > 1) {

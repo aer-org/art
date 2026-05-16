@@ -153,4 +153,186 @@ describe('pipeline config load diagnostics', () => {
     expect(config?.stages[0].agent).toBeUndefined();
     expect(getLastPipelineConfigLoadError()).toBeNull();
   });
+
+  it('accepts multi-target next arrays for heterogeneous fan-out', () => {
+    const dir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(dir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            name: 'A',
+            prompt: 'start',
+            transitions: [{ marker: 'DONE', next: ['B', 'C'] }],
+          },
+          {
+            name: 'B',
+            prompt: 'branch b',
+            transitions: [{ marker: 'DONE', next: 'D' }],
+          },
+          {
+            name: 'C',
+            prompt: 'branch c',
+            transitions: [{ marker: 'DONE', next: 'D' }],
+          },
+          {
+            name: 'D',
+            prompt: 'join',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config = loadPipelineConfig('test', dir);
+    expect(getLastPipelineConfigLoadError()).toBeNull();
+    expect(config?.stages[0].transitions[0].next).toEqual(['B', 'C']);
+  });
+
+  it('rejects multi-target next that introduces a cycle', () => {
+    const dir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(dir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            name: 'A',
+            prompt: 'start',
+            transitions: [{ marker: 'DONE', next: ['B', 'A'] }],
+          },
+          {
+            name: 'B',
+            prompt: 'branch',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    expect(loadPipelineConfig('test', dir)).toBeNull();
+    const error = getLastPipelineConfigLoadError();
+    expect(error?.message).toBe(
+      'PIPELINE.json contains a cycle — pipelines must be DAGs',
+    );
+  });
+
+  it('rejects next array entries that do not reference existing stages', () => {
+    const dir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(dir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            name: 'A',
+            prompt: 'start',
+            transitions: [{ marker: 'DONE', next: ['B', 'GHOST'] }],
+          },
+          {
+            name: 'B',
+            prompt: 'branch',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    expect(loadPipelineConfig('test', dir)).toBeNull();
+    expect(getLastPipelineConfigLoadError()?.message).toBe(
+      'Transition "next" array entry "GHOST" does not reference an existing stage in this pipeline',
+    );
+  });
+
+  it('rejects empty next arrays', () => {
+    const dir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(dir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            name: 'A',
+            prompt: 'start',
+            transitions: [{ marker: 'DONE', next: [] }],
+          },
+        ],
+      }),
+    );
+
+    expect(loadPipelineConfig('test', dir)).toBeNull();
+    expect(getLastPipelineConfigLoadError()?.message).toBe(
+      'Transition "next" array must contain at least one target (use null to end the current scope)',
+    );
+  });
+
+  it('rejects duplicate entries inside a next array', () => {
+    const dir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(dir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            name: 'A',
+            prompt: 'start',
+            transitions: [{ marker: 'DONE', next: ['B', 'B'] }],
+          },
+          {
+            name: 'B',
+            prompt: 'branch',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    expect(loadPipelineConfig('test', dir)).toBeNull();
+    expect(getLastPipelineConfigLoadError()?.message).toBe(
+      'Transition "next" array contains duplicate target "B"',
+    );
+  });
+
+  it('rejects combining template stitch with a multi-target next array', () => {
+    const dir = makeTmpDir();
+    fs.mkdirSync(path.join(dir, 'templates'));
+    fs.writeFileSync(
+      path.join(dir, 'templates', 'lane.json'),
+      JSON.stringify({
+        entry: 'inner',
+        stages: [
+          {
+            name: 'inner',
+            prompt: 'inner',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(dir, 'PIPELINE.json'),
+      JSON.stringify({
+        stages: [
+          {
+            name: 'A',
+            prompt: 'start',
+            transitions: [
+              { marker: 'DONE', template: 'lane', next: ['B', 'C'] },
+            ],
+          },
+          {
+            name: 'B',
+            prompt: 'b',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+          {
+            name: 'C',
+            prompt: 'c',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    expect(loadPipelineConfig('test', dir)).toBeNull();
+    expect(getLastPipelineConfigLoadError()?.message).toBe(
+      'Transition "next" array cannot be combined with "template" — template stitch produces its own per-lane downstream',
+    );
+  });
 });

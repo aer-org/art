@@ -1511,6 +1511,65 @@ describe('PipelineRunner FSM', () => {
     expect(joinInput.prompt).toBe('JOIN_RESUME_PROMPT');
   }, 15000);
 
+  it('multi-target next: A → [B, C] → D runs B and C in parallel, D joins both', async () => {
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'A',
+          prompt: 'origin',
+          mounts: {},
+          transitions: [{ marker: 'A_DONE', next: ['B', 'C'] }],
+        },
+        {
+          name: 'B',
+          prompt: 'left branch',
+          mounts: {},
+          transitions: [{ marker: 'B_DONE', next: 'D' }],
+        },
+        {
+          name: 'C',
+          prompt: 'right branch',
+          mounts: {},
+          transitions: [{ marker: 'C_DONE', next: 'D' }],
+        },
+        {
+          name: 'D',
+          prompt: 'join',
+          mounts: {},
+          transitions: [{ marker: 'D_DONE', next: null }],
+        },
+      ],
+    };
+    enqueueStageOutput('A', [{ result: '[A_DONE]' }]);
+    enqueueStageOutput('B', [{ result: '[B_DONE]' }]);
+    enqueueStageOutput('C', [{ result: '[C_DONE]' }]);
+    enqueueStageOutput('D', [{ result: '[D_DONE]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    const callNames = calls.map((c) => (c[0] as { name: string }).name);
+    // A must come first; D must come last (after both B and C settle).
+    expect(callNames[0]).toBe('pipeline-A');
+    expect(callNames[callNames.length - 1]).toBe('pipeline-D');
+    expect(callNames.filter((n) => n === 'pipeline-D')).toHaveLength(1);
+    expect(new Set(callNames.slice(1, -1))).toEqual(
+      new Set(['pipeline-B', 'pipeline-C']),
+    );
+  }, 15000);
+
   it('no marker → sends retry then succeeds on next output', async () => {
     const config = makeTwoStagePipelineConfig();
 

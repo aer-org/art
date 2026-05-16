@@ -39,7 +39,7 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a **
 ```typescript
 interface PipelineTransition {
   marker?: string;                    // Required unless afterTimeout is true. Bare name, e.g. "STAGE_COMPLETE"
-  next: string | null;                // Required in authored config. Scope-local stage name, or null to end
+  next: string | string[] | null;     // Required. Scope-local stage name, an array of names for heterogeneous fan-out, or null to end. Array form is incompatible with `template`.
   template?: string;                  // Template name (templates/<name>.json) to stitch before continuing to `next`
   count?: number;                     // Positive integer. Parallel stitch N lanes + synthesized join. Requires `template`
   countFrom?: "payload";              // Derive lane count from marker payload array length. Requires `template`; exclusive with count
@@ -136,12 +136,35 @@ Agent stages can opt into external MCP servers by referencing keys from `~/.conf
 - Values are **registry refs**, not raw tool names or URLs
 - Prefer one ref per isolated capability/server
 
+#### Heterogeneous fan-out — `next: [...]`
+
+For "after A, run B and C in parallel, then continue at D" where B and C are different stages, set the source transition's `next` to an array. Each entry must reference an existing stage in the same scope; arrays must be non-empty, unique, and DAG-acyclic. The downstream join is implicit: any stage that appears as the `next` target of multiple stages becomes a fan-in point and waits for all of its declared predecessors to complete.
+
+```jsonc
+{
+  "stages": [
+    { "name": "build",  "agent": "build",  "mounts": {"project": "rw"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": ["test", "lint"] }] },
+    { "name": "test",   "command": "npm test",  "image": "node:22-slim", "mounts": {"project":"ro"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": "report" }, { "marker": "STAGE_ERROR", "next": "report" }] },
+    { "name": "lint",   "command": "npm run lint", "image": "node:22-slim", "mounts": {"project":"ro"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": "report" }, { "marker": "STAGE_ERROR", "next": "report" }] },
+    { "name": "report", "agent": "report", "mounts": {"results":"rw"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }] }
+  ]
+}
+```
+
+`test` and `lint` launch in parallel after `build`; `report` only runs once both have completed (regardless of which marker each lane fired). Array `next` cannot be combined with `template:` on the same transition — those are different mechanisms (see below).
+
 #### Templates & Stitch
 
-Templates live at `templates/<name>.json` and hold reusable sub-graphs. A transition with `template: "<name>"` clones the template into the live graph at runtime (**stitch**). Use for:
-- Recovery paths — stitch a cleanup template on error
-- Iteration without cycles — review stitches a fresh experiment template downstream
-- Parallel work — `count: N` inserts N lane copies + a synthesized join
+Templates live at `templates/<name>.json` and hold reusable sub-graphs. A transition with `template: "<name>"` clones the template into the live graph at runtime (**stitch**). Use templates when the array-`next` fan-out isn't enough:
+- **Homogeneous parallel** — `count: N` (or `countFrom: "payload"`) inserts N lane copies of the same sub-graph with per-lane substitutions, joined by a `joinPolicy`-controlled barrier
+- **Loops without cycles** — `review` stitching a fresh `experiment` template downstream lets you iterate without a back-edge that would fail the DAG check
+- **Recovery paths** — stitch a `cleanup` template on `STAGE_ERROR`
+
+Rule of thumb: pick array `next` for heterogeneous siblings (B and C are different stages); pick `template:` when you need N parallel copies of the same shape, payload-driven lane counts, or a join policy other than implicit "wait for all predecessors".
 
 ```jsonc
 // pipeline.json
@@ -175,8 +198,9 @@ Templates live at `templates/<name>.json` and hold reusable sub-graphs. A transi
 Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`, `transitions`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
 
 Rules:
-- `next` is **always required** per transition. Scope-local: reference a stage in the current scope, or `null` to end
-- Authored `next` must be a string or `null`; arrays are runtime-only outputs from parallel stitch
+- `next` is **always required** per transition. Scope-local: reference a stage in the current scope, an array of such names for heterogeneous fan-out, or `null` to end
+- `next` arrays must be non-empty, contain only existing-stage names, have no duplicates, and produce no cycles (DAG enforced at load)
+- `next: [...]` cannot combine with `template:` on the same transition; template stitch and array fan-out are different mechanisms
 - Stage `kind`, `fan_in`, `prompts`, and `prompt_append` are legacy and invalid
 - Transition `retry`, `next_dynamic`, and `kind: "dynamic-fanout"` are legacy and invalid
 - `count` requires `template` and must be a positive integer. Stitch synthesizes a join stage; `next: null` edges inside the template return to that join
