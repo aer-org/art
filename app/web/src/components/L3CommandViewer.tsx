@@ -3,19 +3,39 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/api.ts';
 
 interface Props {
-  runId: string;
-  nodeId: string;
-  stageName: string;
+  // Static-text mode (overview): provide command + optional meta
+  // directly. When `text` is set, runId/nodeId/stageName are ignored
+  // and no fetch happens.
+  text?: string | null;
+  meta?: Record<string, unknown> | null;
+  runId?: string;
+  nodeId?: string;
+  stageName?: string;
 }
 
-export function L3CommandViewer({ runId, nodeId, stageName }: Props) {
+export function L3CommandViewer({
+  text: textProp,
+  meta: metaProp,
+  runId,
+  nodeId,
+  stageName,
+}: Props) {
+  const isStatic = textProp !== undefined;
   const [data, setData] = useState<{
     sh: string | null;
     meta: Record<string, unknown> | null;
-  } | null>(null);
+  } | null>(
+    isStatic ? { sh: textProp ?? '', meta: metaProp ?? null } : null,
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isStatic) {
+      setData({ sh: textProp ?? '', meta: metaProp ?? null });
+      setError(null);
+      return;
+    }
+    if (!runId || !nodeId || !stageName) return;
     let cancelled = false;
     api
       .stageCommand(runId, nodeId, stageName)
@@ -28,7 +48,7 @@ export function L3CommandViewer({ runId, nodeId, stageName }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [runId, nodeId, stageName]);
+  }, [isStatic, textProp, metaProp, runId, nodeId, stageName]);
 
   if (error) return <p className="error">{error}</p>;
   if (data === null) return <p className="muted">Loading…</p>;

@@ -27,6 +27,14 @@ interface Props {
   turns: Array<Record<string, unknown>>;
   diffSummary: Record<string, unknown> | null;
   onClose: () => void;
+  // Static-text mode (overview): when set, prompt/command panels
+  // render the provided text directly instead of fetching from runs/.
+  // Only `prompt`, `command`, and `mounts` kinds are valid in this mode.
+  staticTexts?: {
+    prompt?: string | null;
+    command?: string | null;
+    commandMeta?: Record<string, unknown> | null;
+  };
 }
 
 const TITLES: Record<L3PanelKind, string> = {
@@ -52,7 +60,10 @@ export function L3Panel({
   turns,
   diffSummary,
   onClose,
+  staticTexts,
 }: Props) {
+  const promptStatic = staticTexts !== undefined;
+  const commandStatic = staticTexts !== undefined;
   return (
     <aside className="l3-panel inspector">
       <header className="l3-header">
@@ -65,14 +76,20 @@ export function L3Panel({
         </button>
       </header>
       <div className="l3-body">
-        {kind === 'prompt' && (
-          <L3PromptViewer
-            runId={runId}
-            nodeId={nodeId}
-            stageName={stageName}
-            promptSource={stage?.promptSource ?? null}
-          />
-        )}
+        {kind === 'prompt' &&
+          (promptStatic ? (
+            <L3PromptViewer
+              text={staticTexts?.prompt ?? ''}
+              promptSource={stage?.promptSource ?? null}
+            />
+          ) : (
+            <L3PromptViewer
+              runId={runId}
+              nodeId={nodeId}
+              stageName={stageName}
+              promptSource={stage?.promptSource ?? null}
+            />
+          ))}
         {kind === 'initial' && (
           <L3PromptViewer
             runId={runId}
@@ -81,13 +98,19 @@ export function L3Panel({
             initial
           />
         )}
-        {kind === 'command' && (
-          <L3CommandViewer
-            runId={runId}
-            nodeId={nodeId}
-            stageName={stageName}
-          />
-        )}
+        {kind === 'command' &&
+          (commandStatic ? (
+            <L3CommandViewer
+              text={staticTexts?.command ?? ''}
+              meta={staticTexts?.commandMeta ?? null}
+            />
+          ) : (
+            <L3CommandViewer
+              runId={runId}
+              nodeId={nodeId}
+              stageName={stageName}
+            />
+          ))}
         {kind === 'mounts' && <L3ContainerInfo container={stage?.container ?? null} />}
         {kind === 'diff' && (
           <L3DiffViewer

@@ -20,6 +20,10 @@ interface Props {
   data: StageSidebarData;
   onClose: () => void;
   onOpenPanel?: (panel: L3PanelKind, mount?: string) => void;
+  // Overview mode (no run yet): hide Output and Internal sections plus
+  // run-only Input rows (substitutions, initial handoff). Only the
+  // authoring inputs — prompt source, command, container — remain.
+  overview?: boolean;
 }
 
 export type L3PanelKind =
@@ -39,6 +43,7 @@ export function StageSidebar({
   data,
   onClose,
   onOpenPanel,
+  overview = false,
 }: Props) {
   const { stage, events, turns, diffSummary, loading, error } = data;
   const stageRec = stage?.stage as Record<string, unknown> | null;
@@ -75,13 +80,17 @@ export function StageSidebar({
                 <BtnLink onClick={() => onOpenPanel?.('prompt')}>view</BtnLink>
               )}
             </Field>
-            <Field label="initial handoff">
-              {stage?.hasInitial ? (
-                <BtnLink onClick={() => onOpenPanel?.('initial')}>view</BtnLink>
-              ) : (
-                <span className="muted">—</span>
-              )}
-            </Field>
+            {!overview && (
+              <Field label="initial handoff">
+                {stage?.hasInitial ? (
+                  <BtnLink onClick={() => onOpenPanel?.('initial')}>
+                    view
+                  </BtnLink>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </Field>
+            )}
             <Field label="command">
               {stage?.hasCommand ? (
                 <BtnLink onClick={() => onOpenPanel?.('command')}>view</BtnLink>
@@ -89,13 +98,15 @@ export function StageSidebar({
                 <span className="muted">agent mode</span>
               )}
             </Field>
-            <Field label="substitutions">
-              {stage?.substitutions ? (
-                <SubsLine subs={stage.substitutions} />
-              ) : (
-                <span className="muted">—</span>
-              )}
-            </Field>
+            {!overview && (
+              <Field label="substitutions">
+                {stage?.substitutions ? (
+                  <SubsLine subs={stage.substitutions} />
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </Field>
+            )}
             <Field label="container">
               {stage?.container ? (
                 <ContainerLine container={stage.container} />
@@ -108,72 +119,78 @@ export function StageSidebar({
             </Field>
           </Section>
 
-          <Section title="Output">
-            <Field label="outcome">
-              <OutcomeChip outcome={pickStr(stageRec, 'result')} />
-            </Field>
-            <Field label="matched marker">
-              {pickStr(stageRec, 'matchedMarker') ? (
-                <code>[{pickStr(stageRec, 'matchedMarker')}]</code>
-              ) : (
-                <span className="muted">—</span>
-              )}
-            </Field>
-            <Field label="transition target">
-              {fmtTarget(stageRec?.transitionTarget)}
-            </Field>
-            <Field label="duration">
-              {fmtDuration(pickNum(stageRec, 'durationMs'))}
-            </Field>
-            <Field label="retry / exit">
-              <RetryExit
-                retryCount={pickNum(stageRec, 'retryCount')}
-                exitCode={pickNum(stageRec, 'exitCode')}
-              />
-            </Field>
-            <Field label="diff">
-              <DiffSummaryLine
-                summary={diffSummary}
-                onView={(m) => onOpenPanel?.('diff', m)}
-              />
-            </Field>
-            <Field label="payload">
-              <PayloadLine len={pickNum(stageRec, 'payloadLen')} />
-            </Field>
-          </Section>
+          {!overview && (
+            <Section title="Output">
+              <Field label="outcome">
+                <OutcomeChip outcome={pickStr(stageRec, 'result')} />
+              </Field>
+              <Field label="matched marker">
+                {pickStr(stageRec, 'matchedMarker') ? (
+                  <code>[{pickStr(stageRec, 'matchedMarker')}]</code>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </Field>
+              <Field label="transition target">
+                {fmtTarget(stageRec?.transitionTarget)}
+              </Field>
+              <Field label="duration">
+                {fmtDuration(pickNum(stageRec, 'durationMs'))}
+              </Field>
+              <Field label="retry / exit">
+                <RetryExit
+                  retryCount={pickNum(stageRec, 'retryCount')}
+                  exitCode={pickNum(stageRec, 'exitCode')}
+                />
+              </Field>
+              <Field label="diff">
+                <DiffSummaryLine
+                  summary={diffSummary}
+                  onView={(m) => onOpenPanel?.('diff', m)}
+                />
+              </Field>
+              <Field label="payload">
+                <PayloadLine len={pickNum(stageRec, 'payloadLen')} />
+              </Field>
+            </Section>
+          )}
 
-          <Section title="Internal">
-            <Field label="turns">
-              <TurnsLine turns={turns} />
-              {turns.length > 0 && (
-                <BtnLink onClick={() => onOpenPanel?.('turns')}>view</BtnLink>
-              )}
-            </Field>
-            <Field label="transcript">
-              <span className="muted">
-                {stage?.hasTranscript ? 'archived' : 'n/a'}
-              </span>
-              {stage?.hasTranscript && (
-                <BtnLink onClick={() => onOpenPanel?.('transcript')}>
-                  view
-                </BtnLink>
-              )}
-            </Field>
-            <Field label="decisions">
-              <DecisionsLine events={events} />
-              {events.length > 0 && (
-                <BtnLink onClick={() => onOpenPanel?.('decisions')}>
-                  view
-                </BtnLink>
-              )}
-            </Field>
-            <Field label="streams">
-              <StreamsLine sizes={stage?.streamSizes} />
-              {stage && hasAnyStream(stage.streamSizes) && (
-                <BtnLink onClick={() => onOpenPanel?.('stream')}>view</BtnLink>
-              )}
-            </Field>
-          </Section>
+          {!overview && (
+            <Section title="Internal">
+              <Field label="turns">
+                <TurnsLine turns={turns} />
+                {turns.length > 0 && (
+                  <BtnLink onClick={() => onOpenPanel?.('turns')}>view</BtnLink>
+                )}
+              </Field>
+              <Field label="transcript">
+                <span className="muted">
+                  {stage?.hasTranscript ? 'archived' : 'n/a'}
+                </span>
+                {stage?.hasTranscript && (
+                  <BtnLink onClick={() => onOpenPanel?.('transcript')}>
+                    view
+                  </BtnLink>
+                )}
+              </Field>
+              <Field label="decisions">
+                <DecisionsLine events={events} />
+                {events.length > 0 && (
+                  <BtnLink onClick={() => onOpenPanel?.('decisions')}>
+                    view
+                  </BtnLink>
+                )}
+              </Field>
+              <Field label="streams">
+                <StreamsLine sizes={stage?.streamSizes} />
+                {stage && hasAnyStream(stage.streamSizes) && (
+                  <BtnLink onClick={() => onOpenPanel?.('stream')}>
+                    view
+                  </BtnLink>
+                )}
+              </Field>
+            </Section>
+          )}
         </div>
       )}
     </aside>

@@ -5,25 +5,37 @@ import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.ts';
 
 interface Props {
-  runId: string;
-  nodeId: string;
-  stageName: string;
+  // Static-text mode: pass the prompt directly (overview, no run yet).
+  // When provided, the fetch path is skipped and runId/nodeId/stageName
+  // are ignored.
+  text?: string | null;
+  runId?: string;
+  nodeId?: string;
+  stageName?: string;
   promptSource?: string | null;
   initial?: boolean;
 }
 
 export function L3PromptViewer({
+  text: textProp,
   runId,
   nodeId,
   stageName,
   promptSource,
   initial,
 }: Props) {
-  const [text, setText] = useState<string | null>(null);
+  const isStatic = textProp !== undefined;
+  const [text, setText] = useState<string | null>(isStatic ? (textProp ?? '') : null);
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState(false);
 
   useEffect(() => {
+    if (isStatic) {
+      setText(textProp ?? '');
+      setError(null);
+      return;
+    }
+    if (!runId || !nodeId || !stageName) return;
     let cancelled = false;
     const fetcher = initial
       ? api.stageInitial(runId, nodeId, stageName)
@@ -38,7 +50,7 @@ export function L3PromptViewer({
     return () => {
       cancelled = true;
     };
-  }, [runId, nodeId, stageName, initial]);
+  }, [isStatic, textProp, runId, nodeId, stageName, initial]);
 
   if (error) return <p className="error">{error}</p>;
   if (text === null) return <p className="muted">Loading…</p>;
