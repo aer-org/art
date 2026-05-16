@@ -30,7 +30,11 @@ import {
   type PipelineSnapshot,
   type PreflightResponse,
 } from '../lib/api.ts';
-import { buildTemplateOverviewGraph } from '../lib/templateOverview.ts';
+import {
+  buildTemplateOverviewGraph,
+  isTemplateStageId,
+  templateOfStageId,
+} from '../lib/templateOverview.ts';
 
 // L3 panel kinds that make sense in overview mode (no run yet).
 const OVERVIEW_L3_KINDS: L3PanelKind[] = ['prompt', 'command', 'mounts'];
@@ -99,12 +103,25 @@ export function LivePage(props: {
   const isOverview = snapshot.graphMode === 'template-overview';
   const selectedConfigStage = useMemo(() => {
     if (!isOverview || !selectedStage) return null;
+    // Template-internal stage id (e.g. `tpl::experiment::run`) — look the
+    // stage up inside the template definition instead of the base pipeline.
+    if (isTemplateStageId(selectedStage)) {
+      const tplName = templateOfStageId(selectedStage);
+      if (!tplName) return null;
+      const tpl = snapshot.templates?.[tplName];
+      const localName = selectedStage.slice(`tpl::${tplName}::`.length);
+      const stages = (tpl?.stages ?? []) as Array<{
+        name: string;
+        [k: string]: unknown;
+      }>;
+      return stages.find((s) => s.name === localName) ?? null;
+    }
     const stages = (snapshot.pipeline?.stages ?? []) as Array<{
       name: string;
       [k: string]: unknown;
     }>;
     return stages.find((s) => s.name === selectedStage) ?? null;
-  }, [isOverview, selectedStage, snapshot.pipeline]);
+  }, [isOverview, selectedStage, snapshot.pipeline, snapshot.templates]);
   const staticStageData = useStaticStageDetail(selectedConfigStage);
   const overviewSidebarOpen =
     isOverview && !!selectedStage && staticStageData.stage !== null;
@@ -313,8 +330,15 @@ export function LivePage(props: {
               </div>
               {overviewSidebarOpen && (
                 <StageSidebar
-                  nodeId="root"
-                  stageName={selectedStage!}
+                  nodeId={
+                    selectedStage && isTemplateStageId(selectedStage)
+                      ? `template:${templateOfStageId(selectedStage) ?? '?'}`
+                      : 'root'
+                  }
+                  stageName={
+                    (selectedConfigStage as { name?: string } | null)?.name ??
+                    selectedStage!
+                  }
                   data={staticStageData}
                   onClose={() => setSelectedStage(null)}
                   onOpenPanel={(kind) => {
