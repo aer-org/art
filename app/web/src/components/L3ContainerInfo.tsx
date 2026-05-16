@@ -13,7 +13,6 @@ export function L3ContainerInfo({ container }: Props) {
 
   const image = typeof container.image === 'string' ? container.image : '—';
   const mode = typeof container.mode === 'string' ? container.mode : '—';
-  const gpu = container.gpu === true;
   const privileged = container.privileged === true;
   const runAsRoot = container.runAsRoot === true;
   const mounts: Mount[] = Array.isArray(container.mounts)
@@ -32,9 +31,8 @@ export function L3ContainerInfo({ container }: Props) {
       <div className="l3-kv">
         <KV k="mode" v={mode} />
         <KV k="image" v={image} mono />
-        <KV k="gpu" v={String(gpu)} />
-        <KV k="privileged" v={String(privileged)} />
-        <KV k="runAsRoot" v={String(runAsRoot)} />
+        {privileged && <KV k="privileged" v="true" />}
+        {runAsRoot && <KV k="runAsRoot" v="true" />}
       </div>
 
       <h4 className="l3-h4">Mounts ({mounts.length})</h4>

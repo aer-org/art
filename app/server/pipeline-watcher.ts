@@ -21,6 +21,34 @@ export interface WatchedSnapshot {
   pipelineError?: string;
 }
 
+const AGENT_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * Inline agent-ref prompts so the visualizer can render the actual
+ * authored text. Mirrors `resolveAgentRefs` in the core runtime but
+ * is intentionally read-only and best-effort — a missing or
+ * unreadable agents/*.md just leaves `prompt` empty so the UI shows
+ * "—" instead of crashing.
+ */
+function resolveAgentRefsInPlace(
+  artDir: string,
+  pipeline: PipelineConfig | null,
+): void {
+  if (!pipeline?.stages) return;
+  for (const stage of pipeline.stages) {
+    const ref = (stage as { agent?: string }).agent;
+    if (!ref || stage.prompt) continue;
+    if (!AGENT_REF_PATTERN.test(ref)) continue;
+    const filePath = path.join(artDir, 'agents', `${ref}.md`);
+    try {
+      stage.prompt = fs.readFileSync(filePath, 'utf8');
+      (stage as { promptSource?: string }).promptSource = `agents/${ref}.md`;
+    } catch {
+      /* leave prompt empty; UI will render the unresolved ref */
+    }
+  }
+}
+
 function safeParseJson<T>(filePath: string): T | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
@@ -332,6 +360,7 @@ export class PipelineProject extends EventEmitter {
     try {
       const raw = fs.readFileSync(pipelinePath, 'utf8');
       pipeline = JSON.parse(raw) as PipelineConfig;
+      resolveAgentRefsInPlace(this.artDir, pipeline);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') pipelineError = 'PIPELINE.json not found';

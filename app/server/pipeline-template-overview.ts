@@ -68,6 +68,8 @@ export function collectReferencedTemplates(
   return out;
 }
 
+const AGENT_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
 function readTemplate(
   artDir: string,
   name: string,
@@ -79,7 +81,25 @@ function readTemplate(
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
   try {
     const raw = fs.readFileSync(resolved, 'utf-8');
-    return JSON.parse(raw) as TemplateFile;
+    const tpl = JSON.parse(raw) as TemplateFile;
+    // Best-effort agent-ref inlining (read-only) so the overview
+    // inspector can render template-internal agent prompts.
+    for (const stage of tpl.stages ?? []) {
+      const ref = (stage as { agent?: string }).agent;
+      const existing = (stage as { prompt?: string }).prompt;
+      if (!ref || existing) continue;
+      if (!AGENT_REF_PATTERN.test(ref)) continue;
+      try {
+        (stage as { prompt?: string }).prompt = fs.readFileSync(
+          path.join(artDir, 'agents', `${ref}.md`),
+          'utf-8',
+        );
+        (stage as { promptSource?: string }).promptSource = `agents/${ref}.md`;
+      } catch {
+        /* leave prompt empty */
+      }
+    }
+    return tpl;
   } catch {
     return null;
   }

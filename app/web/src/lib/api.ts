@@ -32,7 +32,21 @@ export interface TemplateFile {
   stages: Array<{
     name: string;
     kind?: 'agent' | 'command';
+    agent?: string;
+    prompt?: string;
+    promptSource?: string;
     command?: string;
+    image?: string;
+    mounts?: Record<string, 'ro' | 'rw' | null | undefined>;
+    hostMounts?: Array<{
+      hostPath: string;
+      containerPath?: string;
+      readonly?: boolean;
+    }>;
+    env?: Record<string, string>;
+    successMarker?: string;
+    errorMarker?: string;
+    timeout?: number;
     transitions?: Array<{
       marker?: string;
       next?: string | string[] | null;

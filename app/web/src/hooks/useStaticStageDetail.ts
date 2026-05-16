@@ -33,7 +33,6 @@ interface StaticStage {
     readonly?: boolean;
   }>;
   env?: Record<string, string>;
-  gpu?: boolean;
   privileged?: boolean;
   runAsRoot?: boolean;
 }
@@ -92,7 +91,6 @@ export function useStaticStageDetail(
       ? {
           image: stage.image,
           mode: stage.command ? 'command' : 'agent',
-          gpu: stage.gpu ?? false,
           privileged: stage.privileged ?? false,
           runAsRoot: stage.runAsRoot ?? false,
           mounts: [...mounts, ...hostMounts],

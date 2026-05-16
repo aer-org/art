@@ -297,7 +297,14 @@ export function LivePage(props: {
           onRunLog={appendRunLog}
           onRunStarting={handleRunStarting}
         />
-        {showPicker && <DirectoryPicker onLoad={handleLoad} />}
+        {showPicker && (
+          <DirectoryPicker
+            onLoad={handleLoad}
+            onCancel={
+              snapshot.projectDir ? () => setShowPicker(false) : undefined
+            }
+          />
+        )}
         {!showPicker && (
           <div
             className="banner info"
