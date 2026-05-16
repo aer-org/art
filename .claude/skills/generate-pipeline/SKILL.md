@@ -285,8 +285,15 @@ Review stage has multiple markers. At least one path must reach `null`. Loops ar
 - Recover via stitch: `{ "marker": "STAGE_ERROR", "template": "recovery", "next": null }`
 
 ### Parallel work
-Stitch a template `N` times with `count`:
+Two flavors. Pick the one that matches the shape of the parallel work:
+
 ```jsonc
+// Heterogeneous siblings: B and C are different stages that both feed D.
+{ "marker": "STAGE_COMPLETE", "next": ["B", "C"], "prompt": "Run B and C in parallel; D will join them" }
+```
+
+```jsonc
+// Homogeneous N copies of the same sub-graph (with optional per-lane substitutions / join policy).
 { "marker": "GO", "template": "probe", "next": "summarize", "count": 4, "joinPolicy": "all_settled", "prompt": "Probe 4 variants" }
 ```
 
@@ -355,9 +362,10 @@ When this skill is invoked:
 ## Pre-Output Checklist
 
 - [ ] Every stage has a unique `name`
-- [ ] Every transition has an explicit `next` (`string` or `null`)
+- [ ] Every transition has an explicit `next` (`string`, `string[]`, or `null`)
 - [ ] Every non-`afterTimeout` transition has a non-empty `marker` and a `prompt`
-- [ ] Every transition's `next` references an existing stage in the same scope, or is `null`
+- [ ] Every transition's `next` references an existing stage in the same scope (string form), every entry of an array references an existing stage in the same scope, or `next` is `null`
+- [ ] Array `next` is non-empty, contains no duplicates, and does not appear on a transition that also sets `template`
 - [ ] Every stage has at least one transition
 - [ ] Command stages have `command`, use marker transitions only for `STAGE_COMPLETE`/`STAGE_ERROR`, and choose an explicit `image` when the default image lacks required tools
 - [ ] Command `timeout` appears only on command stages; `afterTimeout` is command-only, markerless, and declared at most once per stage
@@ -372,8 +380,7 @@ When this skill is invoked:
 - [ ] Sub-path mounts use only relative directory paths (no `..`, no leading `/`)
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
-- [ ] The pipeline graph is acyclic (DAG). Loops via template self-stitch only
-- [ ] No authored transition uses array `next`; arrays are runtime-only
+- [ ] The pipeline graph is acyclic (DAG). Cycles are rejected at load — use template self-stitch to express iteration without a back-edge
 - [ ] No legacy stage fields: `kind`, `fan_in`, `prompts`, or `prompt_append`
 - [ ] No legacy transition fields: `retry`, `next_dynamic`, or `kind: "dynamic-fanout"`
 - [ ] `count` is a positive integer and only used with `template`
