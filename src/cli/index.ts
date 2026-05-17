@@ -36,7 +36,6 @@ async function main(): Promise<void> {
     }
     case 'run': {
       const runFlags = args.filter((a) => a.startsWith('--'));
-      applyProviderFlag(runFlags);
       // Positional = anything that isn't a flag AND isn't the value
       // immediately following a value-taking flag. We treat --stage and
       // --model as value-taking; the value after them is consumed here.
@@ -57,6 +56,20 @@ async function main(): Promise<void> {
       const stageName = stageIdx !== -1 ? args[stageIdx + 1] : undefined;
       const modelIdx = args.indexOf('--model');
       const model = modelIdx !== -1 ? args[modelIdx + 1] : undefined;
+      // If the user picked a Claude model but didn't pass --claude /
+      // --codex explicitly, infer the provider from the model id so the
+      // model actually takes effect. The codex engine ignores ART_MODEL,
+      // so leaving provider=codex would silently fall back to GPT-5
+      // even though the CLI args said "claude-opus-4-6".
+      if (
+        model &&
+        model.startsWith('claude-') &&
+        !runFlags.includes('--claude') &&
+        !runFlags.includes('--codex')
+      ) {
+        runFlags.push('--claude');
+      }
+      applyProviderFlag(runFlags);
       if (noDiff) process.env.ART_NO_DIFF = '1';
       // Plumbed via env so the container's agent-runner can read it
       // without threading a new field through every stage launch
