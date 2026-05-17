@@ -59,6 +59,23 @@ export function LivePage(props: {
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [detailStage, setDetailStage] = useState<string | null>(null);
   const [overviewL3, setOverviewL3] = useState<L3PanelKind | null>(null);
+  // Chat-pane collapse, persisted across reloads. ChatPanel stays
+  // mounted while collapsed so useChat's session + messages survive
+  // toggling without round-tripping through localStorage rehydration.
+  const [chatCollapsed, setChatCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('art:chatCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('art:chatCollapsed', chatCollapsed ? '1' : '0');
+    } catch {
+      /* ignore quota / private-mode errors */
+    }
+  }, [chatCollapsed]);
   const [showPicker, setShowPicker] = useState(true);
   const [showSetup, setShowSetup] = useState(false);
   const [loadNotice, setLoadNotice] = useState<string | null>(null);
@@ -280,13 +297,24 @@ export function LivePage(props: {
   );
 
   return (
-    <div className="app-root">
+    <div className={`app-root${chatCollapsed ? ' chat-collapsed' : ''}`}>
       <div className="left-pane">
         {preflightBanner}
         {snapshot.pipelineError && (
           <div className="banner warn">{snapshot.pipelineError}</div>
         )}
         <ChatPanel projectDir={snapshot.projectDir} />
+      </div>
+      <div className="chat-toggle-bar">
+        <button
+          type="button"
+          onClick={() => setChatCollapsed((c) => !c)}
+          aria-label={chatCollapsed ? 'Expand debugger' : 'Collapse debugger'}
+          title={chatCollapsed ? 'Expand debugger' : 'Collapse debugger'}
+        >
+          {chatCollapsed ? '›' : '‹'}
+        </button>
+        {chatCollapsed && <span className="label">Debugger</span>}
       </div>
       <div className="right-pane">
         <RunBar

@@ -47,10 +47,14 @@ input, textarea {
 
 .app-root {
   display: grid;
-  grid-template-columns: minmax(360px, 40%) 1fr;
+  grid-template-columns: minmax(360px, 40%) 28px 1fr;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns 180ms ease-out;
+}
+.app-root.chat-collapsed {
+  grid-template-columns: 0 28px 1fr;
 }
 
 .left-pane, .right-pane {
@@ -60,6 +64,50 @@ input, textarea {
   border-right: 1px solid var(--border);
 }
 .right-pane { border-right: none; }
+
+/* Keep ChatPanel mounted but hidden when collapsed so useChat state
+   (chatId, messages, draft) survives the toggle. */
+.app-root.chat-collapsed .left-pane {
+  visibility: hidden;
+}
+
+.chat-toggle-bar {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 0;
+  gap: 12px;
+}
+.chat-toggle-bar button {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.chat-toggle-bar button:hover {
+  background: var(--panel-2);
+}
+.chat-toggle-bar .label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+  white-space: nowrap;
+}
 
 .banner {
   background: var(--bad);
