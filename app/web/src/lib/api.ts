@@ -195,7 +195,8 @@ export const api = {
   browse: (p?: string) => http<BrowseResponse>('GET', `/api/browse${p ? `?path=${encodeURIComponent(p)}` : ''}`),
   load: (path: string) => http<PipelineSnapshot>('POST', '/api/load', { path }),
   current: () => http<PipelineSnapshot>('GET', '/api/current'),
-  run: () => http<{ ok: true; pid: number }>('POST', '/api/run'),
+  run: (opts?: { model?: string }) =>
+    http<{ ok: true; pid: number }>('POST', '/api/run', opts ?? {}),
   stop: () => http<{ ok: true }>('POST', '/api/stop'),
   runLog: () => http<{ lines: string[] }>('GET', '/api/run/log'),
   stage: (name: string) => http<StageInfoResponse>('GET', `/api/stage/${encodeURIComponent(name)}`),

@@ -386,6 +386,13 @@ export function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // Plumb the runtime model override (set by `art run --model <id>`)
+  // through to the agent-runner so the SDK / codex query honors it.
+  // Empty string means "use SDK / engine default" — same as unset.
+  if (process.env.ART_MODEL) {
+    args.push('-e', `ART_MODEL=${process.env.ART_MODEL}`);
+  }
+
   // User-defined environment variables ($VAR references resolved from host env)
   if (env) {
     for (const [key, value] of Object.entries(env)) {

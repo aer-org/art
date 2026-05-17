@@ -176,6 +176,7 @@ export class ClaudeEngine implements AgentEngine {
       }
     }
 
+    const modelOverride = process.env.ART_MODEL?.trim() || undefined;
     for await (const message of query({
       prompt: stream,
       options: {
@@ -183,6 +184,7 @@ export class ClaudeEngine implements AgentEngine {
         additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
         resume: input.sessionId,
         resumeSessionAt: input.resumeAt,
+        model: modelOverride,
         systemPrompt: (() => {
           const appendParts = [globalClaudeMd, input.ephemeralAppend].filter(
             Boolean,

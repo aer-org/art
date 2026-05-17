@@ -37,13 +37,31 @@ async function main(): Promise<void> {
     case 'run': {
       const runFlags = args.filter((a) => a.startsWith('--'));
       applyProviderFlag(runFlags);
-      const runPositional = args.filter((a) => !a.startsWith('--'));
+      // Positional = anything that isn't a flag AND isn't the value
+      // immediately following a value-taking flag. We treat --stage and
+      // --model as value-taking; the value after them is consumed here.
+      const valueFlags = new Set(['--stage', '--model']);
+      const runPositional: string[] = [];
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a.startsWith('--')) {
+          if (valueFlags.has(a)) i++; // skip its value
+          continue;
+        }
+        runPositional.push(a);
+      }
       const skipPreflight = runFlags.includes('--skip-preflight');
       const noDiff = runFlags.includes('--no-diff');
       const yes = runFlags.includes('--yes') || runFlags.includes('-y');
       const stageIdx = args.indexOf('--stage');
       const stageName = stageIdx !== -1 ? args[stageIdx + 1] : undefined;
+      const modelIdx = args.indexOf('--model');
+      const model = modelIdx !== -1 ? args[modelIdx + 1] : undefined;
       if (noDiff) process.env.ART_NO_DIFF = '1';
+      // Plumbed via env so the container's agent-runner can read it
+      // without threading a new field through every stage launch
+      // signature.
+      if (model) process.env.ART_MODEL = model;
       const { run } = await import('./run.js');
       await run(runPositional[0] || '.', {
         skipPreflight,
@@ -83,6 +101,8 @@ Usage:
   art init [dir]              Create __art__/ scaffold and empty PIPELINE.json
   art run [dir]               Start the agent pipeline engine with Codex
   art run --claude [dir]      Start the agent pipeline engine with Claude Code
+  art run --model <id>        Override the agent model
+                              (e.g. claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5)
   art inspect [runId]         Inspect archived runs (no runId: list recent)
   art inspect <id> --events   Print raw events.jsonl for a run
 

@@ -144,6 +144,20 @@ input, textarea {
   text-transform: uppercase;
   letter-spacing: 0;
 }
+.run-bar .model-select {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+  max-width: 140px;
+}
+.run-bar .model-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .status-dot {
   width: 10px;
   height: 10px;
