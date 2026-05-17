@@ -13,8 +13,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChatPanel } from '../components/ChatPanel.tsx';
 import { DirectoryPicker } from '../components/DirectoryPicker.tsx';
 import { L3Panel } from '../components/L3Panel.tsx';
-import { NodeLogPanel } from '../components/NodeLogPanel.tsx';
-import { NodeModal } from '../components/NodeModal.tsx';
 import { PipelineGraph } from '../components/PipelineGraph.tsx';
 import { RunBar } from '../components/RunBar.tsx';
 import { RunLogTray } from '../components/RunLogTray.tsx';
@@ -24,11 +22,13 @@ import {
   type L3PanelKind,
 } from '../components/StageSidebar.tsx';
 import type { usePipelineState } from '../hooks/usePipelineState.ts';
+import { useStageDetail } from '../hooks/useStageDetail.ts';
 import { useStaticStageDetail } from '../hooks/useStaticStageDetail.ts';
 import {
   api,
   type PipelineSnapshot,
   type PreflightResponse,
+  type RunDetail,
 } from '../lib/api.ts';
 import {
   buildTemplateOverviewGraph,
@@ -57,8 +57,16 @@ export function LivePage(props: {
     clearNodeLog,
   } = props.pipeline;
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
-  const [detailStage, setDetailStage] = useState<string | null>(null);
   const [overviewL3, setOverviewL3] = useState<L3PanelKind | null>(null);
+  // L3 panel for live mode (in-progress run inspector — same UX as
+  // RunDetailPage, but pointed at the active run).
+  const [liveL3, setLiveL3] = useState<{
+    kind: L3PanelKind;
+    mount?: string;
+  } | null>(null);
+  // RunDetail for the active run, polled while live so the L2 / L3
+  // panels see fresh `stage.json` / turn / diff data.
+  const [liveDetail, setLiveDetail] = useState<RunDetail | null>(null);
   // Chat-pane collapse, persisted across reloads. ChatPanel stays
   // mounted while collapsed so useChat's session + messages survive
   // toggling without round-tripping through localStorage rehydration.
@@ -108,15 +116,13 @@ export function LivePage(props: {
     return snapshot.graph ?? { nodes: [], edges: [] };
   }, [snapshot, expandedTemplates]);
 
-  const selectedNode =
-    displayGraph.nodes.find(
-      (node) => node.name === selectedStage || node.id === selectedStage,
-    ) ?? null;
   const runningNode =
     displayGraph.nodes.find((node) => node.status === 'running') ?? null;
 
-  // Overview mode = no live run; sidebar/L3 inspector replaces the log
-  // dock for stage clicks. Live mode keeps the existing NodeLogPanel.
+  // Overview vs live: both render a StageSidebar + L3Panel inspector
+  // on stage click. Overview synthesizes data from PIPELINE.json via
+  // useStaticStageDetail; live fetches from /api/runs/<liveRunId>/...
+  // via useStageDetail (same hook RunDetailPage uses).
   const isOverview = snapshot.graphMode === 'template-overview';
   const selectedConfigStage = useMemo(() => {
     if (!isOverview || !selectedStage) return null;
@@ -195,8 +201,75 @@ export function LivePage(props: {
 
   // Close L3 if stage selection changes.
   useEffect(() => {
-    if (!selectedStage) setOverviewL3(null);
+    if (!selectedStage) {
+      setOverviewL3(null);
+      setLiveL3(null);
+    }
   }, [selectedStage]);
+
+  // === Live-mode inspector (same UX as RunDetailPage) =====================
+  // While a run is active, fetch the same RunDetail RunDetailPage uses so
+  // the StageSidebar / L3Panel pull live-archived `runs/<id>/...` data.
+  const liveRunId =
+    !isOverview && snapshot.isRunning ? (snapshot.latestRun?.runId ?? null) : null;
+  useEffect(() => {
+    if (!liveRunId) {
+      setLiveDetail(null);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      api
+        .runDetail(liveRunId)
+        .then((d) => {
+          if (!cancelled) setLiveDetail(d);
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = window.setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [liveRunId]);
+
+  const liveSelectedNodeId = useMemo(() => {
+    if (isOverview || !selectedStage) return null;
+    const node = displayGraph.nodes.find(
+      (n) => n.name === selectedStage || n.id === selectedStage,
+    );
+    return node?.nodeId ?? 'root';
+  }, [isOverview, selectedStage, displayGraph]);
+  const liveStageData = useStageDetail(
+    liveDetail,
+    liveSelectedNodeId,
+    !isOverview ? selectedStage : null,
+  );
+  const liveSidebarOpen =
+    !isOverview &&
+    !!liveRunId &&
+    !!selectedStage &&
+    !!liveSelectedNodeId &&
+    liveStageData.stage !== null;
+  const liveL3Open = liveSidebarOpen && liveL3 !== null;
+  const liveLayoutClass = liveL3Open
+    ? 'inspector-with-l3'
+    : liveSidebarOpen
+      ? 'inspector-with-sidebar'
+      : '';
+
+  // Esc cascade for live inspector: L3 → sidebar.
+  useEffect(() => {
+    if (isOverview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (liveL3) setLiveL3(null);
+      else if (selectedStage) setSelectedStage(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOverview, selectedStage, liveL3]);
 
   function handleGraphNodeClick(nodeId: string): void {
     const node = displayGraph.nodes.find((n) => n.id === nodeId);
@@ -225,43 +298,6 @@ export function LivePage(props: {
     if (!selectedStage && runningNode) setSelectedStage(runningNode.name);
   }, [selectedStage, runningNode?.name]);
 
-  useEffect(() => {
-    if (!selectedStage || !selectedNode) return;
-
-    if (selectedNode.status === 'pending') {
-      setNodeLog(selectedStage, []);
-      return;
-    }
-
-    let cancelled = false;
-    const loadNodeLog = () => {
-      api
-        .stage(selectedStage)
-        .then((info) => {
-          if (!cancelled) setNodeLog(selectedStage, info.logs.nodeTail ?? []);
-        })
-        .catch(() => {
-          if (!cancelled) setNodeLog(selectedStage, []);
-        });
-    };
-
-    loadNodeLog();
-    const interval =
-      selectedNode.status === 'running'
-        ? window.setInterval(loadNodeLog, 1000)
-        : null;
-
-    return () => {
-      cancelled = true;
-      if (interval !== null) window.clearInterval(interval);
-    };
-  }, [
-    selectedStage,
-    selectedNode?.status,
-    snapshot.projectDir,
-    snapshot.latestRun?.runId,
-  ]);
-
   async function refresh() {
     const cur = await api.current().catch(() => null);
     if (cur) setSnapshot(cur);
@@ -271,7 +307,8 @@ export function LivePage(props: {
     clearRunLog();
     clearNodeLog();
     setSelectedStage(null);
-    setDetailStage(null);
+    setLiveL3(null);
+    setOverviewL3(null);
     setSnapshot(loaded);
     setLoadNotice(
       loaded.initialized
@@ -408,29 +445,47 @@ export function LivePage(props: {
             <RunLogTray lines={runLog} onClear={clearRunLog} />
           </div>
         ) : (
-          <>
-            <PipelineGraph
-              nodes={displayGraph.nodes}
-              edges={displayGraph.edges}
-              onNodeClick={handleGraphNodeClick}
-            />
-            <div className="log-dock has-node-log">
-              <RunLogTray lines={runLog} onClear={clearRunLog} />
-              <NodeLogPanel
-                node={selectedNode}
-                lines={selectedStage ? (nodeLogs[selectedStage] ?? []) : []}
-                onClear={clearNodeLog}
-                onClose={() => setSelectedStage(null)}
-                onDetails={setDetailStage}
-              />
+          // Live mode: same StageSidebar + L3Panel layout RunDetailPage
+          // uses, pointed at the active run. Per-stage data is fetched
+          // through useStageDetail against /api/runs/<liveRunId>/...
+          <div className={`inspector ${liveLayoutClass}`}>
+            <div className="inspector-body">
+              <div className="inspector-canvas">
+                <PipelineGraph
+                  nodes={displayGraph.nodes}
+                  edges={displayGraph.edges}
+                  onNodeClick={handleGraphNodeClick}
+                />
+              </div>
+              {liveSidebarOpen && (
+                <StageSidebar
+                  nodeId={liveSelectedNodeId!}
+                  stageName={selectedStage!}
+                  data={liveStageData}
+                  onClose={() => setSelectedStage(null)}
+                  onOpenPanel={(kind, mount) => setLiveL3({ kind, mount })}
+                />
+              )}
+              {liveL3Open &&
+                selectedStage &&
+                liveSelectedNodeId &&
+                liveRunId && (
+                  <L3Panel
+                    runId={liveRunId}
+                    nodeId={liveSelectedNodeId}
+                    stageName={selectedStage}
+                    kind={liveL3!.kind}
+                    mount={liveL3?.mount}
+                    stage={liveStageData.stage}
+                    events={liveStageData.events}
+                    turns={liveStageData.turns}
+                    diffSummary={liveStageData.diffSummary}
+                    onClose={() => setLiveL3(null)}
+                  />
+                )}
             </div>
-            {detailStage && (
-              <NodeModal
-                name={detailStage}
-                onClose={() => setDetailStage(null)}
-              />
-            )}
-          </>
+            <RunLogTray lines={runLog} onClear={clearRunLog} />
+          </div>
         )}
         {showSetup && (
           <SetupModal
