@@ -1,0 +1,771 @@
+/**
+ * File-system helpers for the transparency-layer visualizer.
+ *
+ * Mirrors `src/run-registry.ts` for the package boundary — `app/` does not
+ * import from the parent `src/`. Adds richer per-run / per-stage readers
+ * that the visualizer routes need:
+ *   - run list with derived state (live / crashed / sealed)
+ *   - run detail (run.json + summary.json + sealed marker + node tree)
+ *   - per-stage record (stage.json + container.json + file inventory)
+ *   - raw file readers (prompt.txt, initial.txt, command.sh/json,
+ *     substitutions.json, diff/<mount>.diff, turns/NNN.json)
+ *   - run-wide files (provenance.json, pipeline.snap.json)
+ *
+ * All reads are best-effort: missing files and malformed JSON return null
+ * or [] so the UI can degrade gracefully across feature flags + transitional
+ * runtime versions.
+ */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { ART_DIR_NAME } from './config.ts';
+
+export type RunState = 'live' | 'crashed' | 'sealed';
+
+export interface RunHeader {
+  runId: string;
+  state: RunState;
+  pid?: number;
+  hostname?: string;
+  startTime?: string;
+  provider?: string;
+  // Light summary so the list page doesn't need a second fetch per row.
+  outcome?: 'success' | 'error';
+  endTime?: string;
+  durationMs?: number;
+  totalStages?: number;
+  failedStages?: number;
+}
+
+export interface RunDetail extends RunHeader {
+  runDir: string;
+  args?: string[];
+  schemaVersion?: number;
+  hasProvenance: boolean;
+  hasPipelineSnap: boolean;
+  hasEvents: boolean;
+  nodes: NodeIndex[];
+}
+
+export interface NodeIndex {
+  nodeId: string;
+  stages: string[];
+}
+
+export interface StageDetail {
+  nodeId: string;
+  stageName: string;
+  stage: Record<string, unknown> | null; // stage.json contents
+  container: Record<string, unknown> | null; // container.json contents
+  substitutions: Record<string, unknown> | null;
+  promptSource: string | null;
+  hasPrompt: boolean;
+  hasInitial: boolean;
+  hasCommand: boolean;
+  hasDiff: boolean;
+  hasTranscript: boolean;
+  diffMounts: string[];
+  turnCount: number;
+  streamSizes: { agent: number; stdout: number; stderr: number };
+}
+
+function runsRoot(projectDir: string): string {
+  return path.join(projectDir, ART_DIR_NAME, '.state', 'runs');
+}
+
+function runDirOf(projectDir: string, runId: string): string {
+  return path.join(runsRoot(projectDir), runId);
+}
+
+function readJson<T = Record<string, unknown>>(filePath: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function classifyRunDir(runDir: string): {
+  state: RunState;
+  meta: Record<string, unknown> | null;
+} {
+  const sealed = fs.existsSync(path.join(runDir, 'sealed'));
+  const meta = readJson(path.join(runDir, 'run.json'));
+  if (sealed) return { state: 'sealed', meta };
+  if (!meta || typeof meta.pid !== 'number' || meta.pid <= 0) {
+    return { state: 'crashed', meta };
+  }
+  const sameHost = !meta.hostname || meta.hostname === os.hostname();
+  const live = sameHost && isPidAlive(meta.pid as number);
+  return { state: live ? 'live' : 'crashed', meta };
+}
+
+function headerFor(projectDir: string, runId: string): RunHeader {
+  const dir = runDirOf(projectDir, runId);
+  const { state, meta } = classifyRunDir(dir);
+  const summary = readJson(path.join(dir, 'summary.json'));
+  const header: RunHeader = { runId, state };
+  if (meta) {
+    if (typeof meta.pid === 'number') header.pid = meta.pid;
+    if (typeof meta.hostname === 'string') header.hostname = meta.hostname;
+    if (typeof meta.startTime === 'string')
+      header.startTime = meta.startTime;
+    if (typeof meta.provider === 'string') header.provider = meta.provider;
+  }
+  if (summary) {
+    if (summary.outcome === 'success' || summary.outcome === 'error') {
+      header.outcome = summary.outcome;
+    }
+    if (typeof summary.endTime === 'string') header.endTime = summary.endTime;
+    if (typeof summary.durationMs === 'number')
+      header.durationMs = summary.durationMs;
+    if (typeof summary.totalStages === 'number')
+      header.totalStages = summary.totalStages;
+    if (typeof summary.failedStages === 'number')
+      header.failedStages = summary.failedStages;
+  }
+  return header;
+}
+
+export function listRuns(projectDir: string): RunHeader[] {
+  const root = runsRoot(projectDir);
+  if (!fs.existsSync(root)) return [];
+  return fs
+    .readdirSync(root)
+    .filter((entry) => {
+      if (!entry.startsWith('run-')) return false;
+      try {
+        return fs.statSync(path.join(root, entry)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort()
+    .reverse()
+    .map((entry) => headerFor(projectDir, entry));
+}
+
+export function getRun(
+  projectDir: string,
+  runId: string,
+): RunDetail | null {
+  const dir = runDirOf(projectDir, runId);
+  if (!fs.existsSync(dir)) return null;
+  const header = headerFor(projectDir, runId);
+  const runJson = readJson(path.join(dir, 'run.json'));
+  const detail: RunDetail = {
+    ...header,
+    runDir: dir,
+    hasProvenance: fs.existsSync(path.join(dir, 'provenance.json')),
+    hasPipelineSnap: fs.existsSync(path.join(dir, 'pipeline.snap.json')),
+    hasEvents: fs.existsSync(path.join(dir, 'events.jsonl')),
+    nodes: listNodes(dir),
+  };
+  if (runJson) {
+    if (Array.isArray(runJson.args)) detail.args = runJson.args as string[];
+    if (typeof runJson.schemaVersion === 'number') {
+      detail.schemaVersion = runJson.schemaVersion;
+    }
+  }
+  return detail;
+}
+
+function listNodes(runDir: string): NodeIndex[] {
+  const nodesDir = path.join(runDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return [];
+  const out: NodeIndex[] = [];
+  for (const node of fs.readdirSync(nodesDir)) {
+    const stagesDir = path.join(nodesDir, node, 'stages');
+    if (!fs.existsSync(stagesDir)) continue;
+    const stages: string[] = [];
+    try {
+      for (const stage of fs.readdirSync(stagesDir)) {
+        if (fs.statSync(path.join(stagesDir, stage)).isDirectory()) {
+          stages.push(stage);
+        }
+      }
+    } catch {
+      continue;
+    }
+    out.push({ nodeId: node, stages: stages.sort() });
+  }
+  return out.sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+}
+
+export interface ReadEventsOpts {
+  type?: string; // exact match or prefix (e.g. "decision.")
+  limit?: number; // default 5000
+  stageName?: string;
+  nodeId?: string;
+}
+
+export function readEvents(
+  projectDir: string,
+  runId: string,
+  opts: ReadEventsOpts = {},
+): Array<Record<string, unknown>> {
+  const fp = path.join(runDirOf(projectDir, runId), 'events.jsonl');
+  if (!fs.existsSync(fp)) return [];
+  const limit = opts.limit ?? 5000;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(fp, 'utf-8');
+  } catch {
+    return [];
+  }
+  const lines = raw.split('\n').filter((l) => l.length > 0);
+  const out: Array<Record<string, unknown>> = [];
+  for (const line of lines) {
+    let ev: Record<string, unknown>;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (opts.type) {
+      const t = typeof ev.type === 'string' ? ev.type : '';
+      const match = opts.type.endsWith('.')
+        ? t.startsWith(opts.type)
+        : t === opts.type;
+      if (!match) continue;
+    }
+    if (opts.stageName && ev.stageName !== opts.stageName) continue;
+    if (opts.nodeId && ev.nodeId !== opts.nodeId) continue;
+    out.push(ev);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function stageDirOf(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+): string {
+  return path.join(
+    runDirOf(projectDir, runId),
+    'nodes',
+    nodeId,
+    'stages',
+    stageName,
+  );
+}
+
+function safeStat(filePath: string): number {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
+
+export function getStage(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+): StageDetail | null {
+  const dir = stageDirOf(projectDir, runId, nodeId, stageName);
+  if (!fs.existsSync(dir)) return null;
+  const diffDir = path.join(dir, 'diff');
+  const diffMounts: string[] = [];
+  if (fs.existsSync(diffDir)) {
+    for (const entry of fs.readdirSync(diffDir)) {
+      if (entry.endsWith('.diff')) diffMounts.push(entry.replace(/\.diff$/, ''));
+    }
+  }
+  const turnsDir = path.join(dir, 'turns');
+  let turnCount = 0;
+  if (fs.existsSync(turnsDir)) {
+    turnCount = fs
+      .readdirSync(turnsDir)
+      .filter((f) => /^\d+\.json$/.test(f)).length;
+  }
+  let promptSource: string | null = null;
+  try {
+    promptSource = fs
+      .readFileSync(path.join(dir, 'prompt.source'), 'utf-8')
+      .trim();
+  } catch {
+    promptSource = null;
+  }
+  return {
+    nodeId,
+    stageName,
+    stage: readJson(path.join(dir, 'stage.json')),
+    container: readJson(path.join(dir, 'container.json')),
+    substitutions: readJson(path.join(dir, 'substitutions.json')),
+    promptSource,
+    hasPrompt: fs.existsSync(path.join(dir, 'prompt.txt')),
+    hasInitial: fs.existsSync(path.join(dir, 'initial.txt')),
+    hasCommand: fs.existsSync(path.join(dir, 'command.sh')),
+    hasDiff: diffMounts.length > 0,
+    hasTranscript: fs.existsSync(path.join(dir, 'transcript.jsonl')),
+    diffMounts: diffMounts.sort(),
+    turnCount,
+    streamSizes: {
+      agent: safeStat(path.join(dir, 'agent.stream.log')),
+      stdout: safeStat(path.join(dir, 'stdout.log')),
+      stderr: safeStat(path.join(dir, 'stderr.log')),
+    },
+  };
+}
+
+export function readStageText(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+  filename: 'prompt.txt' | 'initial.txt' | 'command.sh',
+): string | null {
+  const fp = path.join(stageDirOf(projectDir, runId, nodeId, stageName), filename);
+  try {
+    return fs.readFileSync(fp, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+export function readStageCommand(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+): { sh: string | null; meta: Record<string, unknown> | null } {
+  const dir = stageDirOf(projectDir, runId, nodeId, stageName);
+  let sh: string | null = null;
+  try {
+    sh = fs.readFileSync(path.join(dir, 'command.sh'), 'utf-8');
+  } catch {
+    sh = null;
+  }
+  const meta = readJson(path.join(dir, 'command.json'));
+  return { sh, meta };
+}
+
+export function readStageDiff(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+  mount: string,
+): string | null {
+  const fp = path.join(
+    stageDirOf(projectDir, runId, nodeId, stageName),
+    'diff',
+    `${mount}.diff`,
+  );
+  try {
+    return fs.readFileSync(fp, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+export function readStageDiffSummary(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+): Record<string, unknown> | null {
+  return readJson(
+    path.join(
+      stageDirOf(projectDir, runId, nodeId, stageName),
+      'diff',
+      'summary.json',
+    ),
+  );
+}
+
+/**
+ * Read the archived agent transcript (`transcript.jsonl`) and return
+ * one parsed record per line. Both providers land here:
+ *   codex  → records keyed by `type` (session_meta / turn_context /
+ *            response_item / event_msg). The meaty stuff is inside
+ *            `payload.type` (function_call, reasoning, message, ...).
+ *   claude → records keyed by role + content array (tool_use,
+ *            tool_result, thinking, text).
+ *
+ * We return the raw records; the client normalizes per-provider.
+ * Returns null when the file is missing — agent stages have it,
+ * command stages don't.
+ */
+export function readStageTranscript(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+): { records: Array<Record<string, unknown>>; bytes: number } | null {
+  const fp = path.join(
+    stageDirOf(projectDir, runId, nodeId, stageName),
+    'transcript.jsonl',
+  );
+  if (!fs.existsSync(fp)) return null;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(fp, 'utf-8');
+  } catch {
+    return null;
+  }
+  const out: Array<Record<string, unknown>> = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      // skip malformed line
+    }
+  }
+  return { records: out, bytes: raw.length };
+}
+
+export function readStageTurns(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+): Array<Record<string, unknown>> {
+  const dir = path.join(
+    stageDirOf(projectDir, runId, nodeId, stageName),
+    'turns',
+  );
+  if (!fs.existsSync(dir)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const f of fs.readdirSync(dir).sort()) {
+    if (!/^\d+\.json$/.test(f)) continue;
+    const data = readJson(path.join(dir, f));
+    if (data) out.push(data);
+  }
+  return out;
+}
+
+export function readStageStream(
+  projectDir: string,
+  runId: string,
+  nodeId: string,
+  stageName: string,
+  kind: 'agent' | 'stdout' | 'stderr',
+  tail = 500,
+): { lines: string[]; bytes: number } | null {
+  const filename =
+    kind === 'agent' ? 'agent.stream.log' : `${kind}.log`;
+  const fp = path.join(
+    stageDirOf(projectDir, runId, nodeId, stageName),
+    filename,
+  );
+  if (!fs.existsSync(fp)) return null;
+  try {
+    const raw = fs.readFileSync(fp, 'utf-8');
+    const all = raw.split('\n');
+    return {
+      lines: all.slice(Math.max(0, all.length - tail)),
+      bytes: raw.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function readProvenance(
+  projectDir: string,
+  runId: string,
+): Record<string, unknown> | null {
+  return readJson(path.join(runDirOf(projectDir, runId), 'provenance.json'));
+}
+
+export function readPipelineSnap(
+  projectDir: string,
+  runId: string,
+): Record<string, unknown> | null {
+  return readJson(
+    path.join(runDirOf(projectDir, runId), 'pipeline.snap.json'),
+  );
+}
+
+/**
+ * Build a map of `stageName -> { retryCount, exitCode, nodeId }` by walking
+ * every nodes/<n>/stages/<s>/stage.json in the run. Used to augment the
+ * graph nodes in the run-detail view with transparency-layer data.
+ *
+ * Multiple stitched lanes can map to the *same* stage name across nodes;
+ * here we collapse to the first occurrence — the graph itself only renders
+ * one node per stage name in the current materialization, so this matches
+ * what the UI will draw.
+ */
+export function readStageSummaryMap(
+  projectDir: string,
+  runId: string,
+): Map<
+  string,
+  { retryCount?: number; exitCode?: number | null; nodeId: string }
+> {
+  const result = new Map<
+    string,
+    { retryCount?: number; exitCode?: number | null; nodeId: string }
+  >();
+  const dir = path.join(runDirOf(projectDir, runId), 'nodes');
+  if (!fs.existsSync(dir)) return result;
+  for (const nodeId of fs.readdirSync(dir)) {
+    const stagesDir = path.join(dir, nodeId, 'stages');
+    if (!fs.existsSync(stagesDir)) continue;
+    for (const stage of fs.readdirSync(stagesDir)) {
+      if (result.has(stage)) continue;
+      const rec = readJson(path.join(stagesDir, stage, 'stage.json'));
+      if (!rec) continue;
+      result.set(stage, {
+        retryCount:
+          typeof rec.retryCount === 'number' ? rec.retryCount : undefined,
+        exitCode: rec.exitCode as number | null | undefined,
+        nodeId,
+      });
+    }
+  }
+  return result;
+}
+
+export function readPipelineSnapConfig(
+  projectDir: string,
+  runId: string,
+): Record<string, unknown> | null {
+  return readJson(
+    path.join(runDirOf(projectDir, runId), 'pipeline.snap.json'),
+  );
+}
+
+/**
+ * Each PipelineRunner instance writes its own scope-suffixed state file
+ * (`PIPELINE_STATE.<scopeId>.json`); only the root scope writes
+ * `PIPELINE_STATE.json`. A run that stitches into nested lanes therefore
+ * has the *full* dispatch picture split across N files. The graph endpoint
+ * needs the merged view, otherwise stitched grandchildren (powerplan
+ * spawned by floorplan, pnr by powerplan, …) never appear because
+ * `mergeChild` only fires after the child's whole subtree returns.
+ *
+ * Merge policy (chosen to keep the graph live-correct mid-run):
+ *   - dispatchTree / dispatchBarriers: union across scopes
+ *   - completedStages: union (each scope's slice of completions)
+ *   - currentStage: prefer the deepest non-null (still-running scope)
+ *   - status: 'error' if any scope errored; else 'running' if any running
+ *   - activations / completions: per-stage sum
+ *   - lastUpdated: max
+ *   - other fields: take from root scope as-is
+ */
+function mergeDispatchNode(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing) return { ...incoming };
+  const out: Record<string, unknown> = { ...existing };
+  for (const [k, v] of Object.entries(incoming)) {
+    if (k === 'childIds') {
+      const a = (existing[k] as string[] | undefined) ?? [];
+      const b = (v as string[] | undefined) ?? [];
+      out[k] = [...new Set([...a, ...b])];
+      continue;
+    }
+    if (k === 'stageNames') {
+      const a = (existing[k] as string[] | undefined) ?? [];
+      const b = (v as string[] | undefined) ?? [];
+      out[k] = [...new Set([...a, ...b])];
+      continue;
+    }
+    // For everything else (template, originStage, parentId, status,
+    // config, etc.), only overwrite when the incoming value carries
+    // real info — null/undefined/empty-string is treated as "scope
+    // doesn't know" rather than "the answer is none".
+    const cur = out[k];
+    const curEmpty =
+      cur === undefined ||
+      cur === null ||
+      cur === '' ||
+      (typeof cur === 'object' &&
+        cur !== null &&
+        Object.keys(cur as object).length === 0);
+    const incomingEmpty =
+      v === undefined ||
+      v === null ||
+      v === '' ||
+      (typeof v === 'object' &&
+        v !== null &&
+        Object.keys(v as object).length === 0);
+    if (curEmpty && !incomingEmpty) out[k] = v;
+  }
+  return out;
+}
+
+export function readPipelineStateForRun(
+  projectDir: string,
+  runId: string,
+): Record<string, unknown> | null {
+  const stateDir = path.join(runDirOf(projectDir, runId), 'state');
+  if (!fs.existsSync(stateDir)) return null;
+
+  let scopeFiles: string[];
+  try {
+    scopeFiles = fs
+      .readdirSync(stateDir)
+      .filter((f) => f.startsWith('PIPELINE_STATE') && f.endsWith('.json'));
+  } catch {
+    return null;
+  }
+  if (scopeFiles.length === 0) return null;
+
+  const states: Record<string, unknown>[] = [];
+  for (const f of scopeFiles) {
+    const s = readJson(path.join(stateDir, f));
+    if (s) states.push(s);
+  }
+  if (states.length === 0) return null;
+
+  // Root scope: PIPELINE_STATE.json (no scope suffix).
+  const root =
+    states.find((_s, i) => scopeFiles[i] === 'PIPELINE_STATE.json') ?? states[0];
+
+  const mergedTree: Record<string, unknown> = {};
+  const mergedBarriers: Record<string, unknown> = {};
+  const completed = new Set<string>();
+  const activations = new Map<string, number>();
+  const completions = new Map<string, number>();
+  let currentStage: unknown = null;
+  let status: unknown = 'success';
+  let lastUpdated = '';
+
+  for (const s of states) {
+    const tree = (s.dispatchTree as Record<string, unknown> | undefined) ?? {};
+    for (const [k, v] of Object.entries(tree)) {
+      // Each scope writes a SELF-VIEW of its own node (template=null,
+      // childIds=[the spawned lanes inside this scope]) and a PARENT-VIEW
+      // of any node it directly spawned (template=<name>, originStage=...,
+      // childIds=[]). Whichever file we read first must not clobber the
+      // other view, so merge field-by-field: keep an existing non-empty
+      // value rather than letting a null/empty later one overwrite it.
+      const existing = mergedTree[k];
+      mergedTree[k] = mergeDispatchNode(
+        existing as Record<string, unknown> | undefined,
+        v as Record<string, unknown>,
+      );
+    }
+    const bars =
+      (s.dispatchBarriers as Record<string, unknown> | undefined) ?? {};
+    for (const [k, v] of Object.entries(bars)) mergedBarriers[k] = v;
+
+    for (const name of (s.completedStages as string[] | undefined) ?? []) {
+      completed.add(name);
+    }
+    for (const [name, n] of Object.entries(
+      (s.activations as Record<string, number> | undefined) ?? {},
+    )) {
+      activations.set(name, (activations.get(name) ?? 0) + (n ?? 0));
+    }
+    for (const [name, n] of Object.entries(
+      (s.completions as Record<string, number> | undefined) ?? {},
+    )) {
+      completions.set(name, (completions.get(name) ?? 0) + (n ?? 0));
+    }
+
+    // Pick deepest non-null currentStage (the actively running scope).
+    if (s.currentStage != null) currentStage = s.currentStage;
+    if (s.status === 'error') status = 'error';
+    else if (s.status === 'running' && status !== 'error') status = 'running';
+    const u = typeof s.lastUpdated === 'string' ? s.lastUpdated : '';
+    if (u > lastUpdated) lastUpdated = u;
+  }
+
+  return {
+    ...root,
+    dispatchTree: mergedTree,
+    dispatchBarriers: mergedBarriers,
+    completedStages: [...completed],
+    activations: Object.fromEntries(activations),
+    completions: Object.fromEntries(completions),
+    currentStage,
+    status,
+    lastUpdated: lastUpdated || (root.lastUpdated ?? ''),
+  };
+}
+
+export interface AllStageRecord {
+  nodeId: string;
+  stageName: string;
+  stage: Record<string, unknown> | null;
+  turnCount: number;
+  turnSum: {
+    tokensIn: number;
+    tokensOut: number;
+    cacheReadTokens: number;
+    latencyMs: number;
+    costUsd: number;
+  };
+}
+
+/**
+ * Walk every nodes/<n>/stages/<s>/stage.json + sibling turns/ to build a
+ * run-wide list for Timeline + Cost overlays. Single fast pass so the L4
+ * overlays don't need N+1 stage fetches.
+ */
+export function readAllStageRecords(
+  projectDir: string,
+  runId: string,
+): AllStageRecord[] {
+  const out: AllStageRecord[] = [];
+  const nodesDir = path.join(runDirOf(projectDir, runId), 'nodes');
+  if (!fs.existsSync(nodesDir)) return out;
+  for (const nodeId of fs.readdirSync(nodesDir)) {
+    const stagesDir = path.join(nodesDir, nodeId, 'stages');
+    if (!fs.existsSync(stagesDir)) continue;
+    for (const stage of fs.readdirSync(stagesDir)) {
+      const dir = path.join(stagesDir, stage);
+      const rec = readJson(path.join(dir, 'stage.json'));
+      // Aggregate turns (small files, parsed eagerly so the client gets one
+      // round trip per L4 view).
+      const turnsDir = path.join(dir, 'turns');
+      const turnSum = {
+        tokensIn: 0,
+        tokensOut: 0,
+        cacheReadTokens: 0,
+        latencyMs: 0,
+        costUsd: 0,
+      };
+      let turnCount = 0;
+      if (fs.existsSync(turnsDir)) {
+        for (const f of fs.readdirSync(turnsDir)) {
+          if (!/^\d+\.json$/.test(f)) continue;
+          const t = readJson(path.join(turnsDir, f));
+          if (!t) continue;
+          turnCount++;
+          if (typeof t.tokensIn === 'number') turnSum.tokensIn += t.tokensIn;
+          if (typeof t.tokensOut === 'number')
+            turnSum.tokensOut += t.tokensOut;
+          if (typeof t.cacheReadTokens === 'number')
+            turnSum.cacheReadTokens += t.cacheReadTokens;
+          if (typeof t.latencyMs === 'number')
+            turnSum.latencyMs += t.latencyMs;
+          if (typeof t.costUsd === 'number') turnSum.costUsd += t.costUsd;
+        }
+      }
+      out.push({ nodeId, stageName: stage, stage: rec, turnCount, turnSum });
+    }
+  }
+  // Sort by finishedAt when available, else node + stage name. Timeline
+  // wants chronological; Cost view is order-agnostic.
+  out.sort((a, b) => {
+    const af = (a.stage as { finishedAt?: string } | null)?.finishedAt ?? '';
+    const bf = (b.stage as { finishedAt?: string } | null)?.finishedAt ?? '';
+    if (af && bf) return af.localeCompare(bf);
+    return `${a.nodeId}/${a.stageName}`.localeCompare(
+      `${b.nodeId}/${b.stageName}`,
+    );
+  });
+  return out;
+}

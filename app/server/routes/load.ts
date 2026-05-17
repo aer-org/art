@@ -5,9 +5,16 @@ import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 
 import { ART_BIN, ART_DIR_NAME, childProcessEnv } from '../config.ts';
+import { rememberLastProject } from '../last-project.ts';
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
+import {
+  buildTemplateOverview,
+  collectReferencedTemplates,
+} from '../pipeline-template-overview.ts';
+import { readPipelineStateForRun } from '../run-reader.ts';
 import { runController } from '../run-controller.ts';
+import type { PipelineState } from '../types.ts';
 
 interface LoadBody {
   path: string;
@@ -37,18 +44,41 @@ function snapshotResponse(projectDir: string, initialized: boolean) {
   const isRunning = activeRun !== null;
   const isRunStarting =
     runStarting !== null && !stateCatchesRunStart(snap?.state, runStarting.startedAt);
+  const showLive = isRunning || isRunStarting;
+  const liveRunId = activeRun?.runId ?? snap?.latestRun?.runId ?? null;
+  const liveState =
+    showLive && project && liveRunId
+      ? ((readPipelineStateForRun(
+          project.projectDir,
+          liveRunId,
+        ) as PipelineState | null) ?? snap?.state ?? null)
+      : (snap?.state ?? null);
+  const graph = showLive
+    ? buildGraph(snap?.pipeline ?? null, liveState, {
+        isRunning,
+        isRunStarting,
+        activeRunStartedAt:
+          activeRun?.startedAt ??
+          (isRunStarting ? runStarting?.startedAt : null) ??
+          null,
+      })
+    : project
+      ? buildTemplateOverview(snap?.pipeline ?? null, project.artDir)
+      : { nodes: [], edges: [] };
+  const templates =
+    !showLive && project
+      ? collectReferencedTemplates(snap?.pipeline ?? null, project.artDir)
+      : undefined;
   return {
     projectDir,
     initialized,
     pipeline: snap?.pipeline,
     pipelineError: snap?.pipelineError,
-    state: snap?.state,
+    state: liveState,
     latestRun: snap?.latestRun,
-    graph: buildGraph(snap?.pipeline ?? null, snap?.state ?? null, {
-      isRunning,
-      isRunStarting,
-      activeRunStartedAt: activeRun?.startedAt ?? (isRunStarting ? runStarting?.startedAt : null) ?? null,
-    }),
+    graph,
+    graphMode: showLive ? 'live' : 'template-overview',
+    templates,
     isRunning,
     isRunStarting,
   };
@@ -100,6 +130,7 @@ export function registerLoadRoutes(app: FastifyInstance): void {
     }
 
     const project = await projectState.load(abs);
+    rememberLastProject(abs);
     const snap = project.current();
     const activeRun = runController.activeRunInfo(project.projectDir, snap.latestRun);
     const runStarting = activeRun
@@ -108,18 +139,38 @@ export function registerLoadRoutes(app: FastifyInstance): void {
     const isRunning = activeRun !== null;
     const isRunStarting =
       runStarting !== null && !stateCatchesRunStart(snap.state, runStarting.startedAt);
+    const showLive = isRunning || isRunStarting;
+    const liveRunId = activeRun?.runId ?? snap.latestRun?.runId ?? null;
+    const liveState =
+      showLive && liveRunId
+        ? ((readPipelineStateForRun(
+            project.projectDir,
+            liveRunId,
+          ) as PipelineState | null) ?? snap.state)
+        : snap.state;
+    const graph = showLive
+      ? buildGraph(snap.pipeline, liveState, {
+          isRunning,
+          isRunStarting,
+          activeRunStartedAt:
+            activeRun?.startedAt ??
+            (isRunStarting ? runStarting?.startedAt : null) ??
+            null,
+        })
+      : buildTemplateOverview(snap.pipeline, project.artDir);
+    const templates = showLive
+      ? undefined
+      : collectReferencedTemplates(snap.pipeline, project.artDir);
     return {
       projectDir: abs,
       initialized,
       pipeline: snap.pipeline,
       pipelineError: snap.pipelineError,
-      state: snap.state,
+      state: liveState,
       latestRun: snap.latestRun,
-      graph: buildGraph(snap.pipeline, snap.state, {
-        isRunning,
-        isRunStarting,
-        activeRunStartedAt: activeRun?.startedAt ?? (isRunStarting ? runStarting?.startedAt : null) ?? null,
-      }),
+      graph,
+      graphMode: showLive ? 'live' : 'template-overview',
+      templates,
       isRunning,
       isRunStarting,
     };

@@ -10,6 +10,7 @@ const DEFAULT_CODEX_HOME = path.join(os.homedir(), '.codex');
 const REFRESH_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR = 'CODEX_REFRESH_TOKEN_URL_OVERRIDE';
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
 interface CodexIdTokenInfo {
   chatgpt_account_id?: string;
@@ -21,6 +22,10 @@ interface CodexTokenData {
   access_token: string;
   refresh_token: string;
   account_id?: string;
+}
+
+interface JwtExpiryInfo {
+  exp?: number;
 }
 
 interface CodexAuthDotJson {
@@ -57,6 +62,28 @@ function parseIdTokenInfo(idToken: string): CodexIdTokenInfo {
     'https://api.openai.com/auth'?: CodexIdTokenInfo;
   }>(idToken);
   return claims['https://api.openai.com/auth'] ?? claims.auth ?? {};
+}
+
+function tokenExpiresWithin(
+  token: string | undefined,
+  windowMs: number,
+): boolean {
+  if (!token) return false;
+  let claims: JwtExpiryInfo;
+  try {
+    claims = decodeJwtPayload<JwtExpiryInfo>(token);
+  } catch {
+    return false;
+  }
+  if (typeof claims.exp !== 'number') return false;
+  return claims.exp * 1000 <= Date.now() + windowMs;
+}
+
+function authNeedsRefresh(auth: CodexAuthDotJson): boolean {
+  return (
+    tokenExpiresWithin(auth.tokens?.access_token, TOKEN_REFRESH_BUFFER_MS) ||
+    tokenExpiresWithin(auth.tokens?.id_token, TOKEN_REFRESH_BUFFER_MS)
+  );
 }
 
 function loadHostAuth(authPath: string): CodexAuthDotJson {
@@ -114,6 +141,14 @@ export class CodexExternalAuthManager {
     return toExternalLogin(loadHostAuth(this.authPath));
   }
 
+  async getFreshExternalLogin(): Promise<CodexExternalLogin> {
+    const auth = loadHostAuth(this.authPath);
+    if (!authNeedsRefresh(auth)) {
+      return toExternalLogin(auth);
+    }
+    return this.refreshExternalLogin();
+  }
+
   async refreshExternalLogin(): Promise<CodexExternalLogin> {
     const before = loadHostAuth(this.authPath);
     if (this.inflight) return this.inflight;
@@ -138,21 +173,21 @@ export class CodexExternalAuthManager {
         auth.tokens?.access_token &&
         auth.tokens?.access_token !== before.tokens?.access_token
       ) {
-        return toExternalLogin(auth);
+        if (!authNeedsRefresh(auth)) return toExternalLogin(auth);
       }
 
       if (
         auth.tokens?.refresh_token &&
         auth.tokens?.refresh_token !== before.tokens?.refresh_token
       ) {
-        return toExternalLogin(auth);
+        if (!authNeedsRefresh(auth)) return toExternalLogin(auth);
       }
 
       if (
         auth.tokens?.id_token &&
         auth.tokens?.id_token !== before.tokens?.id_token
       ) {
-        return toExternalLogin(auth);
+        if (!authNeedsRefresh(auth)) return toExternalLogin(auth);
       }
 
       return this.refreshViaHttp(auth);

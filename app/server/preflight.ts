@@ -87,6 +87,7 @@ async function tryVersion(bin: string): Promise<{ present: boolean; version?: st
 }
 
 async function detectContainerRuntime(): Promise<{ present: boolean; which?: string; error?: string }> {
+  const failures: string[] = [];
   for (const [bin, args] of [
     ['docker', ['info']],
     ['podman', ['info']],
@@ -95,11 +96,24 @@ async function detectContainerRuntime(): Promise<{ present: boolean; which?: str
     try {
       await execFileP(bin, args, { env: childProcessEnv(), timeout: 10000 });
       return { present: true, which: bin };
-    } catch {
-      // try next
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException & {
+        stderr?: string;
+        signal?: string;
+      };
+      const detail =
+        e.code === 'ENOENT'
+          ? 'not on PATH'
+          : e.signal === 'SIGTERM'
+            ? `timeout after 10s`
+            : ((e.stderr ?? e.message) || '').split('\n')[0].slice(0, 200);
+      failures.push(`${bin}: ${detail}`);
     }
   }
-  return { present: false, error: 'No container runtime found (docker, podman, or udocker).' };
+  return {
+    present: false,
+    error: `No container runtime found. Tried: ${failures.join(' | ')}`,
+  };
 }
 
 function cleanEnvValue(value: string): string {
@@ -311,6 +325,17 @@ function debuggerChatStatus(projectDir?: string): Pick<AuthStatus, 'chatReady' |
     };
   }
 
+  // Fall back to the same Claude CLI credentials runtime auth uses.
+  // Keeps the two surfaces consistent — if `claude` works on the CLI,
+  // it works for chat too. Per-project debugger token still wins above.
+  const claudeCliToken = readClaudeCliToken();
+  if (claudeCliToken) {
+    return {
+      chatReady: true,
+      chatSource: 'Claude CLI credentials',
+    };
+  }
+
   return {
     chatReady: false,
     chatError: projectDir
@@ -352,6 +377,12 @@ export function resolveClaudeAuthEnv(projectDir?: string): NodeJS.ProcessEnv {
     return isApiKeyLikeToken(savedToken)
       ? { ANTHROPIC_API_KEY: savedToken }
       : { CLAUDE_CODE_OAUTH_TOKEN: savedToken };
+  }
+
+  // Match debuggerChatStatus: fall back to the Claude CLI's OAuth token.
+  const claudeCliToken = readClaudeCliToken();
+  if (claudeCliToken) {
+    return { CLAUDE_CODE_OAUTH_TOKEN: claudeCliToken };
   }
 
   return {};

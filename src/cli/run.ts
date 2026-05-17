@@ -7,10 +7,111 @@ import { ensureAuth, hasCodexCliAuth } from './auth.js';
 import { setupEngine } from './engine-setup.js';
 
 function resolveProvider(): 'claude' | 'codex' {
-  return process.env.ART_AGENT_PROVIDER === 'codex' ? 'codex' : 'claude';
+  return process.env.ART_AGENT_PROVIDER === 'claude' ? 'claude' : 'codex';
 }
 
-function preflight(opts?: { skipClaudeCli?: boolean }): void {
+/** Parse ART_DIFF_SIZE_LIMIT (e.g. "1G", "500M", "2GiB") → bytes. */
+function parseSizeLimit(): number {
+  const raw = process.env.ART_DIFF_SIZE_LIMIT ?? '1G';
+  const m = /^(\d+(?:\.\d+)?)\s*([KMGT]i?)?B?$/i.exec(raw.trim());
+  if (!m) return 1 << 30; // 1 GiB default on parse error
+  const n = Number(m[1]);
+  const unit = (m[2] ?? '').toUpperCase();
+  const map: Record<string, number> = {
+    '': 1,
+    K: 1024,
+    KI: 1024,
+    M: 1024 ** 2,
+    MI: 1024 ** 2,
+    G: 1024 ** 3,
+    GI: 1024 ** 3,
+    T: 1024 ** 4,
+    TI: 1024 ** 4,
+  };
+  return Math.floor(n * (map[unit] ?? 1));
+}
+
+async function runArtifactDiffSizeGate(
+  artDir: string,
+  assumeYes: boolean,
+): Promise<void> {
+  const limit = parseSizeLimit();
+  const { dirSizeBytes, classifyDiffMounts } = await import('../run-diff.js');
+
+  const pipelinePath = path.join(artDir, 'PIPELINE.json');
+  let stages: {
+    name?: string;
+    mounts?: Record<string, 'ro' | 'rw' | null | undefined>;
+  }[] = [];
+  try {
+    const raw = fs.readFileSync(pipelinePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.stages)) stages = parsed.stages;
+  } catch {
+    return; // pipeline missing/invalid — the runner will surface the real error
+  }
+
+  // Per-stage classification: which rw mounts we'd snapshot, which we skip.
+  // Aggregate keys uniquely for the size probe + skip-warning list.
+  const rwHostPaths = new Map<string, string>(); // diff name → hostPath
+  const skips = new Map<string, { stages: string[]; reason: string }>();
+  for (const s of stages) {
+    const { resolved, skipped } = classifyDiffMounts(s.mounts ?? {}, artDir);
+    for (const r of resolved) rwHostPaths.set(r.name, r.hostPath);
+    for (const k of skipped) {
+      const entry = skips.get(k.key) ?? { stages: [], reason: k.reason };
+      entry.stages.push(s.name ?? '<unnamed>');
+      skips.set(k.key, entry);
+    }
+  }
+
+  const oversized: { name: string; bytes: number }[] = [];
+  for (const [name, hostPath] of rwHostPaths) {
+    const bytes = dirSizeBytes(hostPath);
+    if (bytes > limit) oversized.push({ name, bytes });
+  }
+
+  if (oversized.length === 0 && skips.size === 0) return;
+
+  const fmt = (b: number): string =>
+    b >= 1 << 30
+      ? `${(b / (1 << 30)).toFixed(2)} GB`
+      : b >= 1 << 20
+        ? `${(b / (1 << 20)).toFixed(1)} MB`
+        : `${b} B`;
+
+  for (const m of oversized) {
+    console.error(
+      `Warning: rw mount '${m.name}' is ${fmt(m.bytes)}. Preserving pre-state for diff will use roughly the same temporary disk space per stage. Pass --no-diff to disable.`,
+    );
+  }
+  for (const [key, info] of skips) {
+    const stagesList =
+      info.stages.length > 3
+        ? `${info.stages.slice(0, 3).join(', ')}, +${info.stages.length - 3} more`
+        : info.stages.join(', ');
+    console.error(
+      `Warning: rw mount '${key}' will not be diff-captured (${info.reason}). Stages: ${stagesList}.`,
+    );
+  }
+
+  if (assumeYes || process.env.CI || !process.stdin.isTTY) return;
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const answer = await new Promise<string>((resolve) =>
+    rl.question('Continue? [y/N] ', resolve),
+  );
+  rl.close();
+  if (answer.trim().toLowerCase() !== 'y') {
+    console.error('Aborted.');
+    process.exit(1);
+  }
+}
+
+function preflight(opts?: { skipProviderCli?: boolean }): void {
   const errors: string[] = [];
   const provider = resolveProvider();
 
@@ -40,7 +141,7 @@ function preflight(opts?: { skipClaudeCli?: boolean }): void {
     );
   }
 
-  if (!opts?.skipClaudeCli) {
+  if (!opts?.skipProviderCli) {
     if (provider === 'codex') {
       try {
         execSync('codex --version', { stdio: 'pipe', timeout: 5000 });
@@ -89,9 +190,9 @@ async function askConfirmation(prompt: string): Promise<boolean> {
 
 export async function run(
   targetDir: string,
-  opts?: { skipPreflight?: boolean; stage?: string; pipeline?: string },
+  opts?: { skipPreflight?: boolean; stage?: string; assumeYes?: boolean },
 ): Promise<void> {
-  preflight({ skipClaudeCli: opts?.skipPreflight });
+  preflight({ skipProviderCli: opts?.skipPreflight });
 
   const projectDir = path.resolve(targetDir);
   const artDirName = '__art__';
@@ -104,18 +205,21 @@ export async function run(
     process.exit(1);
   }
 
-  const stateDir = path.join(artDir, '.state');
-
-  // Set TUI env vars before any engine import so logger routes to file
-  process.env.ART_TUI_MODE = 'true';
-  process.env.ART_TUI_LOG_DIR = path.join(stateDir, 'logs');
+  // L1 artifact-diff size gate. We snapshot rw mounts via hardlink-copy
+  // before each stage; the temporary space is roughly the modified
+  // portion. For mounts that are already very large (multi-GB), warn the
+  // user before stage 0 starts so the disk cost isn't a surprise mid-run.
+  // Skip entirely if --no-diff is set or no rw mounts are huge.
+  if (process.env.ART_NO_DIFF !== '1') {
+    await runArtifactDiffSizeGate(artDir, !!opts?.assumeYes);
+  }
 
   const { generateRunId } = await import('../run-manifest.js');
 
   // Generate run ID for this execution
   const runId = generateRunId();
 
-  // Ensure Claude authentication is available (before any engine imports)
+  // Ensure provider authentication is available (before any engine imports)
   if (opts?.skipPreflight) {
     // Set placeholder so credential proxy can start without real auth
     if (
@@ -146,11 +250,8 @@ export async function run(
     await import('../image-registry.js');
   const { contentHash: computeHash } = await import('../bundle.js');
 
-  const pipelineOverride = opts?.pipeline
-    ? path.resolve(projectDir, opts.pipeline)
-    : undefined;
-  const bundleDir = pipelineOverride ? path.dirname(pipelineOverride) : artDir;
-  const pipelineConfig = loadPipelineConfig('', artDir, pipelineOverride);
+  const bundleDir = artDir;
+  const pipelineConfig = loadPipelineConfig('', artDir);
   if (pipelineConfig) {
     const rt = getRuntime();
     const registry = loadImageRegistry();
@@ -249,26 +350,14 @@ export async function run(
         continue;
       }
 
-      // No local Dockerfile — check art registry
-      try {
-        const { resolveRemoteWithAuth } = await import('../remote-config.js');
-        const { RegistryApi } = await import('../registry-api.js');
-        const { url, token } = resolveRemoteWithAuth();
-        const api = new RegistryApi(url, token);
-        const check = await api.checkDockerfile(imageName);
-        if (check.exists) {
-          console.error(
-            `\n  ✗ Image "${imageName}" not found locally, but a Dockerfile exists in the registry.`,
-          );
-          console.error(`    Run "art pull" to download it, then re-run.`);
-          process.exit(1);
-        }
-      } catch {
-        // No remote configured or unreachable — skip registry check
-      }
-
-      // Docker Hub fallback
-      images.add(imageName);
+      // No local Dockerfile — agent images must be built from a local Dockerfile.
+      console.error(
+        `\n  ✗ Image "${imageName}" is not available locally and no Dockerfile was found at __art__/dockerfiles/${imageName}.Dockerfile.`,
+      );
+      console.error(
+        `    Add a Dockerfile at that path or use a pre-built image name resolvable by the container runtime.`,
+      );
+      process.exit(1);
     }
 
     // Phase 2: Pre-pull missing Docker images (Hub images + command stage images)
@@ -300,25 +389,8 @@ export async function run(
     }
   }
 
-  // Import manifest functions ahead of signal handler registration
-  const { readRunManifest, writeRunManifest } =
-    await import('../run-manifest.js');
-
-  // Register SIGINT/SIGTERM handlers to mark manifest as cancelled
-  const cleanupOnSignal = () => {
-    try {
-      const manifest = readRunManifest(stateDir, runId);
-      if (manifest) {
-        manifest.endTime = new Date().toISOString();
-        manifest.status = 'cancelled';
-        writeRunManifest(stateDir, manifest);
-      }
-    } catch {
-      /* best effort */
-    }
-  };
-  process.on('SIGINT', cleanupOnSignal);
-  process.on('SIGTERM', cleanupOnSignal);
+  // Signal cancellation: PipelineRunner.abort() finalizes the recorder, which
+  // writes summary.json + sealed marker. No manifest write here anymore.
 
   const artGroup = {
     name: 'art',
@@ -337,6 +409,5 @@ export async function run(
     runId,
     artDir,
     stage: opts?.stage,
-    pipeline: pipelineOverride,
   });
 }

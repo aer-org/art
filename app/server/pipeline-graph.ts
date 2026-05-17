@@ -5,9 +5,23 @@ import type {
   GraphNodeStatus,
   GraphRunContext,
   PipelineConfig,
+  PipelineDispatchBarrier,
   PipelineStage,
   PipelineState,
 } from './types.ts';
+
+function barrierPseudoId(barrierId: string): string {
+  return `barrier_${barrierId}`;
+}
+
+function barrierStatusToNodeStatus(
+  s: PipelineDispatchBarrier['status'],
+): GraphNodeStatus {
+  if (s === 'success') return 'success';
+  if (s === 'error') return 'error';
+  if (s === 'running') return 'running';
+  return 'pending';
+}
 
 function inferKind(stage: PipelineStage): 'agent' | 'command' {
   return stage.kind ?? (stage.command ? 'command' : 'agent');
@@ -48,6 +62,9 @@ function stateBelongsToActiveRun(
   return stateUpdatedAt != null && stateUpdatedAt >= activeRunStartedAt;
 }
 
+// Fallback for older runs whose state.dispatchBarriers is missing: discover
+// stitched copies by the legacy `${origin}__${templateName}<idx>__` naming
+// in flat stage lists.
 function stitchedEntries(
   origin: string,
   templateName: string,
@@ -93,10 +110,29 @@ export function buildGraph(
   runContext?: GraphRunContext,
 ): Graph {
   const effectiveState = stateBelongsToActiveRun(state, runContext) ? state : null;
+  const dispatchTree = effectiveState?.dispatchTree;
+
+  // Collect stages from: base config + state.insertedStages + every non-root
+  // dispatch node's config. The dispatch nodes carry the per-lane stages
+  // produced by stitching (e.g. `fp-init__d_400d365517_0`); without them
+  // the graph never shows lane internals.
   const stages: PipelineStage[] = [
     ...(config?.stages ?? []),
     ...(effectiveState?.insertedStages ?? []),
   ];
+  const stageOwner = new Map<string, string>(); // stage name → dispatch nodeId
+  const stageTemplate = new Map<string, string>(); // stage name → template
+  for (const s of config?.stages ?? []) stageOwner.set(s.name, 'root');
+  if (dispatchTree) {
+    for (const [nodeId, dnode] of Object.entries(dispatchTree)) {
+      if (nodeId === 'root') continue; // root.config duplicates the base
+      for (const s of dnode.config?.stages ?? []) {
+        stages.push(s);
+        stageOwner.set(s.name, nodeId);
+        if (dnode.template) stageTemplate.set(s.name, dnode.template);
+      }
+    }
+  }
 
   // Deduplicate by name (insertedStages may overlap on resume)
   const stageByName = new Map<string, PipelineStage>();
@@ -143,6 +179,11 @@ export function buildGraph(
       status: statusOf(stage.name),
       isStitched: !baseNames.has(stage.name),
       isTemplatePlaceholder: false,
+      nodeId: stageOwner.get(stage.name),
+      // For lane stages, expose the template the lane was instantiated
+      // from. The frontend uses this to wrap the lane in a containment
+      // box matching the template-overview style.
+      templateName: stageTemplate.get(stage.name),
     });
   }
   const nodeIds = new Set(nodes.map((node) => node.id));
@@ -180,38 +221,68 @@ export function buildGraph(
 
   const edges: GraphEdge[] = [];
   let edgeId = 0;
+
+  // Materialized stitches surface as `dispatchBarriers` in state.
+  //
+  // Barrier semantics: a barrier is the JOIN at the end of a stitched
+  // lane, NOT the spawn point. The origin stage spawns the child
+  // lane directly (one edge per child to its entry stage); lane
+  // terminals converge at the barrier; the barrier's `downstreamNext`
+  // (or cascade target) continues the outer flow.
+  //
+  // We pre-index barriers by their origin (stage + transition index)
+  // so the per-stage loop can emit `origin → entry(child)` straight
+  // from each materialized child of the transition's barrier.
+  const dispatchBarriers = effectiveState?.dispatchBarriers;
+  const barrierByOrigin = new Map<string, PipelineDispatchBarrier>();
+  for (const b of Object.values(dispatchBarriers ?? {})) {
+    barrierByOrigin.set(`${b.originStage}#${b.originTransitionIdx}`, b);
+  }
+
   for (const stage of stageByName.values()) {
-    for (const t of stage.transitions ?? []) {
+    const txs = stage.transitions ?? [];
+    for (let txIdx = 0; txIdx < txs.length; txIdx++) {
+      const t = txs[txIdx];
       const targets = asArray(t.next);
 
       if (t.template) {
-        // Template placeholder: dashed ghost node between this stage and t.next (or terminal).
-        const ghostId = `${stage.name}__template:${t.template}`;
-        // Only add the ghost if the template has not materialized yet. Once it
-        // has, connect the host transition to each stitched copy's entry node.
-        const materializedEntries = stitchedEntries(stage.name, t.template, stageByName);
-        const materialized = materializedEntries.length > 0;
-        if (!materialized) {
-          nodes.push({
-            id: ghostId,
-            name: t.template,
-            kind: 'agent',
-            status: 'pending',
-            isStitched: false,
-            isTemplatePlaceholder: true,
-            templateName: t.template,
-          });
-          edges.push({
-            id: `e${edgeId++}`,
-            source: stage.name,
-            target: ghostId,
-            marker: t.marker,
-            isTemplate: true,
-          });
+        // Materialized? — emit one spawn edge per child lane,
+        // straight from origin to that lane's entry stage. The
+        // barrier (lane's exit) is emitted by the barrier pass.
+        const barrier = barrierByOrigin.get(`${stage.name}#${txIdx}`);
+        if (barrier) {
+          for (const childId of barrier.childNodeIds) {
+            const childNode = dispatchTree?.[childId];
+            if (childNode?.entryStage) {
+              edges.push({
+                id: `e${edgeId++}`,
+                source: stage.name,
+                target: childNode.entryStage,
+                marker: t.marker,
+                isTemplate: true,
+              });
+            }
+          }
+          continue;
+        }
+
+        // Legacy fallback (no dispatchBarriers, e.g. pre-merge state from
+        // older runs): retain name-pattern matching for materialized lanes.
+        const legacyEntries = stitchedEntries(stage.name, t.template, stageByName);
+        if (legacyEntries.length > 0) {
+          for (const entry of legacyEntries) {
+            edges.push({
+              id: `e${edgeId++}`,
+              source: stage.name,
+              target: entry,
+              marker: t.marker,
+              isTemplate: true,
+            });
+          }
           for (const target of targets) {
             edges.push({
               id: `e${edgeId++}`,
-              source: ghostId,
+              source: stage.name,
               target,
               isTemplate: true,
             });
@@ -219,12 +290,32 @@ export function buildGraph(
           continue;
         }
 
-        for (const entry of materializedEntries) {
+        // Not materialized yet — show a ghost placeholder. Rendered as
+        // a collapsed template card so it visually reads as "this
+        // template stitch is queued behind the current stage", same
+        // shape as the template-overview collapsed state.
+        const ghostId = `${stage.name}__template:${t.template}`;
+        nodes.push({
+          id: ghostId,
+          name: t.template,
+          kind: 'template',
+          status: 'pending',
+          isStitched: false,
+          isTemplatePlaceholder: true,
+          templateName: t.template,
+        });
+        edges.push({
+          id: `e${edgeId++}`,
+          source: stage.name,
+          target: ghostId,
+          marker: t.marker,
+          isTemplate: true,
+        });
+        for (const target of targets) {
           edges.push({
             id: `e${edgeId++}`,
-            source: stage.name,
-            target: entry,
-            marker: t.marker,
+            source: ghostId,
+            target,
             isTemplate: true,
           });
         }
@@ -242,5 +333,86 @@ export function buildGraph(
     }
   }
 
+  // Barrier pass: one pseudo-node per materialized stitch + the edges
+  // that wire the lane into the surrounding graph. Each barrier appears
+  // between its origin stage and its downstreamNext (or hangs as an
+  // inner join when the origin's transition has no explicit next, which
+  // is the common shape for recursive sub-stitches).
+  for (const [bId, barrier] of Object.entries(dispatchBarriers ?? {})) {
+    const pseudoId = barrierPseudoId(bId);
+    nodes.push({
+      id: pseudoId,
+      name: barrier.template,
+      kind: 'barrier',
+      status: barrierStatusToNodeStatus(barrier.status),
+      isStitched: false,
+      isTemplatePlaceholder: false,
+      templateName: barrier.template,
+      barrierId: barrier.id,
+      ownerNodeId: barrier.ownerNodeId,
+      joinPolicy: barrier.joinPolicy,
+      downstreamNext: barrier.downstreamNext,
+      childNodeIds: [...barrier.childNodeIds],
+    });
+
+    // Lane terminals → barrier (the join). One edge per pure terminal
+    // transition (next: null AND no template) across all child lanes.
+    // Sub-stitch terminals (transitions with `template`) don't need a
+    // direct edge — their resolution propagates here via the cascade
+    // rule below. The fan-out edge (origin → child entry) was already
+    // emitted in the stage transition loop, so the barrier itself has
+    // no outgoing fan-out: it sits AFTER the lane, not in front of it.
+    for (const childId of barrier.childNodeIds) {
+      const childNode = dispatchTree?.[childId];
+      for (const s of childNode?.config?.stages ?? []) {
+        for (const t of s.transitions ?? []) {
+          if (asArray(t.next).length === 0 && !t.template) {
+            edges.push({
+              id: `e${edgeId++}`,
+              source: s.name,
+              target: pseudoId,
+              marker: t.marker,
+              isTemplate: true,
+            });
+          }
+        }
+      }
+    }
+
+    // Downstream OR cascade. If this barrier has no `downstreamNext`,
+    // resolution propagates up to the barrier that spawned the scope
+    // containing this barrier's origin. We find that parent by looking
+    // for the barrier whose `childNodeIds` includes our `ownerNodeId`
+    // — the dispatch model already encodes this relationship.
+    if (barrier.downstreamNext) {
+      edges.push({
+        id: `e${edgeId++}`,
+        source: pseudoId,
+        target: barrier.downstreamNext,
+        isTemplate: true,
+      });
+    } else {
+      const parentId = findParentBarrierId(barrier, dispatchBarriers ?? {});
+      if (parentId && parentId !== barrier.id) {
+        edges.push({
+          id: `e${edgeId++}`,
+          source: pseudoId,
+          target: barrierPseudoId(parentId),
+          isTemplate: true,
+        });
+      }
+    }
+  }
+
   return { nodes, edges };
+}
+
+function findParentBarrierId(
+  barrier: PipelineDispatchBarrier,
+  all: Record<string, PipelineDispatchBarrier>,
+): string | null {
+  for (const [id, candidate] of Object.entries(all)) {
+    if (candidate.childNodeIds?.includes(barrier.ownerNodeId)) return id;
+  }
+  return null;
 }

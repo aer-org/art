@@ -295,6 +295,33 @@ export class ClaudeEngine implements AgentEngine {
       }
 
       if (message.type === 'result') {
+        // Extract per-turn metadata from the SDK's result message. The Claude
+        // Agent SDK populates `usage`, `duration_ms`, `total_cost_usd`, etc.
+        // Treat as `any` since the typed surface evolves between versions.
+        const m = message as Record<string, unknown> & {
+          usage?: Record<string, number>;
+        };
+        const usage = m.usage ?? {};
+        yield {
+          type: 'turn.completed',
+          meta: {
+            provider: 'claude',
+            model: typeof m.model === 'string' ? m.model : undefined,
+            tokensIn: usage.input_tokens,
+            tokensOut: usage.output_tokens,
+            cacheReadTokens: usage.cache_read_input_tokens,
+            cacheCreateTokens: usage.cache_creation_input_tokens,
+            latencyMs:
+              typeof m.duration_ms === 'number' ? m.duration_ms : undefined,
+            costUsd:
+              typeof m.total_cost_usd === 'number'
+                ? m.total_cost_usd
+                : undefined,
+            finishReason:
+              typeof m.subtype === 'string' ? m.subtype : undefined,
+            numTurns: typeof m.num_turns === 'number' ? m.num_turns : undefined,
+          },
+        };
         const textResult =
           'result' in message ? (message as { result?: string }).result : null;
         yield { type: 'turn.result', result: textResult || null };

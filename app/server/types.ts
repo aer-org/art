@@ -49,6 +49,32 @@ export interface PipelineConfig {
   entryStage?: string;
 }
 
+export interface PipelineDispatchNode {
+  id: string;
+  parentId: string | null;
+  originStage: string | null;
+  template: string | null;
+  copyIndex: number | null;
+  entryStage: string | null;
+  stageNames: string[];
+  childIds: string[];
+  status: 'pending' | 'running' | 'success' | 'error';
+  config: PipelineConfig;
+}
+
+export interface PipelineDispatchBarrier {
+  id: string;
+  ownerNodeId: string;
+  originStage: string;
+  originTransitionIdx: number;
+  template: string;
+  childNodeIds: string[];
+  joinPolicy: 'all_success' | 'any_success' | 'all_settled';
+  downstreamNext: string | null;
+  settlements: Record<string, 'success' | 'error'>;
+  status: 'pending' | 'running' | 'success' | 'error';
+}
+
 export interface PipelineState {
   version?: number;
   currentStage: string | string[] | null;
@@ -59,6 +85,8 @@ export interface PipelineState {
   completions?: Record<string, number>;
   insertedStages?: PipelineStage[];
   joinSettlements?: Record<string, Record<string, 'success' | 'error'>>;
+  dispatchTree?: Record<string, PipelineDispatchNode>;
+  dispatchBarriers?: Record<string, PipelineDispatchBarrier>;
 }
 
 export interface RunManifest {
@@ -90,11 +118,24 @@ export type GraphNodeStatus = 'pending' | 'running' | 'success' | 'error' | 'unk
 export interface GraphNode {
   id: string;
   name: string;
-  kind: 'agent' | 'command';
+  kind: 'agent' | 'command' | 'barrier' | 'template';
   status: GraphNodeStatus;
   isStitched: boolean;
   isTemplatePlaceholder: boolean;
   templateName?: string;
+  // Transparency layer (run-detail view only).
+  retryCount?: number;
+  nodeId?: string; // dispatch node ('root' or 'd_…')
+  exitCode?: number | null;
+  // Barrier-only fields.
+  barrierId?: string;
+  ownerNodeId?: string;
+  joinPolicy?: 'all_success' | 'any_success' | 'all_settled';
+  downstreamNext?: string | null;
+  childNodeIds?: string[];
+  // Template-overview-only fields (kind === 'template').
+  templateStageCount?: number;
+  templateSelfStitches?: number; // count of retry edges back to itself
 }
 
 export interface GraphEdge {
@@ -103,6 +144,10 @@ export interface GraphEdge {
   target: string;
   marker?: string;
   isTemplate?: boolean;
+  // Retry self-stitches loop back to the template's entry from a
+  // stage inside the same template. Tagged so the renderer can route
+  // them around the lane instead of slicing through it.
+  isRetry?: boolean;
 }
 
 export interface Graph {

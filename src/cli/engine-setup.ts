@@ -5,12 +5,10 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import { fileURLToPath } from 'url';
 
 import { saveImageRegistry } from '../image-registry.js';
 
 export interface EngineSetupResult {
-  engineRoot: string;
   folderName: string;
   dataDir: string;
   runtimeBin: string;
@@ -29,27 +27,15 @@ export async function setupEngine(opts: {
     ensureImages = false,
   } = opts;
 
-  // Ensure TUI env vars are set (callers should set these before importing engine modules,
-  // but set here as fallback so logger always routes to file)
-  if (!process.env.ART_TUI_MODE) {
-    process.env.ART_TUI_MODE = 'true';
-    process.env.ART_TUI_LOG_DIR = path.join(artDir, 'logs');
-  }
-
   const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
-  // Import engine modules (logger will see ART_TUI_LOG_DIR)
-  const { setEngineRoot, setDataDir, setCredentialProxyPort } =
+  // Import engine modules
+  const { setDataDir, setCredentialProxyPort, getPackageAssetPath } =
     await import('../config.js');
   const { initRuntime } = await import('../container-runtime.js');
   const { registerExternalGroupFolder } = await import('../group-folder.js');
 
-  // Derive engine root from the installed package location
-  const thisFile = fileURLToPath(import.meta.url);
-  const engineRoot = path.resolve(path.dirname(thisFile), '..', '..');
-
-  // Configure engine paths
-  setEngineRoot(engineRoot);
+  // Configure runtime data directory under the project's __art__/.tmp
   setDataDir(path.join(artDir, '.tmp'));
 
   // Initialize container runtime (auto-detect or load saved choice)
@@ -128,7 +114,7 @@ export async function setupEngine(opts: {
         }
 
         // Build the image
-        const scriptDir = path.resolve(engineRoot, 'container');
+        const scriptDir = getPackageAssetPath('container');
         const buildCmd =
           m.key === 'default' || !m.baseImage
             ? `${scriptDir}/build.sh`
@@ -183,5 +169,5 @@ export async function setupEngine(opts: {
     recursive: true,
   });
 
-  return { engineRoot, folderName, dataDir, runtimeBin: rt.bin };
+  return { folderName, dataDir, runtimeBin: rt.bin };
 }

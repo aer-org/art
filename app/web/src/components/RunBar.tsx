@@ -18,6 +18,7 @@ export function RunBar({ snapshot, preflight, onChange, onSetup, onRunLog, onRun
   const status = snapshot.state?.status;
   const isRunning = !!snapshot.isRunning;
   const isRunStarting = !!snapshot.isRunStarting;
+  const isStopping = !!snapshot.isStopping;
   const isRunBusy = isRunning || isRunStarting;
   const setupNeeded =
     preflight?.auth?.present === false ||
@@ -76,7 +77,9 @@ export function RunBar({ snapshot, preflight, onChange, onSetup, onRunLog, onRun
         <span className="run-state-label">{statusLabel}</span>
         <span className="project-path">{snapshot.projectDir ?? '(no project loaded)'}</span>
         {isRunning ? (
-          <button className="danger" disabled={busy} onClick={stop}>Stop</button>
+          <button className="danger" disabled={busy || isStopping} onClick={stop}>
+            {isStopping ? 'Stopping…' : 'Stop'}
+          </button>
         ) : isRunStarting ? (
           <button className="primary" disabled>Starting...</button>
         ) : (

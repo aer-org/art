@@ -3,9 +3,13 @@ import { api, type BrowseResponse, type PipelineSnapshot } from '../lib/api.ts';
 
 interface Props {
   onLoad: (snapshot: PipelineSnapshot) => void;
+  // Optional cancel handler — when provided, the picker shows a close
+  // button so the user can dismiss it without selecting a new project.
+  // Omit on first load (no current project to keep).
+  onCancel?: () => void;
 }
 
-export function DirectoryPicker({ onLoad }: Props) {
+export function DirectoryPicker({ onLoad, onCancel }: Props) {
   const [browse, setBrowse] = useState<BrowseResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +50,16 @@ export function DirectoryPicker({ onLoad }: Props) {
         <button disabled={busy || !browse.parent} onClick={() => browse.parent && navigate(browse.parent)}>↑</button>
         <button disabled={busy} onClick={() => navigate(browse.home)}>~</button>
         <span className="crumb" title={browse.path}>{browse.path}</span>
+        {onCancel && (
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            title="Cancel (keep current project)"
+            style={{ marginLeft: 'auto' }}
+          >
+            ✕
+          </button>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <button

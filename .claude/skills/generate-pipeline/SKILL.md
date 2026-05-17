@@ -30,7 +30,7 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a **
 - **`art pull`**: Downloads from registry, extracts inline prompts to `agents/*.md`, writes stripped `pipeline.json`, and records hashes in `.art-bundle.json`.
 - **`art diff`**: Shows what changed locally since last pull/push.
 - **`art fork` / `art promote`**: Copy shared agents into user scope, or promote user agents to shared scope.
-- **`art run`**: Runs a local project pipeline. With `art run <project> --pipeline <bundle>/pipeline.json`, bundle-relative `agent` refs resolve from `<bundle>/agents/`.
+- **`art run`**: Runs a local project pipeline. The pipeline file at `<project>/__art__/PIPELINE.json` is loaded; bundle-relative `agent` refs resolve from `<project>/__art__/agents/`.
 
 ---
 
@@ -39,7 +39,7 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a **
 ```typescript
 interface PipelineTransition {
   marker?: string;                    // Required unless afterTimeout is true. Bare name, e.g. "STAGE_COMPLETE"
-  next: string | null;                // Required in authored config. Scope-local stage name, or null to end
+  next: string | string[] | null;     // Required. Scope-local stage name, an array of names for heterogeneous fan-out, or null to end. Array form is incompatible with `template`.
   template?: string;                  // Template name (templates/<name>.json) to stitch before continuing to `next`
   count?: number;                     // Positive integer. Parallel stitch N lanes + synthesized join. Requires `template`
   countFrom?: "payload";              // Derive lane count from marker payload array length. Requires `template`; exclusive with count
@@ -47,22 +47,19 @@ interface PipelineTransition {
   joinPolicy?: "all_success" | "any_success" | "all_settled"; // Requires `template`. Defaults to all_success
   outcome?: "success" | "error";      // Optional explicit transition outcome classification
   afterTimeout?: boolean;             // Command stages only. Fires when command timeout terminates the process; no marker
-  prompt?: string;                    // Required in generated bundles for marker transitions; describes when to emit marker
+  prompt?: string;                    // Optional marker description. Include in generated bundles for clarity
 }
 
 interface PipelineStage {
   name: string;
-  kind?: "agent" | "command";
   agent?: string;                     // Agent prompt ref loaded from agents/<agent>.md; cannot combine with inline prompt
-  prompt?: string;                    // Inline prompt. Avoid in generated bundles except command prompt: "" or compatibility imports
-  prompts?: string[];                 // Prompt DB ids from ~/.config/aer-art/prompt-db.json
-  prompt_append?: string;             // Extra prompt text appended after prompt/prompts
-  command?: string;
-  successMarker?: string;
-  errorMarker?: string;
+  prompt?: string;                    // Inline prompt. Avoid in generated bundles; use `agent` for agent stages
+  command?: string;                   // If set, stage is command mode (`sh -c`), not agent mode
+  successMarker?: string;             // Command stdout substring that immediately resolves STAGE_COMPLETE
+  errorMarker?: string;               // Command stdout substring that immediately resolves STAGE_ERROR
   timeout?: number;                   // Command stages only, milliseconds
   chat?: boolean;
-  image?: string;
+  image?: string;                     // Optional registry key / image name; omit for default image
   mounts: Record<string, "ro" | "rw" | null>;
   hostMounts?: { hostPath: string; containerPath?: string; readonly?: boolean }[];
   gpu?: boolean;
@@ -73,7 +70,6 @@ interface PipelineStage {
   exclusive?: string;
   mcpAccess?: string[];
   resumeSession?: boolean;
-  fan_in?: "all";
   join?: never;                       // Runtime-generated only; never author this
   transitions: PipelineTransition[];
 }
@@ -93,10 +89,10 @@ interface PipelineTemplate {      // templates/<name>.json
 
 | | Agent stage | Command stage |
 |---|---|---|
-| Instructions | Prefer `agent: "<ref>"` + `agents/<ref>.md`; `prompts`/`prompt_append` also supported | `prompt: ""` |
+| Instructions | Prefer `agent: "<ref>"` + `agents/<ref>.md`; inline `prompt` is allowed but avoid for generated bundles | `command`; `prompt` may be omitted or `""` |
 | `command` | Absent or undefined | Shell string (`sh -c`) |
-| `image` | Optional (registry key or omit for default) | **Required** (Docker image name) |
-| Execution | Claude agent with tools | `sh -c <command>`, no agent |
+| `image` | Optional (registry key or omit for default) | Optional (image name or omit for default; choose explicit image when tools are needed) |
+| Execution | Claude/Codex agent with tools | `sh -c <command>`, no agent |
 | Marker emission | Agent prints `[MARKER]` in response | Automatic based on `successMarker`/exit code |
 | Transitions | N transitions with custom markers | `STAGE_COMPLETE` + `STAGE_ERROR`, plus optional `afterTimeout` |
 
@@ -107,6 +103,8 @@ interface PipelineTemplate {      // templates/<name>.json
 3. Neither found, process exits → exit code 0 = `STAGE_COMPLETE`, non-zero = `STAGE_ERROR`
 
 Command stages may set `timeout` in milliseconds. If the command times out, an `afterTimeout: true` transition is used when present; otherwise the runner falls back to `STAGE_ERROR`. `afterTimeout` transitions are command-only, cannot also declare `marker`, cannot use payload-driven fanout fields, and each command stage may declare at most one.
+
+Command stages may stitch templates after `STAGE_COMPLETE`/`STAGE_ERROR` transitions just like agent stages. For payload-driven fanout (`countFrom: "payload"`), the command must print a fenced marker payload to stdout using the transition marker, for example `[STAGE_COMPLETE]` followed by `---PAYLOAD_START---...---PAYLOAD_END---`. Prefer exit-code success detection for this pattern; if `successMarker` fires before the complete fenced block is in stdout, stitch runs without a payload and fails.
 
 #### Agent prompt sources
 
@@ -125,10 +123,11 @@ Prefer local agent refs for generated bundles:
 
 This loads `agents/implementation.md` relative to the bundle directory. The `agent` name must be alphanumeric plus `_`/`-`, and a stage cannot specify both `agent` and inline `prompt`.
 
-Alternative prompt sources:
+Alternative prompt source:
 - `prompt`: inline prompt text, accepted by runtime and useful for imported/legacy configs
-- `prompts`: prompt DB ids from `~/.config/aer-art/prompt-db.json`
-- `prompt_append`: extra text appended after `prompt` or resolved `prompts`
+
+Unsupported legacy prompt fields:
+- `prompts` and `prompt_append` are rejected by current validation. Do not generate them.
 
 #### External MCP access (`mcpAccess`)
 
@@ -137,12 +136,35 @@ Agent stages can opt into external MCP servers by referencing keys from `~/.conf
 - Values are **registry refs**, not raw tool names or URLs
 - Prefer one ref per isolated capability/server
 
+#### Heterogeneous fan-out — `next: [...]`
+
+For "after A, run B and C in parallel, then continue at D" where B and C are different stages, set the source transition's `next` to an array. Each entry must reference an existing stage in the same scope; arrays must be non-empty, unique, and DAG-acyclic. The downstream join is implicit: any stage that appears as the `next` target of multiple stages becomes a fan-in point and waits for all of its declared predecessors to complete.
+
+```jsonc
+{
+  "stages": [
+    { "name": "build",  "agent": "build",  "mounts": {"project": "rw"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": ["test", "lint"] }] },
+    { "name": "test",   "command": "npm test",  "image": "node:22-slim", "mounts": {"project":"ro"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": "report" }, { "marker": "STAGE_ERROR", "next": "report" }] },
+    { "name": "lint",   "command": "npm run lint", "image": "node:22-slim", "mounts": {"project":"ro"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": "report" }, { "marker": "STAGE_ERROR", "next": "report" }] },
+    { "name": "report", "agent": "report", "mounts": {"results":"rw"},
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }] }
+  ]
+}
+```
+
+`test` and `lint` launch in parallel after `build`; `report` only runs once both have completed (regardless of which marker each lane fired). Array `next` cannot be combined with `template:` on the same transition — those are different mechanisms (see below).
+
 #### Templates & Stitch
 
-Templates live at `templates/<name>.json` and hold reusable sub-graphs. A transition with `template: "<name>"` clones the template into the live graph at runtime (**stitch**). Use for:
-- Recovery paths — stitch a cleanup template on error
-- Iteration without cycles — review stitches a fresh experiment template downstream
-- Parallel work — `count: N` inserts N lane copies + a synthesized join
+Templates live at `templates/<name>.json` and hold reusable sub-graphs. A transition with `template: "<name>"` clones the template into the live graph at runtime (**stitch**). Use templates when the array-`next` fan-out isn't enough:
+- **Homogeneous parallel** — `count: N` (or `countFrom: "payload"`) inserts N lane copies of the same sub-graph with per-lane substitutions, joined by a `joinPolicy`-controlled barrier
+- **Loops without cycles** — `review` stitching a fresh `experiment` template downstream lets you iterate without a back-edge that would fail the DAG check
+- **Recovery paths** — stitch a `cleanup` template on `STAGE_ERROR`
+
+Rule of thumb: pick array `next` for heterogeneous siblings (B and C are different stages); pick `template:` when you need N parallel copies of the same shape, payload-driven lane counts, or a join policy other than implicit "wait for all predecessors".
 
 ```jsonc
 // pipeline.json
@@ -173,21 +195,26 @@ Templates live at `templates/<name>.json` and hold reusable sub-graphs. A transi
 }
 ```
 
-Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `prompts`, `prompt_append`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`, `transitions`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
+Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`, `transitions`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
 
 Rules:
-- `next` is **always required** per transition. Scope-local: reference a stage in the current scope, or `null` to end
-- Authored `next` must be a string or `null`; arrays are runtime-only outputs from parallel stitch
-- `retry`, `next_dynamic`, `kind: "dynamic-fanout"`, and `fan_in: "dynamic"` are legacy and invalid
+- `next` is **always required** per transition. Scope-local: reference a stage in the current scope, an array of such names for heterogeneous fan-out, or `null` to end
+- `next` arrays must be non-empty, contain only existing-stage names, have no duplicates, and produce no cycles (DAG enforced at load)
+- `next: [...]` cannot combine with `template:` on the same transition; template stitch and array fan-out are different mechanisms
+- Stage `kind`, `fan_in`, `prompts`, and `prompt_append` are legacy and invalid
+- Transition `retry`, `next_dynamic`, and `kind: "dynamic-fanout"` are legacy and invalid
 - `count` requires `template` and must be a positive integer. Stitch synthesizes a join stage; `next: null` edges inside the template return to that join
 - `count` and `countFrom` are mutually exclusive
+- `countFrom` only accepts `"payload"` and requires `template`
+- `substitutionsFrom` only accepts `"payload"` and requires `countFrom: "payload"`
 - `joinPolicy`: `all_success` (all must succeed), `any_success` (one enough), `all_settled` (all must finish)
+- `joinPolicy` requires `template`
 - Templates must be internally acyclic. Cross-scope `next` is rejected — use `template:` instead
 - Inserted stage names: `{origin}__{template}{index}__{templateStage}`. Join: `{origin}__{template}__join`
 
 #### Payload-driven fanout
 
-Use `countFrom: "payload"` when lane count is decided at runtime. The preceding agent emits a JSON array after its marker:
+Use `countFrom: "payload"` when lane count is decided at runtime. The preceding stage emits a JSON array after its marker:
 
 ```
 [PLAN_READY]
@@ -197,6 +224,14 @@ Use `countFrom: "payload"` when lane count is decided at runtime. The preceding 
 ```
 
 With `substitutionsFrom: "payload"`, each element's fields become per-lane substitutions (`{{id}}`, `{{kind}}`). Reserved keys `index`/`insertId` cannot appear in payload elements. Unresolved `{{X}}` placeholders after substitution are a stitch-time error.
+
+For command stages, emit the same block to stdout and let the command exit successfully:
+
+```sh
+printf '%s\n' '[STAGE_COMPLETE]' '---PAYLOAD_START---' \
+  '[{"id":"alpha","kind":"stimulus"},{"id":"beta","kind":"monitor"}]' \
+  '---PAYLOAD_END---'
+```
 
 ---
 
@@ -250,8 +285,15 @@ Review stage has multiple markers. At least one path must reach `null`. Loops ar
 - Recover via stitch: `{ "marker": "STAGE_ERROR", "template": "recovery", "next": null }`
 
 ### Parallel work
-Stitch a template `N` times with `count`:
+Two flavors. Pick the one that matches the shape of the parallel work:
+
 ```jsonc
+// Heterogeneous siblings: B and C are different stages that both feed D.
+{ "marker": "STAGE_COMPLETE", "next": ["B", "C"], "prompt": "Run B and C in parallel; D will join them" }
+```
+
+```jsonc
+// Homogeneous N copies of the same sub-graph (with optional per-lane substitutions / join policy).
 { "marker": "GO", "template": "probe", "next": "summarize", "count": 4, "joinPolicy": "all_settled", "prompt": "Probe 4 variants" }
 ```
 
@@ -320,26 +362,27 @@ When this skill is invoked:
 ## Pre-Output Checklist
 
 - [ ] Every stage has a unique `name`
-- [ ] Every transition has an explicit `next` (`string` or `null`)
+- [ ] Every transition has an explicit `next` (`string`, `string[]`, or `null`)
 - [ ] Every non-`afterTimeout` transition has a non-empty `marker` and a `prompt`
-- [ ] Every transition's `next` references an existing stage in the same scope, or is `null`
+- [ ] Every transition's `next` references an existing stage in the same scope (string form), every entry of an array references an existing stage in the same scope, or `next` is `null`
+- [ ] Array `next` is non-empty, contains no duplicates, and does not appear on a transition that also sets `template`
 - [ ] Every stage has at least one transition
-- [ ] Command stages have `prompt: ""`, an `image`, and marker transitions only for `STAGE_COMPLETE`/`STAGE_ERROR`
+- [ ] Command stages have `command`, use marker transitions only for `STAGE_COMPLETE`/`STAGE_ERROR`, and choose an explicit `image` when the default image lacks required tools
 - [ ] Command `timeout` appears only on command stages; `afterTimeout` is command-only, markerless, and declared at most once per stage
-- [ ] Agent stages have no `command` field and define `agent`, `prompt`, `prompts`, or `prompt_append`
+- [ ] Agent stages have no `command` field and define exactly one of `agent` or inline `prompt`
 - [ ] Generated agent stages use `agent` refs instead of inline `prompt`
 - [ ] Every `agent` ref has a corresponding `agents/<agent-ref>.md` file with non-empty content
 - [ ] Template JSON files also have agent instructions stripped; their agent refs point into `agents/` too
 - [ ] `mcpAccess` appears only on agent stages, values are registry refs
 - [ ] At least one path through the graph reaches `next: null`
 - [ ] Mount keys do not use reserved names (`ipc`, `global`, `extra`, `conversations`)
-- [ ] `project:*` overrides are absent when `project` is `null`
+- [ ] `project:*` overrides are not relied on when `project` is `null` or hidden
 - [ ] Sub-path mounts use only relative directory paths (no `..`, no leading `/`)
 - [ ] `entryStage` (if set) references an existing stage name
 - [ ] Marker names in JSON match what prompts tell agents to emit (bare in JSON, bracketed in prompts)
-- [ ] The pipeline graph is acyclic (DAG). Loops via template self-stitch only
-- [ ] No authored transition uses array `next`; arrays are runtime-only
-- [ ] No legacy `retry`, `next_dynamic`, `kind: "dynamic-fanout"`, or `fan_in: "dynamic"`
+- [ ] The pipeline graph is acyclic (DAG). Cycles are rejected at load — use template self-stitch to express iteration without a back-edge
+- [ ] No legacy stage fields: `kind`, `fan_in`, `prompts`, or `prompt_append`
+- [ ] No legacy transition fields: `retry`, `next_dynamic`, or `kind: "dynamic-fanout"`
 - [ ] `count` is a positive integer and only used with `template`
 - [ ] `count` and `countFrom` are not used together
 - [ ] `countFrom` only uses `"payload"` and only with `template`; `substitutionsFrom` only with `countFrom`

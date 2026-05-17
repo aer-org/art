@@ -9,7 +9,6 @@ import {
   readBundleFiles,
   classifyFile,
   assembleAgentPrompts,
-  type BundleMetadata,
 } from '../bundle.js';
 
 function parseArgs(args: string[]): {

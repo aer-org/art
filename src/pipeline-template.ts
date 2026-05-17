@@ -20,7 +20,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { resolveAgentRefs } from './agent-ref.js';
-import type { PipelineStage, PipelineTransition } from './pipeline-runner.js';
+import type { PipelineStage, PipelineTransition } from './pipeline-types.js';
 
 export interface PipelineTemplate {
   name: string;
@@ -165,18 +165,25 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       `Template "${templateName}": stage "${stage.name}" missing "transitions" array`,
     );
   }
+  const stageAny = stage as unknown as Record<string, unknown>;
+  if (stageAny.prompts !== undefined) {
+    throw new Error(
+      `Template "${templateName}": stage "${stage.name}" uses unsupported "prompts" field; use inline "prompt" or agents/<name>.md`,
+    );
+  }
+  if (stageAny.prompt_append !== undefined) {
+    throw new Error(
+      `Template "${templateName}": stage "${stage.name}" uses unsupported "prompt_append" field; include the text in "prompt"`,
+    );
+  }
   let afterTimeoutTransitions = 0;
   for (const t of stage.transitions) {
     validateTransitionShape(t, stage.name, templateName);
     if (t.afterTimeout) afterTimeoutTransitions++;
   }
-  if (
-    stage.kind !== undefined &&
-    stage.kind !== 'agent' &&
-    stage.kind !== 'command'
-  ) {
+  if (stageAny.kind !== undefined) {
     throw new Error(
-      `Template "${templateName}": stage "${stage.name}" has invalid kind "${String(stage.kind)}" (must be "agent" or "command")`,
+      `Template "${templateName}": stage "${stage.name}" uses unsupported "kind" field; omit it and set "command" for command stages`,
     );
   }
   if (stage.timeout !== undefined) {
@@ -191,12 +198,12 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       );
     }
   }
-  if (stage.fan_in !== undefined && stage.fan_in !== 'all') {
+  if (stageAny.fan_in !== undefined) {
     throw new Error(
-      `Template "${templateName}": stage "${stage.name}" has invalid fan_in "${String(stage.fan_in)}" (must be "all")`,
+      `Template "${templateName}": stage "${stage.name}" uses unsupported "fan_in" field; multi-predecessor fan-in is automatic`,
     );
   }
-  if (stage.join !== undefined) {
+  if (stageAny.join !== undefined) {
     throw new Error(
       `Template "${templateName}": stage "${stage.name}" cannot author runtime "join" metadata`,
     );

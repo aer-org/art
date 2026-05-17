@@ -1,6 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, subscribeSSE } from '../lib/api.ts';
 
+// Per-project chatId stash so the chat session survives Live↔Runs
+// navigation. localStorage on purpose — sessionStorage would drop
+// the value on hard reload, which the user explicitly asked us to
+// keep alive.
+function chatStashKey(projectDir: string): string {
+  return `art:chat:${projectDir}`;
+}
+function readChatStash(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writeChatStash(key: string, value: string | null): void {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
 export type ChatEvent =
   | { kind: 'turn-start'; seq?: number; turnId: string; message: string; ts: number }
   | { kind: 'user-message'; seq?: number; text: string; ts: number; turnId?: string }
@@ -135,7 +158,11 @@ export function useChat(projectDir: string | null, options: UseChatOptions) {
     setActiveTurnId(turnId);
   }
 
-  // (Re)create chat session when the loaded project changes.
+  // (Re)create chat session when the loaded project changes. The
+  // previous chatId is stashed in localStorage so navigation to /runs
+  // and back keeps the same session warm; the server re-hydrates it
+  // if it's still alive and falls back to creating a new one
+  // otherwise. Server restart drops everything (intended).
   useEffect(() => {
     setChatId(null);
     setMessages([]);
@@ -145,7 +172,14 @@ export function useChat(projectDir: string | null, options: UseChatOptions) {
     setLatestStatus(null);
     setConnectionState('idle');
     if (!projectDir) return;
-    api.chatSession({ model: options.model, effort: options.effort })
+    const stashKey = chatStashKey(projectDir);
+    const previousChatId = readChatStash(stashKey);
+    api
+      .chatSession({
+        model: options.model,
+        effort: options.effort,
+        chatId: previousChatId ?? undefined,
+      })
       .then((r) => {
         const protocolError = chatProtocolError(r.chatProtocolVersion);
         if (protocolError) {
@@ -155,6 +189,7 @@ export function useChat(projectDir: string | null, options: UseChatOptions) {
           return;
         }
         setChatId(r.chatId);
+        writeChatStash(stashKey, r.chatId);
       })
       .catch((e) => {
         pushMessage({ role: 'error', text: (e as Error).message, ts: Date.now() });
@@ -162,6 +197,32 @@ export function useChat(projectDir: string | null, options: UseChatOptions) {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectDir]);
+
+  // /clear in the input — drop the stashed chatId, wipe local state,
+  // and request a fresh session from the server. Server's old session
+  // is left to expire naturally (the new chatId becomes the live one).
+  function clear() {
+    if (!projectDir) return;
+    const stashKey = chatStashKey(projectDir);
+    writeChatStash(stashKey, null);
+    setChatId(null);
+    setMessages([]);
+    messagesRef.current = [];
+    seenEventSeqsRef.current = new Set();
+    setActiveTurn(null);
+    setLatestStatus(null);
+    setConnectionState('idle');
+    api
+      .chatSession({ model: options.model, effort: options.effort })
+      .then((r) => {
+        setChatId(r.chatId);
+        writeChatStash(stashKey, r.chatId);
+      })
+      .catch((e) => {
+        pushMessage({ role: 'error', text: (e as Error).message, ts: Date.now() });
+        setConnectionState('error');
+      });
+  }
 
   // Push setting changes to the active session without losing history.
   useEffect(() => {
@@ -430,5 +491,5 @@ export function useChat(projectDir: string | null, options: UseChatOptions) {
   }
 
   const busy = activeTurnId !== null || hasPendingPermission(messages);
-  return { chatId, messages, busy, connectionState, latestStatus, send, cancel, respondPermission };
+  return { chatId, messages, busy, connectionState, latestStatus, send, cancel, respondPermission, clear };
 }

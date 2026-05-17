@@ -20,18 +20,62 @@ export interface PipelineSnapshot {
   state?: any;
   latestRun?: any;
   graph?: { nodes: GraphNode[]; edges: GraphEdge[] };
+  graphMode?: 'live' | 'template-overview';
+  templates?: Record<string, TemplateFile>;
   isRunning?: boolean;
   isRunStarting?: boolean;
+  isStopping?: boolean;
+}
+
+export interface TemplateFile {
+  entry?: string;
+  stages: Array<{
+    name: string;
+    kind?: 'agent' | 'command';
+    agent?: string;
+    prompt?: string;
+    promptSource?: string;
+    command?: string;
+    image?: string;
+    mounts?: Record<string, 'ro' | 'rw' | null | undefined>;
+    hostMounts?: Array<{
+      hostPath: string;
+      containerPath?: string;
+      readonly?: boolean;
+    }>;
+    env?: Record<string, string>;
+    successMarker?: string;
+    errorMarker?: string;
+    timeout?: number;
+    transitions?: Array<{
+      marker?: string;
+      next?: string | string[] | null;
+      template?: string;
+    }>;
+  }>;
 }
 
 export interface GraphNode {
   id: string;
   name: string;
-  kind: 'agent' | 'command';
+  kind: 'agent' | 'command' | 'barrier' | 'template';
   status: 'pending' | 'running' | 'success' | 'error' | 'unknown';
   isStitched: boolean;
   isTemplatePlaceholder: boolean;
   templateName?: string;
+  // Run-detail mode only.
+  retryCount?: number;
+  nodeId?: string;
+  exitCode?: number | null;
+  // Barrier-only fields (kind === 'barrier').
+  barrierId?: string;
+  ownerNodeId?: string;
+  joinPolicy?: 'all_success' | 'any_success' | 'all_settled';
+  downstreamNext?: string | null;
+  childNodeIds?: string[];
+  // Template-overview-only fields (kind === 'template').
+  templateStageCount?: number;
+  templateSelfStitches?: number;
 }
 
 export interface GraphEdge {
@@ -40,6 +84,7 @@ export interface GraphEdge {
   target: string;
   marker?: string;
   isTemplate?: boolean;
+  isRetry?: boolean;
 }
 
 export interface PreflightResponse {
@@ -147,12 +192,14 @@ export const api = {
   stage: (name: string) => http<StageInfoResponse>('GET', `/api/stage/${encodeURIComponent(name)}`),
   pipelineSave: (config: unknown) => http<{ ok: true }>('POST', '/api/pipeline', { config }),
   chatOptions: () => http<ChatOptions>('GET', '/api/chat/options'),
-  chatSession: (opts?: { model?: string; effort?: string }) =>
-    http<{ chatId: string; model: string; effort: string; chatProtocolVersion?: number }>(
-      'POST',
-      '/api/chat/session',
-      opts ?? {},
-    ),
+  chatSession: (opts?: { model?: string; effort?: string; chatId?: string }) =>
+    http<{
+      chatId: string;
+      model: string;
+      effort: string;
+      chatProtocolVersion?: number;
+      reused?: boolean;
+    }>('POST', '/api/chat/session', opts ?? {}),
   chatSettings: (chatId: string, opts: { model?: string; effort?: string }) =>
     http<{ ok: true; model: string; effort: string; chatProtocolVersion?: number }>(
       'POST',
@@ -164,7 +211,177 @@ export const api = {
   chatCancel: (chatId: string) => http<{ ok: true }>('POST', '/api/chat/cancel', { chatId }),
   chatPermission: (chatId: string, permissionId: string, decision: 'allow_once' | 'allow_project' | 'deny') =>
     http<{ ok: true }>('POST', '/api/chat/permission', { chatId, permissionId, decision }),
+  // --- Transparency-layer (read-only run inspection) ---
+  listRuns: () => http<{ runs: RunHeader[] }>('GET', '/api/runs'),
+  runDetail: (runId: string) =>
+    http<RunDetail>('GET', `/api/runs/${encodeURIComponent(runId)}`),
+  runEvents: (
+    runId: string,
+    opts?: { type?: string; limit?: number; stage?: string; node?: string },
+  ) => {
+    const q = new URLSearchParams();
+    if (opts?.type) q.set('type', opts.type);
+    if (opts?.limit !== undefined) q.set('limit', String(opts.limit));
+    if (opts?.stage) q.set('stage', opts.stage);
+    if (opts?.node) q.set('node', opts.node);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return http<{ events: Array<Record<string, unknown>> }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/events${qs}`,
+    );
+  },
+  runProvenance: (runId: string) =>
+    http<Record<string, unknown>>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/provenance`,
+    ),
+  runPipelineSnap: (runId: string) =>
+    http<Record<string, unknown>>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/pipeline-snap`,
+    ),
+  stageDetail: (runId: string, nodeId: string, stageName: string) =>
+    http<StageDetail>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}`,
+    ),
+  stagePrompt: (runId: string, nodeId: string, stageName: string) =>
+    httpText(
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/prompt`,
+    ),
+  stageInitial: (runId: string, nodeId: string, stageName: string) =>
+    httpText(
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/initial`,
+    ),
+  stageCommand: (runId: string, nodeId: string, stageName: string) =>
+    http<{ sh: string | null; meta: Record<string, unknown> | null }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/command`,
+    ),
+  stageDiffSummary: (runId: string, nodeId: string, stageName: string) =>
+    http<Record<string, unknown>>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/diff`,
+    ),
+  stageDiff: (runId: string, nodeId: string, stageName: string, mount: string) =>
+    httpText(
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/diff/${encodeURIComponent(mount)}`,
+    ),
+  stageTurns: (runId: string, nodeId: string, stageName: string) =>
+    http<{ turns: Array<Record<string, unknown>> }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/turns`,
+    ),
+  stageTranscript: (runId: string, nodeId: string, stageName: string) =>
+    http<{
+      records: Array<Record<string, unknown>>;
+      bytes: number;
+    }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/transcript`,
+    ),
+  runGraph: (runId: string) =>
+    http<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/graph`,
+    ),
+  runStages: (runId: string) =>
+    http<{ stages: AllStageRecord[] }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages`,
+    ),
+  stageStream: (
+    runId: string,
+    nodeId: string,
+    stageName: string,
+    opts?: { kind?: 'agent' | 'stdout' | 'stderr'; tail?: number },
+  ) => {
+    const q = new URLSearchParams();
+    if (opts?.kind) q.set('kind', opts.kind);
+    if (opts?.tail !== undefined) q.set('tail', String(opts.tail));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return http<{ lines: string[]; bytes: number }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(nodeId)}/${encodeURIComponent(stageName)}/stream${qs}`,
+    );
+  },
 };
+
+async function httpText(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    let msg = '';
+    try {
+      msg = JSON.parse(await res.text()).error ?? '';
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg || `HTTP ${res.status}`);
+  }
+  return res.text();
+}
+
+export type RunState = 'live' | 'crashed' | 'sealed';
+
+export interface RunHeader {
+  runId: string;
+  state: RunState;
+  pid?: number;
+  hostname?: string;
+  startTime?: string;
+  provider?: string;
+  outcome?: 'success' | 'error';
+  endTime?: string;
+  durationMs?: number;
+  totalStages?: number;
+  failedStages?: number;
+}
+
+export interface NodeIndex {
+  nodeId: string;
+  stages: string[];
+}
+
+export interface RunDetail extends RunHeader {
+  runDir: string;
+  args?: string[];
+  schemaVersion?: number;
+  hasProvenance: boolean;
+  hasPipelineSnap: boolean;
+  hasEvents: boolean;
+  nodes: NodeIndex[];
+}
+
+export interface AllStageRecord {
+  nodeId: string;
+  stageName: string;
+  stage: Record<string, unknown> | null;
+  turnCount: number;
+  turnSum: {
+    tokensIn: number;
+    tokensOut: number;
+    cacheReadTokens: number;
+    latencyMs: number;
+    costUsd: number;
+  };
+}
+
+export interface StageDetail {
+  nodeId: string;
+  stageName: string;
+  stage: Record<string, unknown> | null;
+  container: Record<string, unknown> | null;
+  substitutions: Record<string, unknown> | null;
+  promptSource: string | null;
+  hasPrompt: boolean;
+  hasInitial: boolean;
+  hasCommand: boolean;
+  hasDiff: boolean;
+  hasTranscript: boolean;
+  diffMounts: string[];
+  turnCount: number;
+  streamSizes: { agent: number; stdout: number; stderr: number };
+}
 
 export interface ChatOptions {
   chatProtocolVersion?: number;

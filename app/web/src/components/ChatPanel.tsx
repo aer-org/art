@@ -130,7 +130,7 @@ export function ChatPanel({ projectDir }: Props) {
     }).catch(() => {});
   }, []);
 
-  const { chatId, messages, busy, connectionState, latestStatus, send, cancel, respondPermission } = useChat(projectDir, { model, effort });
+  const { chatId, messages, busy, connectionState, latestStatus, send, cancel, respondPermission, clear } = useChat(projectDir, { model, effort });
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -140,7 +140,15 @@ export function ChatPanel({ projectDir }: Props) {
 
   function submit() {
     const m = draft.trim();
-    if (!m || busy || !chatId) return;
+    if (!m) return;
+    // `/clear` is a local slash command: drop the current session and
+    // start a fresh one. Don't forward it to the model.
+    if (m === '/clear') {
+      setDraft('');
+      clear();
+      return;
+    }
+    if (busy || !chatId) return;
     void send(m);
     setDraft('');
   }

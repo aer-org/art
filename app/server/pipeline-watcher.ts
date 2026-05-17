@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import chokidar, { type FSWatcher } from 'chokidar';
@@ -20,6 +21,34 @@ export interface WatchedSnapshot {
   pipelineError?: string;
 }
 
+const AGENT_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * Inline agent-ref prompts so the visualizer can render the actual
+ * authored text. Mirrors `resolveAgentRefs` in the core runtime but
+ * is intentionally read-only and best-effort — a missing or
+ * unreadable agents/*.md just leaves `prompt` empty so the UI shows
+ * "—" instead of crashing.
+ */
+function resolveAgentRefsInPlace(
+  artDir: string,
+  pipeline: PipelineConfig | null,
+): void {
+  if (!pipeline?.stages) return;
+  for (const stage of pipeline.stages) {
+    const ref = (stage as { agent?: string }).agent;
+    if (!ref || stage.prompt) continue;
+    if (!AGENT_REF_PATTERN.test(ref)) continue;
+    const filePath = path.join(artDir, 'agents', `${ref}.md`);
+    try {
+      stage.prompt = fs.readFileSync(filePath, 'utf8');
+      (stage as { promptSource?: string }).promptSource = `agents/${ref}.md`;
+    } catch {
+      /* leave prompt empty; UI will render the unresolved ref */
+    }
+  }
+}
+
 function safeParseJson<T>(filePath: string): T | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
@@ -29,28 +58,69 @@ function safeParseJson<T>(filePath: string): T | null {
   }
 }
 
-function listLatestRun(runsDir: string): RunManifest | null {
-  if (!fs.existsSync(runsDir)) return null;
-  const files = fs
-    .readdirSync(runsDir)
-    .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
-    .sort()
-    .reverse();
-  for (const f of files) {
-    const m = safeParseJson<RunManifest>(path.join(runsDir, f));
-    if (m) return m;
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
-  return null;
 }
 
-function latestRunManifestPath(runsDir: string): string | null {
+// Newest run directory (reverse-sorted by runId, which embeds a timestamp).
+function latestRunDir(runsDir: string): string | null {
   if (!fs.existsSync(runsDir)) return null;
-  const files = fs
-    .readdirSync(runsDir)
-    .filter((f) => f.startsWith('run-') && f.endsWith('.json'))
-    .sort()
-    .reverse();
-  return files[0] ? path.join(runsDir, files[0]) : null;
+  const dirs = fs.readdirSync(runsDir).filter((entry) => {
+    if (!entry.startsWith('run-')) return false;
+    try {
+      return fs.statSync(path.join(runsDir, entry)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  if (dirs.length === 0) return null;
+  dirs.sort().reverse();
+  return path.join(runsDir, dirs[0]);
+}
+
+// Synthesize a legacy-shape RunManifest from a runs/<id>/ folder. status is
+// derived from the sealed marker + summary.outcome + PID liveness.
+function readRunFolderAsManifest(runDir: string): RunManifest | null {
+  const runId = path.basename(runDir);
+  const runJson = safeParseJson<{
+    pid?: number;
+    hostname?: string;
+    startTime?: string;
+  }>(path.join(runDir, 'run.json'));
+  if (!runJson) return null;
+  const sealed = fs.existsSync(path.join(runDir, 'sealed'));
+  let status: RunManifest['status'];
+  let endTime: string | undefined;
+  if (sealed) {
+    const summary = safeParseJson<{
+      outcome?: 'success' | 'error';
+      endTime?: string;
+    }>(path.join(runDir, 'summary.json'));
+    status = summary?.outcome === 'error' ? 'error' : 'success';
+    endTime = summary?.endTime;
+  } else if (
+    typeof runJson.pid === 'number' &&
+    runJson.pid > 0 &&
+    (!runJson.hostname || runJson.hostname === os.hostname()) &&
+    isPidAlive(runJson.pid)
+  ) {
+    status = 'running';
+  } else {
+    status = 'cancelled';
+  }
+  return {
+    runId,
+    pid: typeof runJson.pid === 'number' ? runJson.pid : 0,
+    startTime: runJson.startTime ?? '',
+    endTime,
+    status,
+    stages: [],
+  };
 }
 
 function listPipelineStateFiles(stateDir: string): string[] {
@@ -101,9 +171,18 @@ export class PipelineProject extends EventEmitter {
       [
         path.join(this.artDir, 'PIPELINE.json'),
         this.stateDir,
-        path.join(this.stateDir, 'PIPELINE_STATE*.json'),
         path.join(this.stateDir, 'runs'),
-        path.join(this.stateDir, 'runs', 'run-*.json'),
+        // Per-run state + lifecycle markers under each runs/<id>/
+        path.join(this.stateDir, 'runs', '*', 'run.json'),
+        path.join(this.stateDir, 'runs', '*', 'summary.json'),
+        path.join(this.stateDir, 'runs', '*', 'sealed'),
+        path.join(
+          this.stateDir,
+          'runs',
+          '*',
+          'state',
+          'PIPELINE_STATE*.json',
+        ),
         path.join(this.stateDir, 'logs'),
         path.join(this.stateDir, 'logs', '**', 'pipeline-*.log'),
       ],
@@ -220,13 +299,17 @@ export class PipelineProject extends EventEmitter {
     let changed = false;
     const runsDir = path.join(this.stateDir, 'runs');
     const logsDir = path.join(this.stateDir, 'logs');
-    const candidates = [
+    const latestRun = latestRunDir(runsDir);
+    const candidates: (string | null)[] = [
       this.artDir,
       this.stateDir,
       path.join(this.artDir, 'PIPELINE.json'),
-      ...listPipelineStateFiles(this.stateDir),
       runsDir,
-      latestRunManifestPath(runsDir),
+      latestRun,
+      latestRun ? path.join(latestRun, 'run.json') : null,
+      latestRun ? path.join(latestRun, 'summary.json') : null,
+      latestRun ? path.join(latestRun, 'sealed') : null,
+      ...(latestRun ? listPipelineStateFiles(path.join(latestRun, 'state')) : []),
       logsDir,
       this.latestPipelineLogPath(),
     ];
@@ -269,7 +352,6 @@ export class PipelineProject extends EventEmitter {
 
   private read(): WatchedSnapshot {
     const pipelinePath = path.join(this.artDir, 'PIPELINE.json');
-    const statePath = path.join(this.stateDir, 'PIPELINE_STATE.json');
     const runsDir = path.join(this.stateDir, 'runs');
     const logsDir = path.join(this.stateDir, 'logs');
 
@@ -278,14 +360,20 @@ export class PipelineProject extends EventEmitter {
     try {
       const raw = fs.readFileSync(pipelinePath, 'utf8');
       pipeline = JSON.parse(raw) as PipelineConfig;
+      resolveAgentRefsInPlace(this.artDir, pipeline);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') pipelineError = 'PIPELINE.json not found';
       else pipelineError = `Could not parse PIPELINE.json: ${(e as Error).message}`;
     }
 
-    const state = safeParseJson<PipelineState>(statePath);
-    const latestRun = listLatestRun(runsDir);
+    const latestRunPath = latestRunDir(runsDir);
+    const latestRun = latestRunPath ? readRunFolderAsManifest(latestRunPath) : null;
+    const state = latestRunPath
+      ? safeParseJson<PipelineState>(
+          path.join(latestRunPath, 'state', 'PIPELINE_STATE.json'),
+        )
+      : null;
     const logFile = findLatestPipelineLogFile(logsDir);
     const pipelineLogTail = logFile ? tailFile(logFile, 500) : [];
 

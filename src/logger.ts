@@ -1,33 +1,97 @@
-import fs from 'fs';
-import pino from 'pino';
+/**
+ * Thin logging shim — replaces the prior pino-based logger.
+ *
+ * Two behaviors per call:
+ * 1. If a RunRecorder is active (set via setActiveRecorder), the event is
+ *    appended to runs/<id>/events.jsonl.
+ * 2. warn / error / fatal also print one line to stderr so an operator
+ *    notices things going wrong even before they tail a log.
+ * info and debug are archive-only (no stderr noise).
+ *
+ * The pino-compatible call shape `logger.info(obj, message)` or
+ * `logger.info(message)` is preserved so existing call sites need no edit.
+ */
+import { getActiveRecorder, type EventLevel } from './run-recorder.js';
 
-function buildLogger(): pino.Logger {
-  const level = process.env.LOG_LEVEL || 'info';
+type LogMethod = (
+  objOrMessage: Record<string, unknown> | string,
+  message?: string,
+) => void;
 
-  // TUI mode: send logs to file instead of terminal
-  if (process.env.ART_TUI_MODE) {
-    const logDir = process.env.ART_TUI_LOG_DIR;
-    if (logDir) {
-      fs.mkdirSync(logDir, { recursive: true });
-      const logFile = `${logDir}/engine.log`;
-      return pino({ level }, pino.destination({ dest: logFile, sync: false }));
-    }
-  }
-
-  return pino({
-    level,
-    transport: { target: 'pino-pretty', options: { colorize: true } },
-  });
+interface Logger {
+  debug: LogMethod;
+  info: LogMethod;
+  warn: LogMethod;
+  error: LogMethod;
+  fatal: LogMethod;
 }
 
-export const logger = buildLogger();
+function emit(
+  level: EventLevel | 'fatal',
+  objOrMessage: Record<string, unknown> | string,
+  message?: string,
+): void {
+  let data: Record<string, unknown> | undefined;
+  let msg: string | undefined;
+  if (typeof objOrMessage === 'string') {
+    msg = objOrMessage;
+  } else {
+    data = objOrMessage;
+    msg = message;
+  }
 
-// Route uncaught errors through pino so they get timestamps in stderr
+  const recorderLevel: EventLevel = level === 'fatal' ? 'error' : level;
+  const recorder = getActiveRecorder();
+  if (recorder) {
+    recorder.event({
+      level: recorderLevel,
+      type: `log.${level}`,
+      message: msg,
+      data,
+    });
+  }
+
+  if (level === 'warn' || level === 'error' || level === 'fatal') {
+    const prefix = `[${level}]`;
+    if (msg && data) {
+      console.error(prefix, msg, data);
+    } else if (msg) {
+      console.error(prefix, msg);
+    } else if (data) {
+      console.error(prefix, data);
+    }
+  }
+}
+
+export const logger: Logger = {
+  debug: (obj, message) => emit('debug', obj, message),
+  info: (obj, message) => emit('info', obj, message),
+  warn: (obj, message) => emit('warn', obj, message),
+  error: (obj, message) => emit('error', obj, message),
+  fatal: (obj, message) => emit('fatal', obj, message),
+};
+
+// Route uncaught errors to stderr (no recorder dependency — these happen
+// before/around recorder lifecycle).
 process.on('uncaughtException', (err) => {
-  logger.fatal({ err }, 'Uncaught exception');
+  console.error('[fatal] Uncaught exception:', err);
+  const recorder = getActiveRecorder();
+  recorder?.event({
+    level: 'error',
+    type: 'process.uncaughtException',
+    message: err.message,
+    data: { stack: err.stack },
+  });
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
-  logger.error({ err: reason }, 'Unhandled rejection');
+  console.error('[error] Unhandled rejection:', reason);
+  const recorder = getActiveRecorder();
+  recorder?.event({
+    level: 'error',
+    type: 'process.unhandledRejection',
+    message: reason instanceof Error ? reason.message : String(reason),
+    data: reason instanceof Error ? { stack: reason.stack } : { value: reason },
+  });
 });

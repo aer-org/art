@@ -11,13 +11,13 @@ vi.mock('../../src/config.js', () => ({
   CONTAINER_IMAGE: 'aer-art-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
-  CREDENTIAL_PROXY_PORT: 3001,
-  DATA_DIR: '/tmp/aer-art-test-data',
-  GROUPS_DIR: '/tmp/aer-art-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
   TIMEZONE: 'America/Los_Angeles',
-  getProjectRoot: () => '/tmp/aer-art-test-root',
+  getDataDir: () => '/tmp/aer-art-test-data',
+  getPackageAssetPath: (...parts: string[]) =>
+    ['/tmp/aer-art-test-root', ...parts].join('/'),
   getCredentialProxyPort: () => 3001,
+  getCodexAuthProxyPort: () => 3002,
 }));
 
 // Mock logger
@@ -141,6 +141,7 @@ vi.mock('child_process', async () => {
 });
 
 import {
+  buildContainerArgs,
   runContainerAgent,
   ContainerOutput,
 } from '../../src/container-runner.js';
@@ -270,6 +271,69 @@ describe('container-runner MCP config generation', () => {
   beforeEach(() => {
     fakeProc = createFakeProcess();
     vi.clearAllMocks();
+  });
+
+  it('defaults container agent provider to Codex', async () => {
+    const fsModule = await import('fs');
+    const mockedFs = vi.mocked(fsModule.default);
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    const configCall = mockedFs.writeFileSync.mock.calls.find(
+      ([filePath]) =>
+        filePath ===
+        '/tmp/aer-art-test-data/sessions/test-group/.codex/config.toml',
+    );
+    expect(configCall).toBeDefined();
+    expect(
+      mockedFs.writeFileSync.mock.calls.some(
+        ([filePath]) =>
+          filePath ===
+          '/tmp/aer-art-test-data/sessions/test-group/.claude/settings.json',
+      ),
+    ).toBe(false);
+
+    fakeProc.emit('close', 0);
+    await resultPromise;
+  });
+
+  it('defaults container args provider to Codex with passthrough auth', () => {
+    const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
+    delete process.env.ART_CODEX_AUTH_MODE;
+
+    try {
+      const args = buildContainerArgs([], 'art-test-default-provider');
+
+      expect(args).toContain('ART_CODEX_AUTH_MODE=passthrough');
+      expect(args.join(' ')).not.toContain('ART_CODEX_AUTH_PROXY_URL=');
+      expect(args.join(' ')).not.toContain('ANTHROPIC_BASE_URL=');
+    } finally {
+      if (previousAuthMode === undefined) {
+        delete process.env.ART_CODEX_AUTH_MODE;
+      } else {
+        process.env.ART_CODEX_AUTH_MODE = previousAuthMode;
+      }
+    }
+  });
+
+  it('allows explicit Codex host-managed auth opt-in', () => {
+    const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
+    process.env.ART_CODEX_AUTH_MODE = 'host-managed';
+
+    try {
+      const args = buildContainerArgs([], 'art-test-host-managed-provider');
+
+      expect(args).toContain('ART_CODEX_AUTH_MODE=host-managed');
+      expect(args).toContain(
+        'ART_CODEX_AUTH_PROXY_URL=http://host.docker.internal:3002',
+      );
+    } finally {
+      if (previousAuthMode === undefined) {
+        delete process.env.ART_CODEX_AUTH_MODE;
+      } else {
+        process.env.ART_CODEX_AUTH_MODE = previousAuthMode;
+      }
+    }
   });
 
   it('writes stage-local Codex config.toml with external MCP servers', async () => {

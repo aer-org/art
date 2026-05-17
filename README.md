@@ -27,19 +27,20 @@ npm install -g @aer-org/art
 curl -fsSL https://raw.githubusercontent.com/aer-org/art/main/install.sh | bash
 ```
 
-Initialize a project once, then run it:
+Initialize a project, define a pipeline, then run it:
 
 ```bash
 art init /my/project
+# edit /my/project/__art__/PIPELINE.json
 art run /my/project
 ```
 
 Requires **Node.js ≥ 20** and **Docker** (or Podman).
 
-Use `--codex` to run with Codex, or `--claude` to force Claude Code:
+Codex is the default provider. Use `--claude` to force Claude Code:
 
 ```bash
-art run --codex /my/project
+art run --claude /my/project
 ```
 
 ## Quick example demo: [autoresearch](https://github.com/karpathy/autoresearch) as a pipeline
@@ -74,7 +75,7 @@ art run .  # requires NVIDIA Ampere+ GPU
 art init /my/project
 ```
 
-ART creates a minimal `__art__/` scaffold with a default pipeline and the files that pipeline expects.
+ART creates a minimal `__art__/` scaffold with an empty `PIPELINE.json`; add stages before running it.
 
 **2. Run it:**
 
@@ -82,16 +83,15 @@ ART creates a minimal `__art__/` scaffold with a default pipeline and the files 
 art run /my/project
 ```
 
-Each stage runs a Claude agent in its own Docker container. Your project is read-only by default — specific files get write access only where needed. Everything lands in `__art__/`:
+Each stage runs an agent in its own Docker container. Your project is read-only by default — specific files get write access only where needed. Everything lands in `__art__/`:
 
 ```
 my-project/
 ├── src/, data/, ...                # Your project (read-only by default)
 └── __art__/                        # All ART artifacts
     ├── PIPELINE.json               # Pipeline definition
-    ├── PLAN.md                     # What you want built
-    ├── src/                        # Agent-written code
-    ├── outputs/                    # Run outputs
+    ├── agents/                     # Optional reusable agent prompts
+    ├── templates/                  # Optional reusable sub-graphs
     ├── logs/                       # Per-stage logs
     └── runs/                       # Run history manifests
 ```
@@ -104,11 +104,11 @@ Edit `__art__/PIPELINE.json` and the files under `__art__/` directly if you want
 
 A pipeline is a list of stages connected by transitions. Each stage runs in its own container and communicates via **output markers**.
 
-Here's what the **default template** looks like. ART understands stages, transitions, mounts, and markers from `PIPELINE.json`.
+For example, a pipeline can build, test, review, and record history. ART understands stages, transitions, mounts, and markers from `PIPELINE.json`.
 
 ```
     ┌──────────┐
-    │  BUILD   │ ← reads PLAN.md, writes code to src/
+    │  BUILD   │ ← writes code or artifacts
     └────┬─────┘
          │ [STAGE_COMPLETE]
          ▼
@@ -129,12 +129,12 @@ Here's what the **default template** looks like. ART understands stages, transit
 
 ### Stage modes
 
-- **Agent mode** (default): Claude agent receives a prompt and works autonomously
+- **Agent mode** (default): Codex receives a prompt and works autonomously
 - **Command mode**: Runs shell commands via `sh -c`, parses markers from stdout
 
 ### Transitions and retries
 
-Stages emit markers like `[STAGE_COMPLETE]` or `[STAGE_ERROR: msg]` to trigger transitions. Retry transitions re-send the prompt with the error description. Non-retry transitions advance to the next stage.
+Stages emit markers like `[STAGE_COMPLETE]` or `[STAGE_ERROR: msg]` to trigger transitions. A transition either advances to another stage or ends the current scope. If the runner cannot match a marker, it sends feedback and keeps the same container session active.
 
 ### Resume on interrupt
 
@@ -159,9 +159,9 @@ ART is designed to reduce accidental access and constrain agent execution, but i
 ## CLI Reference
 
 ```bash
-art init <path>                 # Create __art__/ scaffold and default PIPELINE.json
-art run <path>                  # Execute pipeline (default provider: Claude)
-art run --codex <path>          # Execute pipeline with Codex
+art init <path>                 # Create __art__/ scaffold and empty PIPELINE.json
+art run <path>                  # Execute pipeline (default provider: Codex)
+art run --codex <path>          # Execute pipeline with Codex (same as default)
 art run --claude <path>         # Execute pipeline with Claude Code
 art run --skip-preflight <path> # Skip local CLI/auth preflight (command-mode only)
 ```

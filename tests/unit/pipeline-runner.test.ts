@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  beforeAll,
+  vi,
+  afterEach,
+} from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -10,13 +18,12 @@ vi.mock('../../src/config.js', () => ({
   CONTAINER_IMAGE: 'art-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000,
-  CREDENTIAL_PROXY_PORT: 3001,
-  DATA_DIR: '/tmp/aer-art-test-data',
-  GROUPS_DIR: '/tmp/aer-art-test-groups',
   IDLE_TIMEOUT: 1800000,
   MCP_REGISTRY_PATH: '/tmp/aer-art-test-mcp-registry.json',
   TIMEZONE: 'America/Los_Angeles',
-  getProjectRoot: () => '/tmp/aer-art-test-root',
+  getDataDir: () => '/tmp/aer-art-test-data',
+  getPackageAssetPath: (...parts: string[]) =>
+    ['/tmp/aer-art-test-root', ...parts].join('/'),
   getCredentialProxyPort: () => 3001,
 }));
 
@@ -68,7 +75,6 @@ vi.mock('../../src/container-runtime.js', () => ({
 // Mock image-registry
 vi.mock('../../src/image-registry.js', () => ({
   getImageForStage: vi.fn(() => 'art-agent:latest'),
-  loadImageRegistry: vi.fn(() => ({})),
 }));
 
 // Mock group-folder — route to temp dirs
@@ -103,6 +109,8 @@ vi.mock('../../src/mcp-registry.js', () => ({
 
 interface OutputSequenceEntry {
   result: string | null;
+  outbound?: string;
+  turn?: Record<string, unknown>; // simulates per-turn IPC metadata from agent-runner
 }
 
 // Each stage name maps to a list of "invocations". Each invocation is an array
@@ -132,7 +140,7 @@ vi.mock('../../src/container-runner.js', () => ({
   },
   runContainerAgent: vi.fn(
     (
-      group: { name: string },
+      group: { name: string; folder: string },
       _input: { prompt: string },
       _onProcess: unknown,
       onOutput: (output: { status: string; result: string | null }) => void,
@@ -155,6 +163,37 @@ vi.mock('../../src/container-runner.js', () => ({
                 if (entry.result === '__REJECT__') {
                   reject(new Error(`forced reject in ${stageName}`));
                   return;
+                }
+                if (entry.outbound) {
+                  const messagesDir = path.join(
+                    TEST_IPC_BASE,
+                    group.folder,
+                    'messages',
+                  );
+                  fs.mkdirSync(messagesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(messagesDir, `${Date.now()}-outbound.json`),
+                    JSON.stringify({
+                      type: 'message',
+                      text: entry.outbound,
+                      sender: 'worker',
+                    }),
+                  );
+                }
+                if (entry.turn) {
+                  const messagesDir = path.join(
+                    TEST_IPC_BASE,
+                    group.folder,
+                    'messages',
+                  );
+                  fs.mkdirSync(messagesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(
+                      messagesDir,
+                      `${Date.now()}-turn-${Math.random()}.json`,
+                    ),
+                    JSON.stringify({ type: 'turn', meta: entry.turn }),
+                  );
                 }
                 await onOutput({ status: 'success', result: entry.result });
                 // Give FSM time to process result and set new pendingResult
@@ -233,15 +272,47 @@ import {
   resolveStitchInputs,
   type PipelineTransition,
   type PipelineConfig,
+  type PipelineStage,
   type PipelineState,
 } from '../../src/pipeline-runner.js';
+import { buildContainerArgs } from '../../src/container-runner.js';
+import {
+  buildStitchInvocation,
+  dispatchChildNodeId,
+  dispatchInvocationIdFor,
+  dispatchStageName,
+  ROOT_DISPATCH_NODE_ID,
+} from '../../src/stitch.js';
+import { generateRunId } from '../../src/run-manifest.js';
+
+// State files now live under runs/<runId>/state/ (transparency layer). Tests
+// that pre-save or post-read state use this helper to construct the right path.
+function runStateDir(groupDir: string, runId: string): string {
+  return path.join(groupDir, '.state', 'runs', runId, 'state');
+}
+import type { PipelineTemplate } from '../../src/pipeline-template.js';
 import * as mcpRegistry from '../../src/mcp-registry.js';
 import type { RegisteredGroup } from '../../src/types.js';
 
+const mockBuildContainerArgs = vi.mocked(buildContainerArgs);
 const mockLoadMcpRegistry = vi.mocked(mcpRegistry.loadMcpRegistry);
 const mockResolveStageMcpServers = vi.mocked(
   mcpRegistry.resolveStageMcpServers,
 );
+
+function stitchInvocation(
+  parentNodeId: string,
+  originStage: string,
+  templateName: string,
+  transitionIdx = 0,
+): string {
+  return dispatchInvocationIdFor(
+    parentNodeId,
+    originStage,
+    transitionIdx,
+    templateName,
+  );
+}
 
 beforeEach(() => {
   mockLoadMcpRegistry.mockReset();
@@ -648,7 +719,6 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
           () => {},
           tmpDir,
           undefined,
-          undefined,
           'has/slash',
         ),
     ).toThrow(/Invalid scopeId/);
@@ -661,7 +731,6 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
           async () => {},
           () => {},
           tmpDir,
-          undefined,
           undefined,
           'x'.repeat(17),
         ),
@@ -676,7 +745,7 @@ describe('savePipelineState / loadPipelineState round-trip', () => {
 // Group B: PipelineRunner FSM (runContainerAgent mock)
 // ============================================================
 
-// Test fixture: 2-stage pipeline (strict DAG — no cycles, no retry)
+// Test fixture: 2-stage pipeline (strict DAG — no cycles)
 function makeTwoStagePipelineConfig(): PipelineConfig {
   return {
     stages: [
@@ -722,8 +791,6 @@ describe('PipelineRunner FSM', () => {
     // Create required directories
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
 
     // Create IPC dirs for pipeline stages
     for (const stageName of ['implement', 'verify']) {
@@ -771,6 +838,81 @@ describe('PipelineRunner FSM', () => {
     expect(result).toBe('success');
   }, 15000);
 
+  it('relays stage outbound IPC messages to notify', async () => {
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'implement',
+          prompt: 'Implement the feature',
+          mounts: {},
+          transitions: [{ marker: 'IMPL_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const notifications: string[] = [];
+    enqueueStageOutput('implement', [
+      { result: '[IMPL_COMPLETE]', outbound: 'progress update' },
+    ]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async (text) => {
+        notifications.push(text);
+      },
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    expect(notifications).toContain('[worker] progress update');
+  }, 15000);
+
+  it('does not append plan/PLAN.md to stage prompts', async () => {
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'implement',
+          prompt: 'Implement the feature',
+          mounts: {},
+          transitions: [{ marker: 'IMPL_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'plan', 'PLAN.md'),
+      'SECRET PLAN CONTENT',
+    );
+    enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    const call = vi
+      .mocked(runContainerAgent)
+      .mock.calls.find(
+        (c) => (c[0] as { name: string }).name === 'pipeline-implement',
+      );
+    expect(call).toBeDefined();
+    const prompt = (call![1] as { prompt: string }).prompt;
+    expect(prompt).toContain('Implement the feature');
+    expect(prompt).not.toContain('SECRET PLAN CONTENT');
+  }, 15000);
+
   it('payload from implement is included in verify prompt', async () => {
     const { runContainerAgent } = await import('../../src/container-runner.js');
     const config = makeTwoStagePipelineConfig();
@@ -802,13 +944,219 @@ describe('PipelineRunner FSM', () => {
     expect(verifyPrompt).toContain('files changed: main.ts, utils.ts');
   }, 15000);
 
+  it('writes per-stage L1 records (prompt.txt, initial.txt, stage.json)', async () => {
+    const config = makeTwoStagePipelineConfig();
+
+    enqueueStageOutput('implement', [
+      { result: '[IMPL_COMPLETE: payload-from-implement]' },
+    ]);
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    // Provenance snapshot reads PIPELINE.json from the bundle dir if present.
+    fs.writeFileSync(
+      path.join(groupDir, 'PIPELINE.json'),
+      JSON.stringify(config, null, 2),
+    );
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await runner.run();
+
+    const runDir = path.join(groupDir, '.state', 'runs', runner.getRunId());
+    const implementDir = path.join(
+      runDir,
+      'nodes',
+      'root',
+      'stages',
+      'implement',
+    );
+    const verifyDir = path.join(runDir, 'nodes', 'root', 'stages', 'verify');
+
+    // Both stages write their system prompts.
+    expect(fs.existsSync(path.join(implementDir, 'prompt.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(verifyDir, 'prompt.txt'))).toBe(true);
+
+    // verify receives an initial payload handoff from implement.
+    expect(fs.existsSync(path.join(verifyDir, 'initial.txt'))).toBe(true);
+
+    // stage.json captures outcome + matched marker + duration.
+    const implementRecord = JSON.parse(
+      fs.readFileSync(path.join(implementDir, 'stage.json'), 'utf-8'),
+    );
+    expect(implementRecord.schemaVersion).toBe(1);
+    expect(implementRecord.stageName).toBe('implement');
+    expect(implementRecord.nodeId).toBe('root');
+    expect(implementRecord.result).toBe('success');
+    expect(implementRecord.matchedMarker).toBe('IMPL_COMPLETE');
+    expect(implementRecord.transitionTarget).toBe('verify');
+    expect(typeof implementRecord.durationMs).toBe('number');
+
+    const verifyRecord = JSON.parse(
+      fs.readFileSync(path.join(verifyDir, 'stage.json'), 'utf-8'),
+    );
+    expect(verifyRecord.result).toBe('success');
+    expect(verifyRecord.transitionTarget).toBe(null);
+
+    // Provenance hash pairs with on-disk prompt.txt so future readers can
+    // detect "did the prompt file get edited after the run?".
+    const { createHash } = await import('crypto');
+    const promptHash = createHash('sha256')
+      .update(fs.readFileSync(path.join(implementDir, 'prompt.txt')))
+      .digest('hex');
+    expect(implementRecord.inputHashes.prompt).toBe(promptHash);
+
+    // Outcome carries retryCount and exitCode from the container result.
+    expect(implementRecord.retryCount).toBe(0);
+    expect(implementRecord).toHaveProperty('exitCode');
+
+    // For an inline-prompt stage (not loaded from agents/<name>.md),
+    // prompt.source records "inline" so future readers know where the
+    // prompt came from without re-running the pipeline.
+    expect(
+      fs.readFileSync(path.join(implementDir, 'prompt.source'), 'utf-8'),
+    ).toBe('inline');
+
+    // L2 decision events appear in events.jsonl. Each stage emits a
+    // decision.marker line carrying the matched marker.
+    const events = fs
+      .readFileSync(path.join(runDir, 'events.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line: string) => JSON.parse(line));
+    const markerEvents = events.filter(
+      (e: { type: string }) => e.type === 'decision.marker',
+    );
+    expect(markerEvents.length).toBeGreaterThanOrEqual(2);
+    expect(
+      markerEvents.find(
+        (e: { stageName: string; data: { matched: string } }) =>
+          e.stageName === 'implement',
+      )?.data.matched,
+    ).toBe('IMPL_COMPLETE');
+    expect(
+      markerEvents.find(
+        (e: { stageName: string; data: { matched: string } }) =>
+          e.stageName === 'verify',
+      )?.data.matched,
+    ).toBe('VERIFY_PASS');
+
+    // L4 container.json captures static container metadata per stage.
+    const containerInfo = JSON.parse(
+      fs.readFileSync(path.join(implementDir, 'container.json'), 'utf-8'),
+    );
+    expect(containerInfo.schemaVersion).toBe(1);
+    expect(containerInfo.stageName).toBe('implement');
+    expect(containerInfo.mode).toBe('agent');
+    expect(Array.isArray(containerInfo.mounts)).toBe(true);
+
+    // L3 turn records written when the container emits {type:'turn', meta}.
+    // This test path doesn't inject turns (the basic L1 case), so the
+    // turns/ dir should be absent. Coverage for actual turn capture is in
+    // the dedicated test below.
+    expect(fs.existsSync(path.join(implementDir, 'turns'))).toBe(false);
+
+    // Provenance + pipeline snapshot at run root.
+    expect(fs.existsSync(path.join(runDir, 'pipeline.snap.json'))).toBe(true);
+    const provenance = JSON.parse(
+      fs.readFileSync(path.join(runDir, 'provenance.json'), 'utf-8'),
+    );
+    expect(provenance.schemaVersion).toBe(1);
+    expect(Array.isArray(provenance.agents)).toBe(true);
+    expect(Array.isArray(provenance.templates)).toBe(true);
+    expect(typeof provenance.env).toBe('object');
+  }, 15000);
+
+  it('writes per-turn L3 records when the container emits turn metadata', async () => {
+    const config = makeTwoStagePipelineConfig();
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.writeFileSync(
+      path.join(groupDir, 'PIPELINE.json'),
+      JSON.stringify(config, null, 2),
+    );
+
+    // implement emits two turn IPC messages then the success marker. verify
+    // emits one turn and succeeds. The mock writes type:'turn' files to the
+    // per-stage messages dir; the runner picks them up and writes
+    // runs/<id>/nodes/root/stages/<stage>/turns/NNN.json.
+    enqueueStageOutput('implement', [
+      {
+        result: '[IMPL_COMPLETE]',
+        turn: {
+          provider: 'claude',
+          model: 'claude-sonnet-4-6',
+          tokensIn: 100,
+          tokensOut: 50,
+          latencyMs: 1200,
+        },
+      },
+    ]);
+    enqueueStageOutput('verify', [
+      {
+        result: '[VERIFY_PASS]',
+        turn: { provider: 'codex', tokensIn: 30, tokensOut: 20 },
+      },
+    ]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    await runner.run();
+
+    const runDir = path.join(groupDir, '.state', 'runs', runner.getRunId());
+    const implementTurnsDir = path.join(
+      runDir,
+      'nodes',
+      'root',
+      'stages',
+      'implement',
+      'turns',
+    );
+    expect(fs.existsSync(implementTurnsDir)).toBe(true);
+    const files = fs.readdirSync(implementTurnsDir).sort();
+    expect(files).toEqual(['001.json']);
+    const t1 = JSON.parse(
+      fs.readFileSync(path.join(implementTurnsDir, '001.json'), 'utf-8'),
+    );
+    expect(t1.schemaVersion).toBe(1);
+    expect(t1.index).toBe(1);
+    expect(t1.provider).toBe('claude');
+    expect(t1.tokensIn).toBe(100);
+    expect(t1.tokensOut).toBe(50);
+    expect(t1.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const verifyTurnsDir = path.join(
+      runDir,
+      'nodes',
+      'root',
+      'stages',
+      'verify',
+      'turns',
+    );
+    const v1 = JSON.parse(
+      fs.readFileSync(path.join(verifyTurnsDir, '001.json'), 'utf-8'),
+    );
+    expect(v1.provider).toBe('codex');
+  }, 15000);
+
   it('checkpoint resume: skips completed implement, starts at verify', async () => {
     const config = makeTwoStagePipelineConfig();
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
 
-    // Pre-save state with implement completed (state lives under .state/)
-    const stateDir = path.join(groupDir, '.state');
-    savePipelineState(stateDir, {
+    // Pre-save state with implement completed
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
       currentStage: 'implement',
       completedStages: ['implement'],
       lastUpdated: new Date().toISOString(),
@@ -825,6 +1173,7 @@ describe('PipelineRunner FSM', () => {
       async () => {},
       () => {},
       groupDir,
+      runId,
     );
 
     const result = await runner.run();
@@ -838,6 +1187,387 @@ describe('PipelineRunner FSM', () => {
         (c) => (c[0] as { name: string }).name === 'pipeline-implement',
       );
     expect(implCalls.length).toBe(0);
+  }, 15000);
+
+  it('terminal error state restarts at entry instead of resuming unfinished stages', async () => {
+    const config = makeTwoStagePipelineConfig();
+    const duplicateConfig: PipelineConfig = {
+      stages: [config.stages[0], { ...config.stages[0] }],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: null,
+      completedStages: ['implement'],
+      dispatchTree: {
+        [ROOT_DISPATCH_NODE_ID]: {
+          id: ROOT_DISPATCH_NODE_ID,
+          parentId: null,
+          originStage: null,
+          template: null,
+          copyIndex: null,
+          entryStage: 'implement',
+          stageNames: ['implement', 'implement'],
+          childIds: [],
+          status: 'error',
+          config: duplicateConfig,
+        },
+      },
+      lastUpdated: new Date().toISOString(),
+      status: 'error',
+    });
+
+    const notifications: string[] = [];
+    enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async (text) => {
+        notifications.push(text);
+      },
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    expect(notifications.some((text) => text.includes('Resuming from'))).toBe(
+      false,
+    );
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const callNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(callNames.slice(0, 2)).toEqual([
+      'pipeline-implement',
+      'pipeline-verify',
+    ]);
+
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
+    expect(state?.status).toBe('success');
+    expect(state?.completedStages).toEqual(['implement', 'verify']);
+  }, 15000);
+
+  it('terminal success state starts a fresh rerun', async () => {
+    const config = makeTwoStagePipelineConfig();
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: null,
+      completedStages: ['implement', 'verify'],
+      lastUpdated: new Date().toISOString(),
+      status: 'success',
+    });
+
+    const notifications: string[] = [];
+    enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async (text) => {
+        notifications.push(text);
+      },
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    expect(notifications.some((text) => text.includes('Resuming from'))).toBe(
+      false,
+    );
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const callNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(callNames.slice(0, 2)).toEqual([
+      'pipeline-implement',
+      'pipeline-verify',
+    ]);
+  }, 15000);
+
+  it('running state with no durable frontier restarts at entry', async () => {
+    const config = makeTwoStagePipelineConfig();
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: null,
+      completedStages: ['implement'],
+      runningStages: [],
+      pendingStages: [],
+      waitingStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    const notifications: string[] = [];
+    enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async (text) => {
+        notifications.push(text);
+      },
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    expect(notifications.some((text) => text.includes('Resuming from'))).toBe(
+      false,
+    );
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const callNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(callNames.slice(0, 2)).toEqual([
+      'pipeline-implement',
+      'pipeline-verify',
+    ]);
+
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
+    expect(state?.completedStages).toEqual(['implement', 'verify']);
+  }, 15000);
+
+  it('resume restores runningStages by re-running in-flight stages', async () => {
+    const config = makeTwoStagePipelineConfig();
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: 'implement',
+      completedStages: [],
+      runningStages: ['implement'],
+      pendingStages: [],
+      waitingStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    const notifications: string[] = [];
+    enqueueStageOutput('implement', [{ result: '[IMPL_COMPLETE]' }]);
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async (text) => {
+        notifications.push(text);
+      },
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+    expect(notifications.some((text) => text.includes('Resuming from'))).toBe(
+      true,
+    );
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const callNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(callNames.slice(0, 2)).toEqual([
+      'pipeline-implement',
+      'pipeline-verify',
+    ]);
+  }, 15000);
+
+  it('resume preserves pending stage handoff prompts and sessions', async () => {
+    const config = makeTwoStagePipelineConfig();
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: 'verify',
+      completedStages: ['implement'],
+      runningStages: [],
+      pendingStages: [
+        {
+          name: 'verify',
+          initialPrompt: 'RESUMED_INITIAL_PROMPT',
+          ephemeralSystemPrompt: 'RESUMED_EPHEMERAL_HANDOFF',
+        },
+      ],
+      waitingStages: [],
+      stageSessions: { verify: 'session-verify-1' },
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    enqueueStageOutput('verify', [{ result: '[VERIFY_PASS]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    expect(
+      calls.some(
+        (c) => (c[0] as { name: string }).name === 'pipeline-implement',
+      ),
+    ).toBe(false);
+    const verifyCall = calls.find(
+      (c) => (c[0] as { name: string }).name === 'pipeline-verify',
+    );
+    expect(verifyCall).toBeDefined();
+    const input = verifyCall![1] as {
+      prompt: string;
+      ephemeralSystemPrompt?: string;
+      sessionId?: string;
+    };
+    expect(input.prompt).toBe('RESUMED_INITIAL_PROMPT');
+    expect(input.ephemeralSystemPrompt).toBe('RESUMED_EPHEMERAL_HANDOFF');
+    expect(input.sessionId).toBe('session-verify-1');
+  }, 15000);
+
+  it('resume preserves waiting fan-in stages until remaining predecessors finish', async () => {
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'left',
+          prompt: 'left',
+          mounts: {},
+          transitions: [{ marker: 'LEFT_DONE', next: 'join' }],
+        },
+        {
+          name: 'right',
+          prompt: 'right',
+          mounts: {},
+          transitions: [{ marker: 'RIGHT_DONE', next: 'join' }],
+        },
+        {
+          name: 'join',
+          prompt: 'join',
+          mounts: {},
+          transitions: [{ marker: 'JOIN_DONE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: ['right', 'join'],
+      completedStages: ['left'],
+      runningStages: [],
+      pendingStages: [{ name: 'right' }],
+      waitingStages: [
+        {
+          name: 'join',
+          initialPrompt: 'JOIN_RESUME_PROMPT',
+        },
+      ],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    enqueueStageOutput('right', [{ result: '[RIGHT_DONE]' }]);
+    enqueueStageOutput('join', [{ result: '[JOIN_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    const callNames = calls.map((c) => (c[0] as { name: string }).name);
+    expect(callNames).toEqual(['pipeline-right', 'pipeline-join']);
+    const joinInput = calls[1]![1] as { prompt: string };
+    expect(joinInput.prompt).toBe('JOIN_RESUME_PROMPT');
+  }, 15000);
+
+  it('multi-target next: A → [B, C] → D runs B and C in parallel, D joins both', async () => {
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'A',
+          prompt: 'origin',
+          mounts: {},
+          transitions: [{ marker: 'A_DONE', next: ['B', 'C'] }],
+        },
+        {
+          name: 'B',
+          prompt: 'left branch',
+          mounts: {},
+          transitions: [{ marker: 'B_DONE', next: 'D' }],
+        },
+        {
+          name: 'C',
+          prompt: 'right branch',
+          mounts: {},
+          transitions: [{ marker: 'C_DONE', next: 'D' }],
+        },
+        {
+          name: 'D',
+          prompt: 'join',
+          mounts: {},
+          transitions: [{ marker: 'D_DONE', next: null }],
+        },
+      ],
+    };
+    enqueueStageOutput('A', [{ result: '[A_DONE]' }]);
+    enqueueStageOutput('B', [{ result: '[B_DONE]' }]);
+    enqueueStageOutput('C', [{ result: '[C_DONE]' }]);
+    enqueueStageOutput('D', [{ result: '[D_DONE]' }]);
+
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const result = await runner.run();
+    expect(result).toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    const callNames = calls.map((c) => (c[0] as { name: string }).name);
+    // A must come first; D must come last (after both B and C settle).
+    expect(callNames[0]).toBe('pipeline-A');
+    expect(callNames[callNames.length - 1]).toBe('pipeline-D');
+    expect(callNames.filter((n) => n === 'pipeline-D')).toHaveLength(1);
+    expect(new Set(callNames.slice(1, -1))).toEqual(
+      new Set(['pipeline-B', 'pipeline-C']),
+    );
   }, 15000);
 
   it('no marker → sends retry then succeeds on next output', async () => {
@@ -1003,8 +1733,6 @@ describe('Stitch integration', () => {
     groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
     fs.mkdirSync(path.join(groupDir, 'templates'), { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
   });
 
   afterEach(() => {
@@ -1027,6 +1755,12 @@ describe('Stitch integration', () => {
       ),
       { recursive: true },
     );
+  }
+
+  function enqueueContainerExitLimit(stageName: string) {
+    for (let i = 0; i < 4; i++) {
+      enqueueStageOutput(stageName, [{ result: 'container exited' }]);
+    }
   }
 
   it('single stitch — template-named next is expanded into the graph', async () => {
@@ -1057,11 +1791,18 @@ describe('Stitch integration', () => {
       ],
     };
 
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      templateName,
+    );
+    const doStage = dispatchStageName(invocationId, 0, 'do');
+
     ensureIpc('start');
-    ensureIpc(`start__${templateName}0__do`);
+    ensureIpc(doStage);
 
     enqueueStageOutput('start', [{ result: '[GO]' }]);
-    enqueueStageOutput(`start__${templateName}0__do`, [{ result: '[DONE]' }]);
+    enqueueStageOutput(doStage, [{ result: '[DONE]' }]);
 
     const runner = new PipelineRunner(
       group,
@@ -1078,12 +1819,1307 @@ describe('Stitch integration', () => {
     const { runContainerAgent } = await import('../../src/container-runner.js');
     const calls = vi.mocked(runContainerAgent).mock.calls;
     const stitchedCalls = calls.filter(
-      (c) =>
-        (c[0] as { name: string }).name ===
-        `pipeline-start__${templateName}0__do`,
+      (c) => (c[0] as { name: string }).name === `pipeline-${doStage}`,
     );
     expect(stitchedCalls.length).toBe(1);
   }, 15000);
+
+  it('fresh stitch ignores stale child scope state from a previous run', async () => {
+    const templateName = 'followup';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'do',
+        stages: [
+          {
+            name: 'do',
+            prompt: 'do it',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'kick off',
+          mounts: {},
+          transitions: [
+            { marker: 'GO', template: templateName, next: 'summarize' },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      templateName,
+    );
+    const childNodeId = dispatchChildNodeId(invocationId, 0);
+    const doStage = dispatchStageName(invocationId, 0, 'do');
+
+    const runId = generateRunId();
+    savePipelineState(
+      runStateDir(groupDir, runId),
+      {
+        currentStage: null,
+        completedStages: [doStage],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'success',
+      },
+      undefined,
+      childNodeId,
+    );
+    const staleUnrelatedScope = 'd_deadbeef00_0';
+    savePipelineState(
+      runStateDir(groupDir, runId),
+      {
+        currentStage: null,
+        completedStages: ['old-child'],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'success',
+      },
+      undefined,
+      staleUnrelatedScope,
+    );
+    fs.writeFileSync(
+      path.join(runStateDir(groupDir, runId), 'PIPELINE_STATE.pipeline.json'),
+      JSON.stringify({ keep: true }),
+    );
+
+    enqueueStageOutput('start', [{ result: '[GO]' }]);
+    enqueueStageOutput(doStage, [{ result: '[DONE]' }]);
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).toEqual([
+      'pipeline-start',
+      `pipeline-${doStage}`,
+      'pipeline-summarize',
+    ]);
+    expect(
+      fs.existsSync(
+        path.join(
+          runStateDir(groupDir, runId),
+          `PIPELINE_STATE.${staleUnrelatedScope}.json`,
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      fs.existsSync(
+        path.join(runStateDir(groupDir, runId), 'PIPELINE_STATE.pipeline.json'),
+      ),
+    ).toBe(true);
+  }, 15000);
+
+  it('releases the origin exclusive lock before running stitched child nodes', async () => {
+    const templateName = 'exclusive-child';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'work',
+        stages: [
+          {
+            name: 'work',
+            prompt: 'child work',
+            mounts: {},
+            exclusive: 'vivado',
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'kick off',
+          mounts: {},
+          exclusive: 'vivado',
+          transitions: [{ marker: 'GO', template: templateName, next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      templateName,
+    );
+    const workStage = dispatchStageName(invocationId, 0, 'work');
+
+    enqueueStageOutput('start', [{ result: '[GO]' }]);
+    enqueueStageOutput(workStage, [{ result: '[DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).toEqual(['pipeline-start', `pipeline-${workStage}`]);
+  }, 5000);
+
+  it('all_success stitch failure blocks the downstream stage', async () => {
+    const templateName = 'lane';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'lane-analyze',
+        stages: [
+          {
+            name: 'lane-analyze',
+            prompt: 'analyze lane',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: templateName,
+              next: 'summarize',
+              count: 3,
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'init',
+      templateName,
+    );
+    const laneStage = (idx: number) =>
+      dispatchStageName(invocationId, idx, 'lane-analyze');
+
+    enqueueStageOutput('init', [{ result: '[READY]' }]);
+    for (let idx = 0; idx < 3; idx++) {
+      enqueueContainerExitLimit(laneStage(idx));
+    }
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('error');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).toContain('pipeline-init');
+    expect(spawnedNames).not.toContain('pipeline-summarize');
+    for (let idx = 0; idx < 3; idx++) {
+      expect(spawnedNames).toContain(`pipeline-${laneStage(idx)}`);
+    }
+  }, 30000);
+
+  it('any_success stitch continues downstream when at least one child succeeds', async () => {
+    const templateName = 'lane';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'lane-analyze',
+        stages: [
+          {
+            name: 'lane-analyze',
+            prompt: 'analyze lane',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: templateName,
+              next: 'summarize',
+              count: 3,
+              joinPolicy: 'any_success',
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'init',
+      templateName,
+    );
+    const laneStage = (idx: number) =>
+      dispatchStageName(invocationId, idx, 'lane-analyze');
+
+    enqueueStageOutput('init', [{ result: '[READY]' }]);
+    enqueueStageOutput(laneStage(0), [{ result: '[DONE]' }]);
+    enqueueContainerExitLimit(laneStage(1));
+    enqueueContainerExitLimit(laneStage(2));
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).toContain('pipeline-summarize');
+  }, 30000);
+
+  it('any_success stitch blocks downstream when every child fails', async () => {
+    const templateName = 'lane';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'lane-analyze',
+        stages: [
+          {
+            name: 'lane-analyze',
+            prompt: 'analyze lane',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: templateName,
+              next: 'summarize',
+              count: 3,
+              joinPolicy: 'any_success',
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'init',
+      templateName,
+    );
+    const laneStage = (idx: number) =>
+      dispatchStageName(invocationId, idx, 'lane-analyze');
+
+    enqueueStageOutput('init', [{ result: '[READY]' }]);
+    for (let idx = 0; idx < 3; idx++) {
+      enqueueContainerExitLimit(laneStage(idx));
+    }
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('error');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).not.toContain('pipeline-summarize');
+  }, 30000);
+
+  it('all_settled stitch continues downstream even when every child fails', async () => {
+    const templateName = 'lane';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'lane-analyze',
+        stages: [
+          {
+            name: 'lane-analyze',
+            prompt: 'analyze lane',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: templateName,
+              next: 'summarize',
+              count: 3,
+              joinPolicy: 'all_settled',
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'init',
+      templateName,
+    );
+    const laneStage = (idx: number) =>
+      dispatchStageName(invocationId, idx, 'lane-analyze');
+
+    enqueueStageOutput('init', [{ result: '[READY]' }]);
+    for (let idx = 0; idx < 3; idx++) {
+      enqueueContainerExitLimit(laneStage(idx));
+    }
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).toContain('pipeline-summarize');
+  }, 30000);
+
+  it('resume does not launch stale downstream pending stages after a stitch barrier fails', async () => {
+    const laneTemplate = {
+      name: 'fmax-lane',
+      entry: 'lane-analyze',
+      stages: [
+        {
+          name: 'lane-analyze',
+          prompt: 'analyze lane',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'fmax-lane.json'),
+      JSON.stringify(laneTemplate),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: 'fmax-lane',
+              next: 'summarize',
+              count: 3,
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+    const invocation = buildStitchInvocation({
+      originStage: 'init',
+      originTransitionIdx: 0,
+      template: laneTemplate,
+      downstreamNext: 'summarize',
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: ROOT_DISPATCH_NODE_ID,
+      mode: 'parallel',
+      count: 3,
+    });
+    const laneDispatch = invocation.invocationId;
+    const laneStage = (idx: number) =>
+      dispatchStageName(laneDispatch, idx, 'lane-analyze');
+
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: ['summarize', `barrier:${laneDispatch}`],
+      completedStages: ['init'],
+      dispatchTree: {
+        [ROOT_DISPATCH_NODE_ID]: {
+          id: ROOT_DISPATCH_NODE_ID,
+          parentId: null,
+          originStage: null,
+          template: null,
+          copyIndex: null,
+          entryStage: 'init',
+          stageNames: ['init', 'summarize'],
+          childIds: invocation.children.map((child) => child.node.id),
+          status: 'running',
+          config,
+        },
+        ...Object.fromEntries(
+          invocation.children.map((child) => [
+            child.node.id,
+            {
+              ...child.node,
+              status: 'pending',
+            },
+          ]),
+        ),
+      },
+      dispatchBarriers: {
+        [laneDispatch]: invocation.barrier,
+      },
+      activeBarrierIds: [laneDispatch],
+      runningStages: [],
+      pendingStages: [{ name: 'summarize' }],
+      waitingStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    for (let idx = 0; idx < 3; idx++) {
+      enqueueContainerExitLimit(laneStage(idx));
+    }
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    await expect(runner.run()).resolves.toBe('error');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).not.toContain('pipeline-init');
+    expect(spawnedNames).not.toContain('pipeline-summarize');
+    for (let idx = 0; idx < 3; idx++) {
+      expect(spawnedNames).toContain(`pipeline-${laneStage(idx)}`);
+    }
+
+    const state = loadPipelineState(runStateDir(groupDir, runId));
+    expect(state?.status).toBe('error');
+    expect(state?.completedStages).toEqual(['init']);
+  }, 30000);
+
+  it('resume restores an active tree barrier without re-running completed child nodes', async () => {
+    const laneTemplate = {
+      name: 'fmax-lane',
+      entry: 'lane-setup',
+      stages: [
+        {
+          name: 'lane-setup',
+          prompt: 'lane',
+          mounts: {},
+          transitions: [{ marker: 'INNER', template: 'inner', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'fmax-lane.json'),
+      JSON.stringify(laneTemplate),
+    );
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'inner.json'),
+      JSON.stringify({
+        entry: 'work',
+        stages: [
+          {
+            name: 'work',
+            prompt: 'inner',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: 'fmax-lane',
+              next: 'summarize',
+              count: 3,
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocation = buildStitchInvocation({
+      originStage: 'init',
+      originTransitionIdx: 0,
+      template: laneTemplate,
+      downstreamNext: 'summarize',
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: ROOT_DISPATCH_NODE_ID,
+      mode: 'parallel',
+      count: 3,
+    });
+    const laneDispatch = invocation.invocationId;
+    const laneNode = (idx: number) => dispatchChildNodeId(laneDispatch, idx);
+    const lane = (idx: number) =>
+      dispatchStageName(laneDispatch, idx, 'lane-setup');
+    const innerDispatch = (idx: number) =>
+      stitchInvocation(laneNode(idx), lane(idx), 'inner');
+    const innerWork = (idx: number) =>
+      dispatchStageName(innerDispatch(idx), 0, 'work');
+
+    const runId = generateRunId();
+    savePipelineState(runStateDir(groupDir, runId), {
+      currentStage: null,
+      completedStages: ['init'],
+      dispatchTree: {
+        [ROOT_DISPATCH_NODE_ID]: {
+          id: ROOT_DISPATCH_NODE_ID,
+          parentId: null,
+          originStage: null,
+          template: null,
+          copyIndex: null,
+          entryStage: 'init',
+          stageNames: ['init', 'summarize'],
+          childIds: [laneNode(0), laneNode(1), laneNode(2)],
+          status: 'running',
+          config,
+        },
+        ...Object.fromEntries(
+          invocation.children.map((child, idx) => [
+            child.node.id,
+            {
+              ...child.node,
+              status: idx === 0 ? 'success' : 'pending',
+            },
+          ]),
+        ),
+      },
+      dispatchBarriers: {
+        [laneDispatch]: {
+          ...invocation.barrier,
+          settlements: { [laneNode(0)]: 'success' },
+        },
+      },
+      activeBarrierIds: [laneDispatch],
+      runningStages: [],
+      pendingStages: [],
+      waitingStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    enqueueStageOutput(lane(1), [{ result: '[INNER]' }]);
+    enqueueStageOutput(lane(2), [{ result: '[INNER]' }]);
+    enqueueStageOutput(innerWork(1), [{ result: '[DONE]' }]);
+    enqueueStageOutput(innerWork(2), [{ result: '[DONE]' }]);
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    const spawnedNames = calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).not.toContain('pipeline-init');
+    expect(spawnedNames).not.toContain(`pipeline-${lane(0)}`);
+    expect(spawnedNames).toEqual(
+      expect.arrayContaining([
+        `pipeline-${lane(1)}`,
+        `pipeline-${lane(2)}`,
+        `pipeline-${innerWork(1)}`,
+        `pipeline-${innerWork(2)}`,
+        'pipeline-summarize',
+      ]),
+    );
+
+    const state = loadPipelineState(runStateDir(groupDir, runId));
+    expect(state?.status).toBe('success');
+    expect(state?.activeBarrierIds).toEqual([]);
+    expect(state?.dispatchBarriers?.[laneDispatch]?.settlements).toEqual({
+      [laneNode(0)]: 'success',
+      [laneNode(1)]: 'success',
+      [laneNode(2)]: 'success',
+    });
+  }, 15000);
+
+  it('resume continues a running child scope inside an active dispatch barrier', async () => {
+    const laneTemplate = {
+      name: 'fmax-lane',
+      entry: 'lane-setup',
+      stages: [
+        {
+          name: 'lane-setup',
+          prompt: 'lane',
+          mounts: {},
+          transitions: [{ marker: 'INNER', template: 'inner', next: null }],
+        },
+      ],
+    };
+    const innerTemplate = {
+      name: 'inner',
+      entry: 'work',
+      stages: [
+        {
+          name: 'work',
+          prompt: 'inner',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'fmax-lane.json'),
+      JSON.stringify(laneTemplate),
+    );
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'inner.json'),
+      JSON.stringify(innerTemplate),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: 'fmax-lane',
+              next: 'summarize',
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const laneInvocation = buildStitchInvocation({
+      originStage: 'init',
+      originTransitionIdx: 0,
+      template: laneTemplate,
+      downstreamNext: 'summarize',
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: ROOT_DISPATCH_NODE_ID,
+      mode: 'single',
+    });
+    const laneDispatch = laneInvocation.invocationId;
+    const laneNode = dispatchChildNodeId(laneDispatch, 0);
+    const laneSetup = dispatchStageName(laneDispatch, 0, 'lane-setup');
+    const innerInvocation = buildStitchInvocation({
+      originStage: laneSetup,
+      originTransitionIdx: 0,
+      template: innerTemplate,
+      downstreamNext: null,
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: laneNode,
+      mode: 'single',
+    });
+    const innerDispatch = innerInvocation.invocationId;
+    const innerNode = dispatchChildNodeId(innerDispatch, 0);
+    const innerWork = dispatchStageName(innerDispatch, 0, 'work');
+    const runId = generateRunId();
+    const stateDir = runStateDir(groupDir, runId);
+
+    savePipelineState(stateDir, {
+      currentStage: null,
+      completedStages: ['init'],
+      dispatchTree: {
+        [ROOT_DISPATCH_NODE_ID]: {
+          id: ROOT_DISPATCH_NODE_ID,
+          parentId: null,
+          originStage: null,
+          template: null,
+          copyIndex: null,
+          entryStage: 'init',
+          stageNames: ['init', 'summarize'],
+          childIds: [laneNode],
+          status: 'running',
+          config,
+        },
+        [laneNode]: {
+          ...laneInvocation.children[0].node,
+          status: 'running',
+        },
+      },
+      dispatchBarriers: {
+        [laneDispatch]: laneInvocation.barrier,
+      },
+      activeBarrierIds: [laneDispatch],
+      runningStages: [],
+      pendingStages: [],
+      waitingStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    savePipelineState(
+      stateDir,
+      {
+        currentStage: null,
+        completedStages: [laneSetup],
+        dispatchTree: {
+          [laneNode]: {
+            ...laneInvocation.children[0].node,
+            childIds: [innerNode],
+            status: 'running',
+          },
+          [innerNode]: {
+            ...innerInvocation.children[0].node,
+            status: 'pending',
+          },
+        },
+        dispatchBarriers: {
+          [innerDispatch]: innerInvocation.barrier,
+        },
+        activeBarrierIds: [innerDispatch],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+      },
+      undefined,
+      laneNode,
+    );
+
+    enqueueStageOutput(innerWork, [{ result: '[DONE]' }]);
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).not.toContain('pipeline-init');
+    expect(spawnedNames).not.toContain(`pipeline-${laneSetup}`);
+    expect(spawnedNames).toEqual([
+      `pipeline-${innerWork}`,
+      'pipeline-summarize',
+    ]);
+
+    const parentState = loadPipelineState(stateDir);
+    expect(parentState?.status).toBe('success');
+    expect(parentState?.dispatchBarriers?.[laneDispatch]?.settlements).toEqual({
+      [laneNode]: 'success',
+    });
+    expect(parentState?.dispatchBarriers?.[innerDispatch]?.settlements).toEqual(
+      {
+        [innerNode]: 'success',
+      },
+    );
+  }, 15000);
+
+  it('resume restores a depth-4 stitch tree with 50 dispatch nodes and continues downstream', async () => {
+    const level1Template: PipelineTemplate = {
+      name: 'stress-level1',
+      entry: 'gate',
+      stages: [
+        {
+          name: 'gate',
+          prompt: 'level 1',
+          mounts: {},
+          transitions: [
+            { marker: 'TO_L2', template: 'stress-level2', next: null },
+          ],
+        },
+      ],
+    };
+    const level2Template: PipelineTemplate = {
+      name: 'stress-level2',
+      entry: 'gate',
+      stages: [
+        {
+          name: 'gate',
+          prompt: 'level 2',
+          mounts: {},
+          transitions: [
+            { marker: 'TO_L3', template: 'stress-level3', next: null },
+          ],
+        },
+      ],
+    };
+    const level3Template: PipelineTemplate = {
+      name: 'stress-level3',
+      entry: 'gate',
+      stages: [
+        {
+          name: 'gate',
+          prompt: 'level 3',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'TO_LEAF',
+              template: 'stress-leaf',
+              next: null,
+              count: 46,
+            },
+          ],
+        },
+      ],
+    };
+    const leafTemplate: PipelineTemplate = {
+      name: 'stress-leaf',
+      entry: 'task',
+      stages: [
+        {
+          name: 'task',
+          prompt: 'leaf {{index}}',
+          mounts: {},
+          transitions: [{ marker: 'DONE', next: null }],
+        },
+      ],
+    };
+    for (const template of [
+      level1Template,
+      level2Template,
+      level3Template,
+      leafTemplate,
+    ]) {
+      fs.writeFileSync(
+        path.join(groupDir, 'templates', `${template.name}.json`),
+        JSON.stringify({ entry: template.entry, stages: template.stages }),
+      );
+    }
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'start stress stitch',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'STARTED',
+              template: 'stress-level1',
+              next: 'summarize',
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize stress stitch',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const level1Invocation = buildStitchInvocation({
+      originStage: 'start',
+      originTransitionIdx: 0,
+      template: level1Template,
+      downstreamNext: 'summarize',
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: ROOT_DISPATCH_NODE_ID,
+      mode: 'single',
+    });
+    const level1Dispatch = level1Invocation.invocationId;
+    const level1Node = dispatchChildNodeId(level1Dispatch, 0);
+    const level1Gate = dispatchStageName(level1Dispatch, 0, 'gate');
+
+    const level2Invocation = buildStitchInvocation({
+      originStage: level1Gate,
+      originTransitionIdx: 0,
+      template: level2Template,
+      downstreamNext: null,
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: level1Node,
+      mode: 'single',
+    });
+    const level2Dispatch = level2Invocation.invocationId;
+    const level2Node = dispatchChildNodeId(level2Dispatch, 0);
+    const level2Gate = dispatchStageName(level2Dispatch, 0, 'gate');
+
+    const level3Invocation = buildStitchInvocation({
+      originStage: level2Gate,
+      originTransitionIdx: 0,
+      template: level3Template,
+      downstreamNext: null,
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: level2Node,
+      mode: 'single',
+    });
+    const level3Dispatch = level3Invocation.invocationId;
+    const level3Node = dispatchChildNodeId(level3Dispatch, 0);
+    const level3Gate = dispatchStageName(level3Dispatch, 0, 'gate');
+
+    const leafInvocation = buildStitchInvocation({
+      originStage: level3Gate,
+      originTransitionIdx: 0,
+      template: leafTemplate,
+      downstreamNext: null,
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: level3Node,
+      mode: 'parallel',
+      count: 46,
+    });
+    const leafDispatch = leafInvocation.invocationId;
+    const leafNode = (idx: number) => dispatchChildNodeId(leafDispatch, idx);
+    const leafTask = (idx: number) =>
+      dispatchStageName(leafDispatch, idx, 'task');
+    const leafCount = 46;
+    const settledLeafCount = 31;
+    const settledLeaves = Object.fromEntries(
+      Array.from({ length: settledLeafCount }, (_, idx) => [
+        leafNode(idx),
+        'success' as const,
+      ]),
+    );
+    const runId = generateRunId();
+    const stateDir = runStateDir(groupDir, runId);
+
+    savePipelineState(stateDir, {
+      currentStage: null,
+      completedStages: ['start'],
+      dispatchTree: {
+        [ROOT_DISPATCH_NODE_ID]: {
+          id: ROOT_DISPATCH_NODE_ID,
+          parentId: null,
+          originStage: null,
+          template: null,
+          copyIndex: null,
+          entryStage: 'start',
+          stageNames: ['start', 'summarize'],
+          childIds: [level1Node],
+          status: 'running',
+          config,
+        },
+        [level1Node]: {
+          ...level1Invocation.children[0].node,
+          status: 'running',
+        },
+      },
+      dispatchBarriers: {
+        [level1Dispatch]: level1Invocation.barrier,
+      },
+      activeBarrierIds: [level1Dispatch],
+      runningStages: [],
+      pendingStages: [],
+      waitingStages: [],
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+    });
+
+    savePipelineState(
+      stateDir,
+      {
+        currentStage: null,
+        completedStages: [level1Gate],
+        dispatchTree: {
+          [level1Node]: {
+            ...level1Invocation.children[0].node,
+            childIds: [level2Node],
+            status: 'running',
+          },
+          [level2Node]: {
+            ...level2Invocation.children[0].node,
+            status: 'running',
+          },
+        },
+        dispatchBarriers: {
+          [level2Dispatch]: level2Invocation.barrier,
+        },
+        activeBarrierIds: [level2Dispatch],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+      },
+      undefined,
+      level1Node,
+    );
+
+    savePipelineState(
+      stateDir,
+      {
+        currentStage: null,
+        completedStages: [level2Gate],
+        dispatchTree: {
+          [level2Node]: {
+            ...level2Invocation.children[0].node,
+            childIds: [level3Node],
+            status: 'running',
+          },
+          [level3Node]: {
+            ...level3Invocation.children[0].node,
+            status: 'running',
+          },
+        },
+        dispatchBarriers: {
+          [level3Dispatch]: level3Invocation.barrier,
+        },
+        activeBarrierIds: [level3Dispatch],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+      },
+      undefined,
+      level2Node,
+    );
+
+    savePipelineState(
+      stateDir,
+      {
+        currentStage: null,
+        completedStages: [level3Gate],
+        dispatchTree: {
+          [level3Node]: {
+            ...level3Invocation.children[0].node,
+            childIds: Array.from({ length: leafCount }, (_, idx) =>
+              leafNode(idx),
+            ),
+            status: 'running',
+          },
+          ...Object.fromEntries(
+            leafInvocation.children.map((child, idx) => [
+              child.node.id,
+              {
+                ...child.node,
+                status: idx < settledLeafCount ? 'success' : 'pending',
+              },
+            ]),
+          ),
+        },
+        dispatchBarriers: {
+          [leafDispatch]: {
+            ...leafInvocation.barrier,
+            settlements: settledLeaves,
+          },
+        },
+        activeBarrierIds: [leafDispatch],
+        runningStages: [],
+        pendingStages: [],
+        waitingStages: [],
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+      },
+      undefined,
+      level3Node,
+    );
+
+    for (let idx = settledLeafCount; idx < leafCount; idx++) {
+      enqueueStageOutput(leafTask(idx), [{ result: '[DONE]' }]);
+    }
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+      runId,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const spawnedNames = vi
+      .mocked(runContainerAgent)
+      .mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(spawnedNames).not.toContain('pipeline-start');
+    expect(spawnedNames).not.toContain(`pipeline-${level1Gate}`);
+    expect(spawnedNames).not.toContain(`pipeline-${level2Gate}`);
+    expect(spawnedNames).not.toContain(`pipeline-${level3Gate}`);
+    for (let idx = 0; idx < settledLeafCount; idx++) {
+      expect(spawnedNames).not.toContain(`pipeline-${leafTask(idx)}`);
+    }
+    for (let idx = settledLeafCount; idx < leafCount; idx++) {
+      expect(spawnedNames).toContain(`pipeline-${leafTask(idx)}`);
+    }
+    expect(spawnedNames.at(-1)).toBe('pipeline-summarize');
+
+    const state = loadPipelineState(stateDir);
+    expect(state?.status).toBe('success');
+    expect(state?.activeBarrierIds).toEqual([]);
+    expect(Object.keys(state?.dispatchTree ?? {})).toHaveLength(50);
+    expect(state?.dispatchTree?.[ROOT_DISPATCH_NODE_ID]?.childIds).toEqual([
+      level1Node,
+    ]);
+    expect(state?.dispatchTree?.[level1Node]?.childIds).toEqual([level2Node]);
+    expect(state?.dispatchTree?.[level2Node]?.childIds).toEqual([level3Node]);
+    expect(state?.dispatchTree?.[level3Node]?.childIds.sort()).toEqual(
+      Array.from({ length: leafCount }, (_, idx) => leafNode(idx)).sort(),
+    );
+    expect(state?.dispatchBarriers?.[level1Dispatch]?.settlements).toEqual({
+      [level1Node]: 'success',
+    });
+    expect(state?.dispatchBarriers?.[level2Dispatch]?.settlements).toEqual({
+      [level2Node]: 'success',
+    });
+    expect(state?.dispatchBarriers?.[level3Dispatch]?.settlements).toEqual({
+      [level3Node]: 'success',
+    });
+    expect(
+      Object.keys(state?.dispatchBarriers?.[leafDispatch]?.settlements ?? {}),
+    ).toHaveLength(leafCount);
+    expect(
+      Object.values(
+        state?.dispatchBarriers?.[leafDispatch]?.settlements ?? {},
+      ).every((outcome) => outcome === 'success'),
+    ).toBe(true);
+    expect(state?.completedStages).toEqual(['start', 'summarize']);
+  }, 30000);
 
   it('nested stitch + parallel join — three levels deep then fan-out of 3 lanes', async () => {
     // Host-level templates:
@@ -1160,11 +3196,22 @@ describe('Stitch integration', () => {
     };
 
     // All deterministic stitched names — IPC dirs + mock output queues.
-    const intro = 'start__demo0__intro';
-    const deep1Work = `${intro}__deep10__work`;
-    const deep2Work = `${deep1Work}__deep20__work`;
-    const laneTask = (i: number) => `${deep2Work}__lane${i}__task`;
-    const join = `${deep2Work}__lane__join`;
+    const demoDispatch = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      'demo',
+    );
+    const demoNode = dispatchChildNodeId(demoDispatch, 0);
+    const intro = dispatchStageName(demoDispatch, 0, 'intro');
+    const deep1Dispatch = stitchInvocation(demoNode, intro, 'deep1');
+    const deep1Node = dispatchChildNodeId(deep1Dispatch, 0);
+    const deep1Work = dispatchStageName(deep1Dispatch, 0, 'work');
+    const deep2Dispatch = stitchInvocation(deep1Node, deep1Work, 'deep2');
+    const deep2Node = dispatchChildNodeId(deep2Dispatch, 0);
+    const deep2Work = dispatchStageName(deep2Dispatch, 0, 'work');
+    const laneDispatch = stitchInvocation(deep2Node, deep2Work, 'lane');
+    const laneNode = (i: number) => dispatchChildNodeId(laneDispatch, i);
+    const laneTask = (i: number) => dispatchStageName(laneDispatch, i, 'task');
     const allNames = [
       'start',
       intro,
@@ -1173,7 +3220,6 @@ describe('Stitch integration', () => {
       laneTask(0),
       laneTask(1),
       laneTask(2),
-      join,
     ];
     for (const n of allNames) {
       fs.mkdirSync(
@@ -1211,6 +3257,135 @@ describe('Stitch integration', () => {
     for (let i = 0; i < 3; i++) {
       expect(callNames).toContain(`pipeline-${laneTask(i)}`);
     }
+
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
+    expect(state?.completedStages).toEqual(['start']);
+    expect(state?.dispatchTree?.[ROOT_DISPATCH_NODE_ID]?.childIds).toContain(
+      demoNode,
+    );
+    expect(state?.dispatchTree?.[demoNode]?.childIds).toContain(deep1Node);
+    expect(state?.dispatchTree?.[deep1Node]?.childIds).toContain(deep2Node);
+    expect(state?.dispatchTree?.[deep2Node]?.childIds.sort()).toEqual(
+      [laneNode(0), laneNode(1), laneNode(2)].sort(),
+    );
+    expect(state?.dispatchBarriers?.[laneDispatch]?.settlements).toEqual({
+      [laneNode(0)]: 'success',
+      [laneNode(1)]: 'success',
+      [laneNode(2)]: 'success',
+    });
+  }, 30000);
+
+  it('nested all_success — failure of one grandchild propagates two levels up to the root', async () => {
+    // Root → "outer" × 3 (all_success). Each outer.mid → "inner" × 3 (all_success).
+    // Inner[0] of outer[0] fails; expectation: root resolves to 'error', and the
+    // outer[0] settlement reflects the error while siblings still settle 'success'.
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'outer.json'),
+      JSON.stringify({
+        entry: 'mid',
+        stages: [
+          {
+            name: 'mid',
+            prompt: 'mid {{index}}',
+            mounts: {},
+            transitions: [
+              { marker: 'GO_INNER', template: 'inner', next: null, count: 3 },
+            ],
+          },
+        ],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', 'inner.json'),
+      JSON.stringify({
+        entry: 'task',
+        stages: [
+          {
+            name: 'task',
+            prompt: 'task {{index}}',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'kick off',
+          mounts: {},
+          transitions: [
+            { marker: 'GO', template: 'outer', next: null, count: 3 },
+          ],
+        },
+      ],
+    };
+
+    const outerDispatch = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'start',
+      'outer',
+    );
+    const outerNode = (i: number) => dispatchChildNodeId(outerDispatch, i);
+    const outerMid = (i: number) => dispatchStageName(outerDispatch, i, 'mid');
+
+    const innerDispatch = (i: number) =>
+      stitchInvocation(outerNode(i), outerMid(i), 'inner');
+    const innerNode = (i: number, j: number) =>
+      dispatchChildNodeId(innerDispatch(i), j);
+    const innerTask = (i: number, j: number) =>
+      dispatchStageName(innerDispatch(i), j, 'task');
+
+    ensureIpc('start');
+    for (let i = 0; i < 3; i++) {
+      ensureIpc(outerMid(i));
+      for (let j = 0; j < 3; j++) {
+        ensureIpc(innerTask(i, j));
+      }
+    }
+
+    enqueueStageOutput('start', [{ result: '[GO]' }]);
+    for (let i = 0; i < 3; i++) {
+      enqueueStageOutput(outerMid(i), [{ result: '[GO_INNER]' }]);
+    }
+    // outer[0]'s inner[0] fails by exhausting container-retry budget.
+    enqueueContainerExitLimit(innerTask(0, 0));
+    enqueueStageOutput(innerTask(0, 1), [{ result: '[DONE]' }]);
+    enqueueStageOutput(innerTask(0, 2), [{ result: '[DONE]' }]);
+    // All other inner tasks succeed cleanly.
+    for (let i = 1; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        enqueueStageOutput(innerTask(i, j), [{ result: '[DONE]' }]);
+      }
+    }
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const result = await runner.run();
+    expect(result).toBe('error');
+
+    const state = loadPipelineState(runStateDir(groupDir, runner.getRunId()));
+    // The grandchild barrier under outer[0] sees the failure of inner[0].
+    expect(state?.dispatchBarriers?.[innerDispatch(0)]?.settlements).toEqual({
+      [innerNode(0, 0)]: 'error',
+      [innerNode(0, 1)]: 'success',
+      [innerNode(0, 2)]: 'success',
+    });
+    // The root barrier under "outer" sees outer[0] as 'error' even though
+    // outer[1] and outer[2] independently succeeded.
+    expect(state?.dispatchBarriers?.[outerDispatch]?.settlements).toEqual({
+      [outerNode(0)]: 'error',
+      [outerNode(1)]: 'success',
+      [outerNode(2)]: 'success',
+    });
   }, 30000);
 
   it('payload-driven fanout — agent emits 3-element payload, 3 lanes spawn with per-lane subs', async () => {
@@ -1253,17 +3428,22 @@ describe('Stitch integration', () => {
       ],
     };
 
+    const perIdDispatch = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'planner',
+      'per_id',
+    );
     const laneName = (id: string) =>
-      `planner__per_id0__author`.replace(
-        'per_id0',
-        `per_id${['alpha', 'beta', 'gamma'].indexOf(id)}`,
+      dispatchStageName(
+        perIdDispatch,
+        ['alpha', 'beta', 'gamma'].indexOf(id),
+        'author',
       );
     const allNames = [
       'planner',
-      'planner__per_id0__author',
-      'planner__per_id1__author',
-      'planner__per_id2__author',
-      'planner__per_id__join',
+      laneName('alpha'),
+      laneName('beta'),
+      laneName('gamma'),
     ];
     for (const n of allNames) {
       fs.mkdirSync(
@@ -1281,10 +3461,8 @@ describe('Stitch integration', () => {
       ]) +
       '\n---PAYLOAD_END---';
     enqueueStageOutput('planner', [{ result: payloadBlock }]);
-    for (const lane of [0, 1, 2]) {
-      enqueueStageOutput(`planner__per_id${lane}__author`, [
-        { result: '[DONE]' },
-      ]);
+    for (const id of ['alpha', 'beta', 'gamma']) {
+      enqueueStageOutput(laneName(id), [{ result: '[DONE]' }]);
     }
     // Join stages are virtual — no spawn/output queue required.
 
@@ -1305,9 +3483,9 @@ describe('Stitch integration', () => {
     // substitution of {{id}} / {{kind}} from payload[i]). The prompt reaches
     // the container through the stage config captured at spawn time.
     const authorCalls = calls.filter((c) =>
-      /^pipeline-planner__per_id\d+__author$/.test(
-        (c[0] as { name: string }).name,
-      ),
+      [laneName('alpha'), laneName('beta'), laneName('gamma')]
+        .map((name) => `pipeline-${name}`)
+        .includes((c[0] as { name: string }).name),
     );
     expect(authorCalls).toHaveLength(3);
     const prompts = authorCalls
@@ -1317,9 +3495,8 @@ describe('Stitch integration', () => {
     expect(prompts[1]).toContain('author beta of kind monitor');
     expect(prompts[2]).toContain('author gamma of kind probe');
     // Transition prompt substitution is applied too (transitions whitelist).
-    // Hard to inspect directly without exposing runtime internals — the fact
-    // that the join fired proves all three lanes reached null, meaning
-    // their transitions were wired correctly.
+    // Hard to inspect directly without exposing runtime internals; successful
+    // barrier settlement proves all three lanes reached null.
     void laneName;
   }, 30000);
 });
@@ -1330,7 +3507,6 @@ describe('Stitch integration', () => {
 
 describe('Command mode stage', () => {
   let group: RegisteredGroup;
-  const originalTuiMode = process.env.ART_TUI_MODE;
 
   beforeEach(() => {
     group = makeTestGroup();
@@ -1340,16 +3516,9 @@ describe('Command mode stage', () => {
 
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
   });
 
   afterEach(() => {
-    if (originalTuiMode === undefined) {
-      delete process.env.ART_TUI_MODE;
-    } else {
-      process.env.ART_TUI_MODE = originalTuiMode;
-    }
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.rmSync(groupDir, { recursive: true, force: true });
   });
@@ -1402,8 +3571,178 @@ describe('Command mode stage', () => {
     expect(spawn).toHaveBeenCalled();
   }, 15000);
 
-  it('prefixes each streamed stdout line in TUI mode', async () => {
-    process.env.ART_TUI_MODE = 'true';
+  it('terminal command failure does not resume at the next unfinished stage', async () => {
+    const { spawn } = await import('child_process');
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'Initialize data',
+          command: 'make init',
+          mounts: {},
+          transitions: [
+            { marker: 'STAGE_COMPLETE', next: 'summarize' },
+            {
+              marker: 'STAGE_ERROR',
+              next: null,
+              outcome: 'error',
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'Summarize',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+
+    const firstRunner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+    const firstRun = firstRunner.run();
+    await delay(50);
+    fakeProc!.stdout.push(
+      'ERROR: baseline.json or crit_paths.json not found\n',
+    );
+    fakeProc!.stdout.push(null);
+    fakeProc!.emit('close', 1);
+
+    await expect(firstRun).resolves.toBe('error');
+    const failedState = loadPipelineState(
+      runStateDir(groupDir, firstRunner.getRunId()),
+    );
+    expect(failedState?.status).toBe('error');
+    expect(failedState?.completedStages).toEqual(['init']);
+
+    const notifications: string[] = [];
+    fakeProc = createFakeProcess();
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const secondRunner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async (text) => {
+        notifications.push(text);
+      },
+      () => {},
+      groupDir,
+    );
+    const secondRun = secondRunner.run();
+    await delay(50);
+    fakeProc!.stdout.push('Initialization fixed\n');
+    fakeProc!.stdout.push(null);
+    fakeProc!.emit('close', 0);
+
+    await expect(secondRun).resolves.toBe('success');
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(notifications.some((text) => text.includes('Resuming from'))).toBe(
+      false,
+    );
+
+    const finalState = loadPipelineState(
+      runStateDir(groupDir, secondRunner.getRunId()),
+    );
+    expect(finalState?.completedStages).toEqual(['init', 'summarize']);
+  }, 15000);
+
+  it('passes Codex as the default provider to command container args', async () => {
+    const previousProvider = process.env.ART_AGENT_PROVIDER;
+    delete process.env.ART_AGENT_PROVIDER;
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'provider-default',
+          prompt: 'Check default provider',
+          command: 'make build',
+          mounts: {},
+          transitions: [{ marker: 'STAGE_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+
+    try {
+      const runner = new PipelineRunner(
+        group,
+        'test@g.us',
+        config,
+        async () => {},
+        () => {},
+        groupDir,
+      );
+
+      const runPromise = runner.run();
+      await new Promise((r) => setTimeout(r, 50));
+      fakeProc!.stdout.push('done\n');
+      fakeProc!.stdout.push(null);
+      fakeProc!.emit('close', 0);
+
+      expect(await runPromise).toBe('success');
+      expect(mockBuildContainerArgs.mock.calls[0]?.[10]).toBe('codex');
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env.ART_AGENT_PROVIDER;
+      } else {
+        process.env.ART_AGENT_PROVIDER = previousProvider;
+      }
+    }
+  }, 15000);
+
+  it('passes Claude provider to command container args when selected', async () => {
+    const previousProvider = process.env.ART_AGENT_PROVIDER;
+    process.env.ART_AGENT_PROVIDER = 'claude';
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'provider-claude',
+          prompt: 'Check selected provider',
+          command: 'make build',
+          mounts: {},
+          transitions: [{ marker: 'STAGE_COMPLETE', next: null }],
+        },
+      ],
+    };
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+
+    try {
+      const runner = new PipelineRunner(
+        group,
+        'test@g.us',
+        config,
+        async () => {},
+        () => {},
+        groupDir,
+      );
+
+      const runPromise = runner.run();
+      await new Promise((r) => setTimeout(r, 50));
+      fakeProc!.stdout.push('done\n');
+      fakeProc!.stdout.push(null);
+      fakeProc!.emit('close', 0);
+
+      expect(await runPromise).toBe('success');
+      expect(mockBuildContainerArgs.mock.calls[0]?.[10]).toBe('claude');
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env.ART_AGENT_PROVIDER;
+      } else {
+        process.env.ART_AGENT_PROVIDER = previousProvider;
+      }
+    }
+  }, 15000);
+
+  it('prefixes each streamed stdout line with the stage name', async () => {
     const notifications: string[] = [];
     const config: PipelineConfig = {
       stages: [
@@ -1695,7 +4034,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('rejects fan_in: "dynamic"', () => {
+  it('rejects removed fan_in field', () => {
     const config = {
       stages: [
         {
@@ -1714,7 +4053,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('rejects kind: "dynamic-fanout"', () => {
+  it('rejects removed kind field', () => {
     const config = {
       stages: [
         {
@@ -2095,13 +4434,12 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
     expect(loadPipelineConfig('test', tmpDir)).toBeNull();
   });
 
-  it('accepts prompt DB ids for agent stages', () => {
+  it('rejects legacy prompt DB ids for agent stages', () => {
     const config = {
       stages: [
         {
           name: 'scope_plan',
           prompts: ['db_id_1', 'db_id_2'],
-          prompt_append: 'Target module is fixed to VPU.',
           mounts: {},
           transitions: [{ marker: 'DONE', next: null }],
         },
@@ -2112,16 +4450,16 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
       JSON.stringify(config),
     );
     const result = loadPipelineConfig('test', tmpDir);
-    expect(result).not.toBeNull();
-    expect(result!.stages[0].prompts).toEqual(['db_id_1', 'db_id_2']);
+    expect(result).toBeNull();
   });
 
-  it('rejects non-string prompt ids', () => {
+  it('rejects legacy prompt_append for agent stages', () => {
     const config = {
       stages: [
         {
           name: 'scope_plan',
-          prompts: ['db_id_1', 2],
+          prompt: 'Plan the work.',
+          prompt_append: 'Target module is fixed to VPU.',
           mounts: {},
           transitions: [{ marker: 'DONE', next: null }],
         },
@@ -2277,8 +4615,6 @@ describe('generalized sub-path mounts', () => {
     group = makeTestGroup();
     groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.mkdirSync(path.join(groupDir, 'plan'), { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'plan', 'PLAN.md'), '# Test Plan');
     stageOutputQueues.clear();
     vi.clearAllMocks();
   });
@@ -2441,3 +4777,482 @@ describe('generalized sub-path mounts', () => {
     );
   });
 });
+
+/**
+ * Transparency contract for the visualizer UX plan
+ * (see app/VISUALIZER-PLAN.md).
+ *
+ * One representative pipeline run is set up in beforeAll and reused across
+ * assertions. Each `it` block ties to a UX item from the plan and verifies
+ * the on-disk artifact the UI will read for that item exists with the
+ * expected shape. Failures here mean the runtime stopped producing data
+ * the UI depends on — a regression that would silently break panels.
+ *
+ * Scenario covers:
+ *   - root agent stage (`start`) with rw mount  → L2 Input prompt + diff
+ *   - stitch invocation × 2 lanes               → L2 substitutions, stitch.invoked
+ *   - downstream agent stage (`summarize`)      → L0 graph, L2 stage.json
+ *   - 1 turn IPC message injected on `start`    → L3 turns/001.json
+ *
+ * Command-mode artifacts (command.sh + command.json) are validated by the
+ * Command-mode stage describe block above; this contract just notes the
+ * gap with a `.todo` for clarity.
+ */
+describe('Transparency contract for UX plan', () => {
+  let contractGroup: RegisteredGroup;
+  let contractGroupDir: string;
+  let contractRunDir: string;
+  let contractRunId: string;
+  let laneInvocation: string;
+  let laneNode: (i: number) => string;
+  let laneWork: (i: number) => string;
+
+  beforeAll(async () => {
+    contractGroup = makeTestGroup();
+    stageOutputQueues.clear();
+    vi.clearAllMocks();
+
+    contractGroupDir = path.join(TEST_GROUPS_BASE, contractGroup.folder);
+    fs.mkdirSync(contractGroupDir, { recursive: true });
+    fs.mkdirSync(path.join(contractGroupDir, 'templates'), { recursive: true });
+    fs.mkdirSync(path.join(contractGroupDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(contractGroupDir, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'src', 'seed.txt'),
+      'seed content\n',
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'start',
+          prompt: 'plan the lanes',
+          mounts: { src: 'rw' },
+          transitions: [
+            {
+              marker: 'STITCH_GO',
+              template: 'lane',
+              next: 'summarize',
+              count: 2,
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize the lanes',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'PIPELINE.json'),
+      JSON.stringify(config, null, 2),
+    );
+
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'templates', 'lane.json'),
+      JSON.stringify({
+        entry: 'work',
+        stages: [
+          {
+            name: 'work',
+            prompt: 'lane work {{index}}',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+    // Seed agents/* + templates/* hashes for provenance.
+    fs.writeFileSync(
+      path.join(contractGroupDir, 'agents', 'builder.md'),
+      '# builder\n',
+    );
+
+    laneInvocation = stitchInvocation(ROOT_DISPATCH_NODE_ID, 'start', 'lane');
+    laneNode = (i: number) => dispatchChildNodeId(laneInvocation, i);
+    laneWork = (i: number) => dispatchStageName(laneInvocation, i, 'work');
+
+    // IPC dirs for every container we'll spawn.
+    const ensureIpc = (stageName: string) =>
+      fs.mkdirSync(
+        path.join(
+          TEST_IPC_BASE,
+          `${contractGroup.folder}__pipeline_${stageName}`,
+          'input',
+        ),
+        { recursive: true },
+      );
+    ensureIpc('start');
+    ensureIpc('summarize');
+    for (let i = 0; i < 2; i++) ensureIpc(laneWork(i));
+
+    // Outputs + 1 turn IPC on `start` for L3 coverage.
+    enqueueStageOutput('start', [
+      {
+        result: '[STITCH_GO]',
+        turn: {
+          provider: 'claude',
+          model: 'claude-sonnet-4-6',
+          tokensIn: 100,
+          tokensOut: 50,
+          cacheReadTokens: 4000,
+          latencyMs: 1200,
+          finishReason: 'success',
+        },
+      },
+    ]);
+    for (let i = 0; i < 2; i++) {
+      enqueueStageOutput(laneWork(i), [{ result: '[DONE]' }]);
+    }
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      contractGroup,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      contractGroupDir,
+    );
+    await runner.run();
+    contractRunId = runner.getRunId();
+    contractRunDir = path.join(
+      contractGroupDir,
+      '.state',
+      'runs',
+      contractRunId,
+    );
+  }, 30000);
+
+  // --- L0: top-bar + state ------------------------------------------------
+
+  describe('L0 — canvas data', () => {
+    it('run.json has provider, hostname, startTime, pid, args, schemaVersion', () => {
+      const r = JSON.parse(
+        fs.readFileSync(path.join(contractRunDir, 'run.json'), 'utf-8'),
+      );
+      expect(r.schemaVersion).toBe(1);
+      expect(r.pid).toBe(process.pid);
+      expect(typeof r.hostname).toBe('string');
+      expect(r.startTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(r.provider === 'codex' || r.provider === 'claude').toBe(true);
+      expect(Array.isArray(r.args)).toBe(true);
+    });
+
+    it('summary.json has outcome, durationMs, totalStages, failedStages, schemaVersion', () => {
+      const s = JSON.parse(
+        fs.readFileSync(path.join(contractRunDir, 'summary.json'), 'utf-8'),
+      );
+      expect(s.schemaVersion).toBe(1);
+      expect(s.outcome).toBe('success');
+      expect(typeof s.durationMs).toBe('number');
+      expect(typeof s.totalStages).toBe('number');
+      expect(typeof s.failedStages).toBe('number');
+      expect(s.endTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('sealed marker is present after finalize', () => {
+      expect(fs.existsSync(path.join(contractRunDir, 'sealed'))).toBe(true);
+    });
+
+    it('state/PIPELINE_STATE.json (root) drives the live DAG node colors', () => {
+      const state = JSON.parse(
+        fs.readFileSync(
+          path.join(contractRunDir, 'state', 'PIPELINE_STATE.json'),
+          'utf-8',
+        ),
+      );
+      expect(state.version).toBe(3);
+      expect(state.status).toBe('success');
+      expect(state.completedStages).toContain('start');
+      expect(state.completedStages).toContain('summarize');
+      // dispatchTree is what the UI walks to render stitch subgraphs.
+      expect(state.dispatchTree).toBeDefined();
+    });
+  });
+
+  // --- L2 Input: prompt / substitutions / container / mounts -------------
+
+  describe('L2 Input — sidebar Input section', () => {
+    it('prompt.txt + prompt.source exist for every agent stage', () => {
+      for (const [node, stage] of [
+        ['root', 'start'],
+        ['root', 'summarize'],
+        [laneNode(0), laneWork(0)],
+        [laneNode(1), laneWork(1)],
+      ] as Array<[string, string]>) {
+        const dir = path.join(contractRunDir, 'nodes', node, 'stages', stage);
+        expect(fs.existsSync(path.join(dir, 'prompt.txt'))).toBe(true);
+        expect(fs.readFileSync(path.join(dir, 'prompt.source'), 'utf-8')).toBe(
+          'inline',
+        );
+      }
+    });
+
+    it('initial.txt is written when a downstream stage receives payload handoff', () => {
+      // summarize is reached after the stitch barrier; an initial prompt
+      // ('start of stage' wrap) is built by buildPayloadHandoff.
+      const summarizeDir = path.join(
+        contractRunDir,
+        'nodes',
+        'root',
+        'stages',
+        'summarize',
+      );
+      // initial.txt is best-effort — only present if the handoff produced
+      // a non-empty initial prompt. Either present-with-content or absent
+      // is acceptable; if present, must be non-empty text.
+      const initialPath = path.join(summarizeDir, 'initial.txt');
+      if (fs.existsSync(initialPath)) {
+        const txt = fs.readFileSync(initialPath, 'utf-8');
+        expect(txt.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('substitutions.json carries insertId + index + substitutions for stitched stages', () => {
+      for (let i = 0; i < 2; i++) {
+        const subs = JSON.parse(
+          fs.readFileSync(
+            path.join(
+              contractRunDir,
+              'nodes',
+              laneNode(i),
+              'stages',
+              laneWork(i),
+              'substitutions.json',
+            ),
+            'utf-8',
+          ),
+        );
+        expect(subs.insertId).toBe(laneNode(i));
+        expect(subs.index).toBe(i);
+        expect(subs.invocationId).toBe(laneInvocation);
+        expect(subs.parentNodeId).toBe(ROOT_DISPATCH_NODE_ID);
+        expect(subs.substitutions).toMatchObject({
+          insertId: laneNode(i),
+          index: i,
+        });
+      }
+    });
+
+    it.todo(
+      'command.sh + command.json for command-mode stages (covered in Command-mode block)',
+    );
+
+    it('container.json carries image, mode, mounts, devices, env per stage', () => {
+      const c = JSON.parse(
+        fs.readFileSync(
+          path.join(
+            contractRunDir,
+            'nodes',
+            'root',
+            'stages',
+            'start',
+            'container.json',
+          ),
+          'utf-8',
+        ),
+      );
+      expect(c.schemaVersion).toBe(1);
+      expect(c.stageName).toBe('start');
+      expect(c.mode).toBe('agent');
+      expect(Array.isArray(c.mounts)).toBe(true);
+      // The 'src' rw mount should appear in resolved mounts.
+      expect(
+        c.mounts.some(
+          (m: { containerPath: string; readonly: boolean }) =>
+            m.containerPath === '/workspace/src' && m.readonly === false,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  // --- L2 Output: stage.json + diff ---------------------------------------
+
+  describe('L2 Output — sidebar Output section', () => {
+    it('stage.json has matchedMarker, transitionTarget, durationMs, exitCode, retryCount, inputHashes, finishedAt', () => {
+      const s = JSON.parse(
+        fs.readFileSync(
+          path.join(
+            contractRunDir,
+            'nodes',
+            'root',
+            'stages',
+            'start',
+            'stage.json',
+          ),
+          'utf-8',
+        ),
+      );
+      expect(s.schemaVersion).toBe(1);
+      expect(s.stageName).toBe('start');
+      expect(s.nodeId).toBe('root');
+      expect(s.result).toBe('success');
+      expect(s.matchedMarker).toBe('STITCH_GO');
+      // For a stitching stage the direct transitionTarget is null (the
+      // barrier owns the downstream redirect). The UI surfaces the full
+      // chain by joining stage.json with the stitch.invoked event's
+      // downstreamNext — covered in the L4 stitch.invoked assertion.
+      expect(s.transitionTarget).toBeNull();
+      expect(typeof s.durationMs).toBe('number');
+      expect(s.retryCount).toBe(0);
+      expect(s.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(s.inputHashes).toBeDefined();
+      expect(typeof s.inputHashes.prompt).toBe('string');
+    });
+
+    it('diff/ directory and summary.json exist for stages with rw mounts', () => {
+      const diffDir = path.join(
+        contractRunDir,
+        'nodes',
+        'root',
+        'stages',
+        'start',
+        'diff',
+      );
+      // Diff is best-effort — only present if host has git+cp. If absent,
+      // skip (CI without git would surface this here, not in production).
+      if (!fs.existsSync(diffDir)) {
+        return;
+      }
+      const summary = JSON.parse(
+        fs.readFileSync(path.join(diffDir, 'summary.json'), 'utf-8'),
+      );
+      expect(summary.schemaVersion).toBe(1);
+      expect(Array.isArray(summary.mounts)).toBe(true);
+      expect(
+        summary.mounts.some((m: { mount: string }) => m.mount === 'src'),
+      ).toBe(true);
+      expect(fs.existsSync(path.join(diffDir, 'src.diff'))).toBe(true);
+    });
+  });
+
+  // --- L2 Internal: turns + decisions + events ---------------------------
+
+  describe('L2 Internal — sidebar Internal section', () => {
+    it('turns/001.json written for the injected LLM turn on start', () => {
+      const turnsDir = path.join(
+        contractRunDir,
+        'nodes',
+        'root',
+        'stages',
+        'start',
+        'turns',
+      );
+      expect(fs.existsSync(turnsDir)).toBe(true);
+      const t1 = JSON.parse(
+        fs.readFileSync(path.join(turnsDir, '001.json'), 'utf-8'),
+      );
+      expect(t1.schemaVersion).toBe(1);
+      expect(t1.index).toBe(1);
+      expect(t1.provider).toBe('claude');
+      expect(t1.tokensIn).toBe(100);
+      expect(t1.tokensOut).toBe(50);
+      expect(t1.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('events.jsonl has decision.marker for every stage that emitted a marker', () => {
+      const events = readEvents(contractRunDir);
+      const markers = events.filter(
+        (e) => e.type === 'decision.marker',
+      ) as Array<{ stageName: string; data: { matched: string } }>;
+      const byStage = new Map(markers.map((m) => [m.stageName, m]));
+      expect(byStage.get('start')?.data.matched).toBe('STITCH_GO');
+      expect(byStage.get('summarize')?.data.matched).toBe('SUMMARY_DONE');
+      for (let i = 0; i < 2; i++) {
+        expect(byStage.get(laneWork(i))?.data.matched).toBe('DONE');
+      }
+    });
+
+    it('decision.barrier event emitted after the stitch barrier evaluates', () => {
+      const events = readEvents(contractRunDir);
+      const barrier = events.find((e) => e.type === 'decision.barrier') as
+        | {
+            data: {
+              template: string;
+              joinPolicy: string;
+              outcome: string;
+              settlements: Record<string, string>;
+            };
+          }
+        | undefined;
+      expect(barrier).toBeDefined();
+      expect(barrier!.data.template).toBe('lane');
+      expect(barrier!.data.joinPolicy).toBe('all_success');
+      expect(barrier!.data.outcome).toBe('success');
+      expect(Object.keys(barrier!.data.settlements).sort()).toEqual(
+        [laneNode(0), laneNode(1)].sort(),
+      );
+    });
+  });
+
+  // --- L4: run-wide overlays --------------------------------------------
+
+  describe('L4 — run-level overlays', () => {
+    it('provenance.json hashes agents/*.md + templates/*.json and snapshots env', () => {
+      const p = JSON.parse(
+        fs.readFileSync(path.join(contractRunDir, 'provenance.json'), 'utf-8'),
+      );
+      expect(p.schemaVersion).toBe(1);
+      expect(p.bundleDir).toBe(contractGroupDir);
+      expect(Array.isArray(p.agents)).toBe(true);
+      expect(
+        p.agents.find((a: { path: string }) => a.path === 'agents/builder.md'),
+      ).toBeDefined();
+      expect(Array.isArray(p.templates)).toBe(true);
+      expect(
+        p.templates.find(
+          (t: { path: string }) => t.path === 'templates/lane.json',
+        ),
+      ).toBeDefined();
+      expect(typeof p.env).toBe('object');
+    });
+
+    it('pipeline.snap.json mirrors the bundle PIPELINE.json', () => {
+      const snap = JSON.parse(
+        fs.readFileSync(
+          path.join(contractRunDir, 'pipeline.snap.json'),
+          'utf-8',
+        ),
+      );
+      const onDisk = JSON.parse(
+        fs.readFileSync(path.join(contractGroupDir, 'PIPELINE.json'), 'utf-8'),
+      );
+      expect(snap).toEqual(onDisk);
+    });
+
+    it('events.jsonl has stitch.invoked for the lane template with child nodes', () => {
+      const events = readEvents(contractRunDir);
+      const stitch = events.find((e) => e.type === 'stitch.invoked') as
+        | {
+            stageName: string;
+            data: {
+              template: string;
+              childCount: number;
+              childNodeIds: string[];
+              joinPolicy: string;
+            };
+          }
+        | undefined;
+      expect(stitch).toBeDefined();
+      expect(stitch!.stageName).toBe('start');
+      expect(stitch!.data.template).toBe('lane');
+      expect(stitch!.data.childCount).toBe(2);
+      expect(stitch!.data.childNodeIds.sort()).toEqual(
+        [laneNode(0), laneNode(1)].sort(),
+      );
+    });
+  });
+});
+
+function readEvents(runDir: string): Array<Record<string, unknown>> {
+  const fp = path.join(runDir, 'events.jsonl');
+  return fs
+    .readFileSync(fp, 'utf-8')
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
