@@ -518,6 +518,12 @@ export async function runContainerAgent(
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   logStream?: fs.WriteStream,
+  // Optional per-stage tees of raw container stdout / stderr. Caller
+  // owns lifecycle (open before spawn, close after exit). Unlike
+  // `logStream` these get raw chunks with no `[stage] ` prefix, so a
+  // future reader sees exactly what the container wrote.
+  stdoutStream?: fs.WriteStream,
+  stderrStream?: fs.WriteStream,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
   const provider = resolveProvider(group, input.provider);
@@ -632,6 +638,7 @@ export async function runContainerAgent(
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
+      if (stdoutStream) stdoutStream.write(chunk);
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,
@@ -693,6 +700,7 @@ export async function runContainerAgent(
 
     container.stderr.on('data', (data) => {
       const chunk = data.toString();
+      if (stderrStream) stderrStream.write(chunk);
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,

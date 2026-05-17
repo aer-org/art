@@ -170,6 +170,14 @@ interface StageHandle {
   // rw mount set used for it. Consumed at stage completion to produce diffs.
   preStateDir: string | null;
   rwMounts: { name: string; hostPath: string }[];
+  // Per-stage raw stdout / stderr tees so the visualizer can show
+  // what the container actually wrote, separate from the prefixed
+  // shared pipeline log. Filenames match readStageStream's mapping:
+  //   agent stage → agent.stream.log (no per-stream split: agent process
+  //                                   stdout is unified)
+  //   command stage → stdout.log + stderr.log
+  stageStdoutLog: fs.WriteStream | null;
+  stageStderrLog: fs.WriteStream | null;
 }
 
 function readUserInput(promptText: string): Promise<string> {
@@ -1703,6 +1711,19 @@ PAYLOAD FORMATS:
       );
     }
 
+    // Open per-stage stdout/stderr tees. Command stages get
+    // stdout.log + stderr.log; agent stages get a single
+    // agent.stream.log so the readStageStream("agent") panel finds
+    // it. Streams are closed when the container promise settles.
+    const isCommandStage = !!stageConfig.command;
+    const stageStdoutLog = fs.createWriteStream(
+      path.join(stageDir, isCommandStage ? 'stdout.log' : 'agent.stream.log'),
+      { flags: 'a' },
+    );
+    const stageStderrLog = isCommandStage
+      ? fs.createWriteStream(path.join(stageDir, 'stderr.log'), { flags: 'a' })
+      : null;
+
     const handle: StageHandle = {
       name: stageConfig.name,
       ipc,
@@ -1712,6 +1733,8 @@ PAYLOAD FORMATS:
       resultTexts: [],
       preStateDir,
       rwMounts,
+      stageStdoutLog,
+      stageStderrLog,
     };
 
     let outboundDrainRunning = false;
@@ -1854,6 +1877,8 @@ PAYLOAD FORMATS:
         (proc, containerName) => this.onProcess(proc, containerName),
         onOutput,
         logStream,
+        handle.stageStdoutLog ?? undefined,
+        handle.stageStderrLog ?? undefined,
       );
     }
 
@@ -1903,6 +1928,12 @@ PAYLOAD FORMATS:
       .finally(() => {
         this.stopStageOutboundPolling(handle);
         pollOutboundMessages();
+        // Flush + close per-stage stdout / stderr tees. `end()` waits
+        // for the kernel write queue to drain before closing the fd.
+        handle.stageStdoutLog?.end();
+        handle.stageStderrLog?.end();
+        handle.stageStdoutLog = null;
+        handle.stageStderrLog = null;
       });
 
     return handle;
@@ -2092,6 +2123,7 @@ PAYLOAD FORMATS:
       container.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
+        if (handle.stageStdoutLog) handle.stageStdoutLog.write(chunk);
         if (logStream) {
           const { prefixed, remainder } = prefixLogLines(
             chunk,
@@ -2146,6 +2178,7 @@ PAYLOAD FORMATS:
       container.stderr.on('data', (data) => {
         const chunk = data.toString();
         stderr += chunk;
+        if (handle.stageStderrLog) handle.stageStderrLog.write(chunk);
         if (logStream) {
           const { prefixed, remainder } = prefixLogLines(
             chunk,
