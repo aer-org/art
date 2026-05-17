@@ -116,8 +116,6 @@ export function LivePage(props: {
     return snapshot.graph ?? { nodes: [], edges: [] };
   }, [snapshot, expandedTemplates]);
 
-  const runningNode =
-    displayGraph.nodes.find((node) => node.status === 'running') ?? null;
 
   // Overview vs live: both render a StageSidebar + L3Panel inspector
   // on stage click. Overview synthesizes data from PIPELINE.json via
@@ -294,9 +292,12 @@ export function LivePage(props: {
     setSelectedStage(nodeId);
   }
 
-  useEffect(() => {
-    if (!selectedStage && runningNode) setSelectedStage(runningNode.name);
-  }, [selectedStage, runningNode?.name]);
+  // (Removed) auto-select of the currently-running stage. The old
+  // bottom NodeLogPanel showed a small log tail and the auto-select
+  // was a convenience; now that stage selection opens the wider
+  // StageSidebar + L3 inspector, auto-selecting fights the user's
+  // dismiss. The graph still pulses the running stage so it's
+  // visually identifiable without a forced sidebar.
 
   async function refresh() {
     const cur = await api.current().catch(() => null);
