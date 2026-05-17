@@ -175,6 +175,10 @@ function detectProxyBindHost(rt: RuntimeConfig): string {
     return process.env.CREDENTIAL_PROXY_HOST;
   }
 
+  // Host-network mode: container shares the host's network namespace
+  // so the proxy is reachable on loopback. Same rationale as udocker.
+  if (process.env.ART_HOST_NETWORK === '1') return '127.0.0.1';
+
   // udocker: no network isolation, container uses host network directly
   if (rt.kind === 'udocker') return '127.0.0.1';
 

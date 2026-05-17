@@ -411,11 +411,21 @@ export function buildContainerArgs(
     }
   }
 
+  // Host-network escape hatch: some Linux setups (RHEL/Rocky with
+  // restrictive iptables FORWARD policy) silently drop docker0 → host
+  // traffic, so the credential proxy on `host.docker.internal` is
+  // unreachable. `ART_HOST_NETWORK=1` flips the container to host
+  // network mode and routes the proxy via 127.0.0.1, bypassing the
+  // bridge entirely.
+  const hostNetwork = process.env.ART_HOST_NETWORK === '1';
+  const proxyHost = hostNetwork ? '127.0.0.1' : rt.hostGateway;
+  if (hostNetwork) args.push('--network=host');
+
   if (provider === 'claude') {
     // Route API traffic through the credential proxy (containers never see real secrets)
     args.push(
       '-e',
-      `ANTHROPIC_BASE_URL=http://${rt.hostGateway}:${getCredentialProxyPort()}`,
+      `ANTHROPIC_BASE_URL=http://${proxyHost}:${getCredentialProxyPort()}`,
     );
 
     // Mirror the host's auth method with a placeholder value.
@@ -432,13 +442,15 @@ export function buildContainerArgs(
     if (resolveCodexAuthMode() === 'host-managed') {
       args.push(
         '-e',
-        `ART_CODEX_AUTH_PROXY_URL=http://${rt.hostGateway}:${getCodexAuthProxyPort()}`,
+        `ART_CODEX_AUTH_PROXY_URL=http://${proxyHost}:${getCodexAuthProxyPort()}`,
       );
     }
   }
 
-  // Runtime-specific args for host gateway resolution
-  args.push(...hostGatewayArgs());
+  // Runtime-specific args for host gateway resolution. Host network
+  // mode already shares the host's network namespace, so the
+  // --add-host stanza is unnecessary (and noisy in `docker run` args).
+  if (!hostNetwork) args.push(...hostGatewayArgs());
 
   // Podman rootless: --userns=keep-id handles UID mapping, skip --user
   if (rt.kind === 'podman' && rt.rootless) {

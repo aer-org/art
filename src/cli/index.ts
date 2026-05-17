@@ -116,6 +116,12 @@ Usage:
   art run --claude [dir]      Start the agent pipeline engine with Claude Code
   art run --model <id>        Override the agent model
                               (e.g. claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5)
+                              Claude model ids auto-switch the provider to --claude.
+
+Environment variables:
+  ART_HOST_NETWORK=1          Run agent containers with --network=host
+                              (workaround for hosts that block docker bridge → host
+                               port; needed on some RHEL/Rocky setups)
   art inspect [runId]         Inspect archived runs (no runId: list recent)
   art inspect <id> --events   Print raw events.jsonl for a run
 
