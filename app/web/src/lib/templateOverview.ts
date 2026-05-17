@@ -293,6 +293,27 @@ export function buildTemplateOverviewGraph(
   }
 
   // ---- 4) Edges
+  // 4a-base) Plain transitions between base-pipeline stages. Stage
+  // chains like `cleanup → init → summarize` only exist in the base
+  // pipeline (no template), so they aren't picked up by the per-
+  // template or per-barrier loops below. Skip transitions that
+  // already participate in a barrier wiring (template-bearing) since
+  // those are emitted in 4b.
+  for (const s of pipeline.stages ?? []) {
+    for (const t of s.transitions ?? []) {
+      if (t.template) continue; // 4b handles template-bearing transitions
+      const nexts = asArray(t.next);
+      for (const nxt of nexts) {
+        if (!nodeIds.has(nxt)) continue;
+        addEdge({
+          source: s.name,
+          target: nxt,
+          marker: t.marker,
+        });
+      }
+    }
+  }
+
   // 4a) Intra-template stage transitions for every expanded template.
   for (const tplName of expanded) {
     const tpl = templates[tplName];
