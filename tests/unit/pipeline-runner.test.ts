@@ -2224,6 +2224,127 @@ describe('Stitch integration', () => {
     expect(spawnedNames).not.toContain('pipeline-summarize');
   }, 30000);
 
+  it('payload-driven stitch lanes receive ART_<UPPER> + ART_LANE_INDEX env vars', async () => {
+    const templateName = 'probe';
+    fs.writeFileSync(
+      path.join(groupDir, 'templates', `${templateName}.json`),
+      JSON.stringify({
+        entry: 'run',
+        stages: [
+          {
+            name: 'run',
+            prompt: 'probe variant',
+            mounts: {},
+            transitions: [{ marker: 'DONE', next: null }],
+          },
+        ],
+      }),
+    );
+
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'init',
+          prompt: 'plan lanes',
+          mounts: {},
+          transitions: [
+            {
+              marker: 'READY',
+              template: templateName,
+              next: 'summarize',
+              countFrom: 'payload',
+              substitutionsFrom: 'payload',
+            },
+          ],
+        },
+        {
+          name: 'summarize',
+          prompt: 'summarize',
+          mounts: {},
+          transitions: [{ marker: 'SUMMARY_DONE', next: null }],
+        },
+      ],
+    };
+
+    const invocationId = stitchInvocation(
+      ROOT_DISPATCH_NODE_ID,
+      'init',
+      templateName,
+    );
+    const laneStage = (idx: number) =>
+      dispatchStageName(invocationId, idx, 'run');
+
+    enqueueStageOutput('init', [
+      {
+        result:
+          '[READY]\n---PAYLOAD_START---\n' +
+          JSON.stringify([
+            { variant: 'alpha', seed: 1 },
+            { variant: 'beta', seed: 2 },
+          ]) +
+          '\n---PAYLOAD_END---',
+      },
+    ]);
+    enqueueStageOutput(laneStage(0), [{ result: '[DONE]' }]);
+    enqueueStageOutput(laneStage(1), [{ result: '[DONE]' }]);
+    enqueueStageOutput('summarize', [{ result: '[SUMMARY_DONE]' }]);
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    await expect(runner.run()).resolves.toBe('success');
+
+    const { runContainerAgent } = await import('../../src/container-runner.js');
+    const calls = vi.mocked(runContainerAgent).mock.calls;
+    const laneEnv = (idx: number): Record<string, string> => {
+      const callArg = calls.find(
+        (c) => (c[0] as { name: string }).name === `pipeline-${laneStage(idx)}`,
+      );
+      expect(callArg, `lane ${idx} not invoked`).toBeDefined();
+      return (
+        (
+          callArg![0] as {
+            containerConfig?: { env?: Record<string, string> };
+          }
+        ).containerConfig?.env ?? {}
+      );
+    };
+
+    const lane0 = laneEnv(0);
+    expect(lane0.ART_STAGE_NAME).toBe('run');
+    expect(lane0.ART_LANE_INDEX).toBe('0');
+    expect(lane0.ART_VARIANT).toBe('alpha');
+    expect(lane0.ART_SEED).toBe('1');
+    expect(lane0.ART_INSERT_ID).toBe(invocationId);
+    expect(lane0.ART_DISPATCH_NODE_ID).toBe(`${invocationId}_0`);
+
+    const lane1 = laneEnv(1);
+    expect(lane1.ART_LANE_INDEX).toBe('1');
+    expect(lane1.ART_VARIANT).toBe('beta');
+    expect(lane1.ART_SEED).toBe('2');
+    expect(lane1.ART_DISPATCH_NODE_ID).toBe(`${invocationId}_1`);
+
+    // Non-stitched stages still get the defaults.
+    const initCall = calls.find(
+      (c) => (c[0] as { name: string }).name === 'pipeline-init',
+    );
+    const initEnv =
+      (
+        initCall?.[0] as {
+          containerConfig?: { env?: Record<string, string> };
+        }
+      ).containerConfig?.env ?? {};
+    expect(initEnv.ART_STAGE_NAME).toBe('init');
+    expect(initEnv.ART_INSERT_ID).toBe('root');
+    expect(initEnv.ART_LANE_INDEX).toBe('0');
+  }, 30000);
+
   it('all_settled stitch continues downstream even when every child fails', async () => {
     const templateName = 'lane';
     fs.writeFileSync(

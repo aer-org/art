@@ -42,6 +42,7 @@ import {
   resolveStageMcpServers,
 } from './mcp-registry.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
+import { mergeStageEnv } from './stage-env.js';
 import {
   assertNoNameCollision,
   buildStitchInvocation,
@@ -1416,7 +1417,7 @@ PAYLOAD FORMATS:
             {
               shell: 'sh -c',
               timeoutMs: stageConfig.timeout ?? null,
-              env: stageConfig.env ?? {},
+              env: mergeStageEnv(stageConfig),
             },
             null,
             2,
@@ -1649,7 +1650,7 @@ PAYLOAD FORMATS:
         gpu: stageConfig.gpu === true,
         runAsRoot: stageConfig.runAsRoot === true,
         privileged: stageConfig.privileged === true,
-        env: stageConfig.env,
+        env: mergeStageEnv(stageConfig),
         externalMcpServers: resolvedExternalMcpServers,
         internalMounts,
       },
@@ -1690,7 +1691,7 @@ PAYLOAD FORMATS:
             gpu: stageConfig.gpu === true,
             runAsRoot: stageConfig.runAsRoot === true,
             privileged: stageConfig.privileged === true,
-            env: stageConfig.env ?? {},
+            env: mergeStageEnv(stageConfig),
           },
           null,
           2,
@@ -2007,7 +2008,7 @@ PAYLOAD FORMATS:
       'sh',
       this.runId,
       privileged,
-      stageConfig.env,
+      mergeStageEnv(stageConfig),
       resolveProvider(),
     );
     containerArgs.push('-c', stageConfig.command!);
