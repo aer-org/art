@@ -2093,19 +2093,22 @@ PAYLOAD FORMATS:
       ) => {
         if (markerResolved || !handle.pendingResult) return;
         markerResolved = true;
-        // On success, scan stdout for a fenced marker payload to forward to
-        // the next stage. Command stages don't emit payload structurally, but
-        // fenced `[MARKER] ... ---PAYLOAD_START--- ... ---PAYLOAD_END---`
-        // blocks in stdout are picked up so a command stage can feed a
-        // downstream payload-driven template fanout.
+        // Scan stdout for a fenced marker payload (`[MARKER] ...
+        // ---PAYLOAD_START--- ... ---PAYLOAD_END---`) and forward it to
+        // the matched transition. This is the channel a command stage
+        // uses to feed a downstream payload-driven template fanout.
+        // Applies to both success and error transitions so a filter
+        // script can exit non-zero AND still hand its lane payload to
+        // a STAGE_ERROR re-stitch. The script's fenced block, when
+        // present, takes precedence over any caller-synthesized
+        // payload (e.g. "Exit code 1: ..."). When no authored
+        // transition matches, fall back to the synthesized one
+        // (STAGE_COMPLETE / STAGE_ERROR) so the marker scan still
+        // covers stages that omit the matching transition.
         let effectivePayload = payload;
-        if (
-          isSuccess &&
-          transition &&
-          !transition.afterTimeout &&
-          effectivePayload === null
-        ) {
-          const parsed = parseStageMarkers([stdout], [transition]);
+        const scanTransition = transition ?? fallback;
+        if (scanTransition && !scanTransition.afterTimeout) {
+          const parsed = parseStageMarkers([stdout], [scanTransition]);
           if (parsed.matched && parsed.payload !== null) {
             effectivePayload = parsed.payload;
           }
