@@ -411,13 +411,17 @@ export function buildContainerArgs(
     }
   }
 
-  // Host-network escape hatch: some Linux setups (RHEL/Rocky with
-  // restrictive iptables FORWARD policy) silently drop docker0 → host
-  // traffic, so the credential proxy on `host.docker.internal` is
-  // unreachable. `ART_HOST_NETWORK=1` flips the container to host
-  // network mode and routes the proxy via 127.0.0.1, bypassing the
-  // bridge entirely.
-  const hostNetwork = process.env.ART_HOST_NETWORK === '1';
+  // Host-network mode is the default: routes the credential / codex
+  // auth proxy via 127.0.0.1 instead of relying on docker0 →
+  // host.docker.internal, which silently breaks on Linux distros
+  // (RHEL/Rocky and similar) that ship with a restrictive iptables
+  // FORWARD policy. Set `ART_HOST_NETWORK=0` (or `false`) to opt back
+  // into bridge networking on environments where host network is
+  // undesirable (port collisions, multi-tenant boxes, etc.).
+  const hostNetworkEnv = process.env.ART_HOST_NETWORK;
+  const hostNetwork =
+    hostNetworkEnv === undefined ||
+    (hostNetworkEnv !== '0' && hostNetworkEnv.toLowerCase() !== 'false');
   const proxyHost = hostNetwork ? '127.0.0.1' : rt.hostGateway;
   if (hostNetwork) args.push('--network=host');
 

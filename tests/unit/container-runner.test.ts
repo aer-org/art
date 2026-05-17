@@ -318,7 +318,12 @@ describe('container-runner MCP config generation', () => {
 
   it('allows explicit Codex host-managed auth opt-in', () => {
     const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
+    const previousHostNet = process.env.ART_HOST_NETWORK;
     process.env.ART_CODEX_AUTH_MODE = 'host-managed';
+    // Pin bridge mode for this test so the proxy URL has a stable
+    // host portion (`host.docker.internal`) regardless of the host
+    // default (which is host-network → 127.0.0.1).
+    process.env.ART_HOST_NETWORK = '0';
 
     try {
       const args = buildContainerArgs([], 'art-test-host-managed-provider');
@@ -332,6 +337,11 @@ describe('container-runner MCP config generation', () => {
         delete process.env.ART_CODEX_AUTH_MODE;
       } else {
         process.env.ART_CODEX_AUTH_MODE = previousAuthMode;
+      }
+      if (previousHostNet === undefined) {
+        delete process.env.ART_HOST_NETWORK;
+      } else {
+        process.env.ART_HOST_NETWORK = previousHostNet;
       }
     }
   });
