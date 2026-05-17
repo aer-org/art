@@ -133,6 +133,15 @@ export interface NodeLogLine {
   sourceFile?: string;
 }
 
+export interface StageScriptResponse {
+  name: string;
+  exists: boolean;
+  hostPath: string;
+  size?: number;
+  truncated?: boolean;
+  content?: string;
+}
+
 export interface StageInfoResponse {
   name: string;
   config: any;
@@ -190,6 +199,11 @@ export const api = {
   stop: () => http<{ ok: true }>('POST', '/api/stop'),
   runLog: () => http<{ lines: string[] }>('GET', '/api/run/log'),
   stage: (name: string) => http<StageInfoResponse>('GET', `/api/stage/${encodeURIComponent(name)}`),
+  stageScript: (name: string) =>
+    http<StageScriptResponse>(
+      'GET',
+      `/api/stage/${encodeURIComponent(name)}/script`,
+    ),
   pipelineSave: (config: unknown) => http<{ ok: true }>('POST', '/api/pipeline', { config }),
   chatOptions: () => http<ChatOptions>('GET', '/api/chat/options'),
   chatSession: (opts?: { model?: string; effort?: string; chatId?: string }) =>

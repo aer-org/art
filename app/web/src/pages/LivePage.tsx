@@ -151,6 +151,8 @@ export function LivePage(props: {
   const overviewStaticTexts = useMemo(() => {
     if (!selectedConfigStage) return undefined;
     const s = selectedConfigStage as {
+      name: string;
+      kind?: string;
       prompt?: string;
       command?: string;
       successMarker?: string;
@@ -158,10 +160,16 @@ export function LivePage(props: {
       timeout?: number;
       env?: Record<string, string>;
     };
+    const isCommand = s.kind === 'command' || typeof s.command === 'string';
     return {
       prompt: s.prompt ?? null,
       command: s.command ?? null,
-      commandMeta: s.command
+      // Command stages by convention have a script file at the same
+      // local name; surface that to the viewer so it pulls the body
+      // instead of the synthesized one-liner. Legacy command stages
+      // (no kind: 'command') fall back to the inline command text.
+      scriptStageName: isCommand ? s.name : undefined,
+      commandMeta: isCommand
         ? {
             shell: 'sh -c',
             timeoutMs: s.timeout,

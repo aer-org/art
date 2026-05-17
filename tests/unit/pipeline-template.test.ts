@@ -507,7 +507,7 @@ describe('validatePipelineTemplate', () => {
           stages: [
             {
               name: 'lint',
-              command: 'npm run lint',
+              kind: 'command',
               timeout: 30_000,
               mounts: {},
               transitions: [

@@ -4477,8 +4477,7 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
       stages: [
         {
           name: 'lint',
-          prompt: 'Lint',
-          command: 'npm run lint',
+          kind: 'command',
           timeout: 30_000,
           mounts: {},
           transitions: [
@@ -4488,6 +4487,8 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
         },
       ],
     };
+    fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'scripts', 'lint.sh'), 'npm run lint\n');
     fs.writeFileSync(
       path.join(tmpDir, 'PIPELINE.json'),
       JSON.stringify(config),
@@ -4638,14 +4639,15 @@ describe('loadPipelineConfig validation (stitch schema)', () => {
       stages: [
         {
           name: 'lint',
-          prompt: 'Lint',
-          command: 'npm run lint',
+          kind: 'command',
           mounts: {},
           mcpAccess: ['sqlite.read'],
           transitions: [{ marker: 'DONE', next: null }],
         },
       ],
     };
+    fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'scripts', 'lint.sh'), '\n');
     fs.writeFileSync(
       path.join(tmpDir, 'PIPELINE.json'),
       JSON.stringify(config),

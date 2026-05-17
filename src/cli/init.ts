@@ -15,6 +15,11 @@ export function scaffoldArtDir(projectDir: string): void {
   // Authoring directories
   fs.mkdirSync(path.join(artDir, 'agents'), { recursive: true });
   fs.mkdirSync(path.join(artDir, 'templates'), { recursive: true });
+  fs.mkdirSync(path.join(artDir, 'scripts'), { recursive: true });
+  // Placeholder so git tracks the empty dir. Command stages drop their
+  // shell scripts here as `<stage_name>.sh`; the runtime invokes
+  // `bash /workspace/scripts/<name>.sh` automatically.
+  fs.writeFileSync(path.join(artDir, 'scripts', '.gitkeep'), '');
 
   // Pipeline
   const pipeline = {

@@ -34,6 +34,11 @@ interface Props {
     prompt?: string | null;
     command?: string | null;
     commandMeta?: Record<string, unknown> | null;
+    // For command stages in overview mode: if the local stage has a
+    // `__art__/scripts/<name>.sh`, set this to that name and the viewer
+    // fetches and renders the script body instead of the synthesized
+    // "bash /workspace/scripts/<name>.sh" one-liner.
+    scriptStageName?: string;
   };
 }
 
@@ -100,10 +105,17 @@ export function L3Panel({
         )}
         {kind === 'command' &&
           (commandStatic ? (
-            <L3CommandViewer
-              text={staticTexts?.command ?? ''}
-              meta={staticTexts?.commandMeta ?? null}
-            />
+            staticTexts?.scriptStageName ? (
+              <L3CommandViewer
+                scriptStageName={staticTexts.scriptStageName}
+                meta={staticTexts?.commandMeta ?? null}
+              />
+            ) : (
+              <L3CommandViewer
+                text={staticTexts?.command ?? ''}
+                meta={staticTexts?.commandMeta ?? null}
+              />
+            )
           ) : (
             <L3CommandViewer
               runId={runId}

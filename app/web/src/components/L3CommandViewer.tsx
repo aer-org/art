@@ -8,6 +8,10 @@ interface Props {
   // and no fetch happens.
   text?: string | null;
   meta?: Record<string, unknown> | null;
+  // Overview script-fetch mode: when a local stage name is provided,
+  // viewer fetches __art__/scripts/<name>.sh via /api/stage/:name/script
+  // and renders its body. `meta` (if supplied) is rendered alongside.
+  scriptStageName?: string;
   runId?: string;
   nodeId?: string;
   stageName?: string;
@@ -16,11 +20,13 @@ interface Props {
 export function L3CommandViewer({
   text: textProp,
   meta: metaProp,
+  scriptStageName,
   runId,
   nodeId,
   stageName,
 }: Props) {
   const isStatic = textProp !== undefined;
+  const useScriptFetch = !isStatic && scriptStageName !== undefined;
   const [data, setData] = useState<{
     sh: string | null;
     meta: Record<string, unknown> | null;
@@ -35,6 +41,30 @@ export function L3CommandViewer({
       setError(null);
       return;
     }
+    if (useScriptFetch && scriptStageName) {
+      let cancelled = false;
+      api
+        .stageScript(scriptStageName)
+        .then((r) => {
+          if (cancelled) return;
+          if (!r.exists) {
+            setError(`Script not found: ${r.hostPath}`);
+            return;
+          }
+          setData({
+            sh: r.truncated
+              ? (r.content ?? '') + '\n\n# … (truncated)'
+              : (r.content ?? ''),
+            meta: metaProp ?? null,
+          });
+        })
+        .catch((err: Error) => {
+          if (!cancelled) setError(err.message);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!runId || !nodeId || !stageName) return;
     let cancelled = false;
     api
@@ -48,7 +78,16 @@ export function L3CommandViewer({
     return () => {
       cancelled = true;
     };
-  }, [isStatic, textProp, metaProp, runId, nodeId, stageName]);
+  }, [
+    isStatic,
+    textProp,
+    metaProp,
+    useScriptFetch,
+    scriptStageName,
+    runId,
+    nodeId,
+    stageName,
+  ]);
 
   if (error) return <p className="error">{error}</p>;
   if (data === null) return <p className="muted">Loading…</p>;

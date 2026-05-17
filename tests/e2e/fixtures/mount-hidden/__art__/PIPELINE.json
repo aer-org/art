@@ -2,15 +2,12 @@
   "stages": [
     {
       "name": "test-hidden",
-      "prompt": "",
-      "command": "ls /workspace/memory 2>/dev/null && echo 'VISIBLE' || echo 'HIDDEN'; echo '[STAGE_COMPLETE]'",
+      "kind": "command",
       "image": "node:22-slim",
       "mounts": {
         "memory": null
       },
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": null }
-      ]
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }]
     }
   ]
 }

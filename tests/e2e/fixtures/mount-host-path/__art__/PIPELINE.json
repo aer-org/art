@@ -2,16 +2,17 @@
   "stages": [
     {
       "name": "test-host-mount",
-      "prompt": "",
-      "command": "cat /workspace/extra/host-data/sample.txt > /dev/null 2>&1 && echo 'HOST_READ_OK' || echo 'HOST_READ_FAIL'; echo '[STAGE_COMPLETE]'",
+      "kind": "command",
       "image": "node:22-slim",
       "mounts": {},
       "hostMounts": [
-        { "hostPath": "__HOST_DATA_PATH__", "containerPath": "host-data", "readonly": true }
+        {
+          "hostPath": "__HOST_DATA_PATH__",
+          "containerPath": "host-data",
+          "readonly": true
+        }
       ],
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": null }
-      ]
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }]
     }
   ]
 }

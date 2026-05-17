@@ -21,6 +21,7 @@ interface StaticMount {
 
 interface StaticStage {
   name: string;
+  kind?: string;
   agent?: string;
   prompt?: string;
   promptSource?: string;
@@ -97,6 +98,8 @@ export function useStaticStageDetail(
           env: stage.env ?? {},
         }
       : null;
+    const isCommand =
+      stage.kind === 'command' || typeof stage.command === 'string';
     return {
       stage: {
         nodeId: 'root',
@@ -110,7 +113,7 @@ export function useStaticStageDetail(
         promptSource: stage.promptSource ?? null,
         hasPrompt: !!stage.prompt,
         hasInitial: false,
-        hasCommand: !!stage.command,
+        hasCommand: isCommand,
         hasDiff: false,
         hasTranscript: false,
         diffMounts: [],

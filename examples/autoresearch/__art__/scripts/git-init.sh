@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+git config --global --add safe.directory /workspace/project
+git config --global user.email 'art-agent@local'
+git config --global user.name 'AerArt Agent'
+cd /workspace/project
+TAG=$(date +%b%d-%H%M | tr '[:upper:]' '[:lower:]')
+git checkout -b autoresearch/"$TAG"
+git commit --allow-empty -m 'autoresearch baseline'
+echo "Created branch autoresearch/$TAG"
+echo '[STAGE_COMPLETE]'

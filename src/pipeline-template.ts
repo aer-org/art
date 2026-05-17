@@ -83,7 +83,26 @@ export function loadPipelineTemplate(
     resolveAgentRefs(obj.stages, bundleDir);
   }
 
-  return validatePipelineTemplate(parsed, name);
+  const template = validatePipelineTemplate(parsed, name);
+
+  // Validate + synthesize command stages. Script file must exist under
+  // <bundleDir>/scripts/<stage_name>.sh; runtime gets command +
+  // scripts: 'ro' mount the same way base stages do.
+  const scriptsDir = path.join(bundleDir, 'scripts');
+  for (const stage of template.stages) {
+    const stageAny = stage as unknown as Record<string, unknown>;
+    if (stageAny.kind !== 'command') continue;
+    const scriptPath = path.join(scriptsDir, `${stage.name}.sh`);
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(
+        `Template "${name}": command stage "${stage.name}" requires __art__/scripts/${stage.name}.sh`,
+      );
+    }
+    stage.command = `bash /workspace/scripts/${stage.name}.sh`;
+    stage.mounts = { ...stage.mounts, scripts: 'ro' };
+  }
+
+  return template;
 }
 
 /**
@@ -181,10 +200,46 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
     validateTransitionShape(t, stage.name, templateName);
     if (t.afterTimeout) afterTimeoutTransitions++;
   }
-  if (stageAny.kind !== undefined) {
+  if (stageAny.kind !== undefined && stageAny.kind !== 'command') {
     throw new Error(
-      `Template "${templateName}": stage "${stage.name}" uses unsupported "kind" field; omit it and set "command" for command stages`,
+      `Template "${templateName}": stage "${stage.name}" — "kind" must be "command" or omitted (agent stage)`,
     );
+  }
+  const isCommandStage = stageAny.kind === 'command';
+  if (isCommandStage) {
+    if (stage.command !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not author a "command" field`,
+      );
+    }
+    if (stage.prompt !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not author a "prompt" field`,
+      );
+    }
+    if ((stage as { agent?: unknown }).agent !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not author an "agent" ref`,
+      );
+    }
+    const reservedMountKey = Object.keys(stage.mounts ?? {}).find(
+      (k) => k === 'scripts' || k.startsWith('scripts:'),
+    );
+    if (reservedMountKey) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not declare a "scripts" mount`,
+      );
+    }
+  }
+  if (stage.env) {
+    const reservedEnvKey = Object.keys(stage.env).find((k) =>
+      k.startsWith('ART_'),
+    );
+    if (reservedEnvKey) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — env key "${reservedEnvKey}" uses reserved ART_* prefix`,
+      );
+    }
   }
   if (stage.timeout !== undefined) {
     if (!Number.isFinite(stage.timeout) || stage.timeout <= 0) {
@@ -192,7 +247,7 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
         `Template "${templateName}": stage "${stage.name}" has invalid timeout "${String(stage.timeout)}" (must be a positive number of milliseconds)`,
       );
     }
-    if (!stage.command) {
+    if (!isCommandStage) {
       throw new Error(
         `Template "${templateName}": stage "${stage.name}" may only use "timeout" on command stages`,
       );
@@ -208,7 +263,7 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       `Template "${templateName}": stage "${stage.name}" cannot author runtime "join" metadata`,
     );
   }
-  if (afterTimeoutTransitions > 0 && !stage.command) {
+  if (afterTimeoutTransitions > 0 && !isCommandStage) {
     throw new Error(
       `Template "${templateName}": stage "${stage.name}" may only use "afterTimeout" transitions on command stages`,
     );

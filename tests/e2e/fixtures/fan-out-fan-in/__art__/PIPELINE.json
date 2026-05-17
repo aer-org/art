@@ -2,7 +2,7 @@
   "stages": [
     {
       "name": "build",
-      "command": "echo '[BUILD_OK]'",
+      "kind": "command",
       "image": "node:22-slim",
       "successMarker": "BUILD_OK",
       "mounts": {},
@@ -19,7 +19,7 @@
     },
     {
       "name": "deploy",
-      "command": "echo '[DEPLOYED]'",
+      "kind": "command",
       "image": "node:22-slim",
       "successMarker": "DEPLOYED",
       "mounts": {},

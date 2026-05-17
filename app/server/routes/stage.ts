@@ -54,7 +54,54 @@ function findContainerLogs(logsDir: string, stageName: string, limit = 5): strin
     });
 }
 
+const SCRIPT_MAX_BYTES = 256 * 1024;
+
 export function registerStageRoutes(app: FastifyInstance): void {
+  // Read the authored shell script for a command stage. The convention
+  // is fixed (`__art__/scripts/<stage_name>.sh`), so no path resolution
+  // is needed — for template-internal stages we still resolve by the
+  // authored local name since templates and the base pipeline share
+  // one scripts/ directory.
+  app.get<{ Params: Params }>(
+    '/api/stage/:name/script',
+    async (req, reply) => {
+      const project = projectState.current;
+      if (!project)
+        return reply.code(400).send({ error: 'No project loaded.' });
+      const { name } = req.params;
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(name)) {
+        return reply.code(400).send({ error: 'Invalid stage name' });
+      }
+      const scriptPath = path.join(project.artDir, 'scripts', `${name}.sh`);
+      let stat;
+      try {
+        stat = fs.statSync(scriptPath);
+      } catch {
+        return { name, exists: false, hostPath: scriptPath };
+      }
+      if (!stat.isFile()) {
+        return { name, exists: false, hostPath: scriptPath };
+      }
+      const size = stat.size;
+      const truncated = size > SCRIPT_MAX_BYTES;
+      const fd = fs.openSync(scriptPath, 'r');
+      try {
+        const buf = Buffer.alloc(Math.min(size, SCRIPT_MAX_BYTES));
+        fs.readSync(fd, buf, 0, buf.length, 0);
+        return {
+          name,
+          exists: true,
+          hostPath: scriptPath,
+          size,
+          truncated,
+          content: buf.toString('utf8'),
+        };
+      } finally {
+        fs.closeSync(fd);
+      }
+    },
+  );
+
   app.get<{ Params: Params }>('/api/stage/:name', async (req, reply) => {
     const project = projectState.current;
     if (!project) return reply.code(400).send({ error: 'No project loaded.' });

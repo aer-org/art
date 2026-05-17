@@ -2,13 +2,10 @@
   "stages": [
     {
       "name": "echo-test",
-      "prompt": "",
-      "command": "echo '[STAGE_COMPLETE]'",
+      "kind": "command",
       "image": "node:22-slim",
       "mounts": {},
-      "transitions": [
-        { "marker": "STAGE_COMPLETE", "next": null }
-      ]
+      "transitions": [{ "marker": "STAGE_COMPLETE", "next": null }]
     }
   ]
 }

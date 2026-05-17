@@ -161,14 +161,67 @@ export function loadPipelineConfig(
 
     // Validate stage names and transitions
     const stageNames = new Set(config.stages.map((s) => s.name));
+    const scriptsDir = path.join(bundleDir, 'scripts');
     for (const stage of config.stages) {
-      const isCommandStage = typeof stage.command === 'string';
       const stageAny = stage as unknown as Record<string, unknown>;
-      if (stageAny.kind !== undefined) {
+      const declaredKind = stageAny.kind;
+      // `kind: 'command'` is the canonical marker for command stages.
+      // Any other authored value is rejected; absent kind = agent stage.
+      if (declaredKind !== undefined && declaredKind !== 'command') {
         return invalid(
-          { groupFolder, stage: stage.name, kind: stageAny.kind },
-          'Stage "kind" is no longer supported; omit it and set "command" for command stages',
+          { groupFolder, stage: stage.name, kind: declaredKind },
+          'Stage "kind" must be "command" or omitted (agent stage)',
         );
+      }
+      const isCommandStage = declaredKind === 'command';
+
+      if (isCommandStage) {
+        if (stage.command !== undefined) {
+          return invalid(
+            { groupFolder, stage: stage.name },
+            'Command stages must not author a "command" field — runtime invokes __art__/scripts/<stage_name>.sh',
+          );
+        }
+        if (stage.prompt !== undefined) {
+          return invalid(
+            { groupFolder, stage: stage.name },
+            'Command stages must not author a "prompt" field',
+          );
+        }
+        if ((stage as { agent?: unknown }).agent !== undefined) {
+          return invalid(
+            { groupFolder, stage: stage.name },
+            'Command stages must not author an "agent" ref',
+          );
+        }
+        const reservedMountKey = Object.keys(stage.mounts ?? {}).find(
+          (k) => k === 'scripts' || k.startsWith('scripts:'),
+        );
+        if (reservedMountKey) {
+          return invalid(
+            { groupFolder, stage: stage.name, mountKey: reservedMountKey },
+            'Command stages must not declare a "scripts" mount — runtime injects it read-only',
+          );
+        }
+        const scriptPath = path.join(scriptsDir, `${stage.name}.sh`);
+        if (!fs.existsSync(scriptPath)) {
+          return invalid(
+            { groupFolder, stage: stage.name, scriptPath },
+            `Command stage "${stage.name}" requires __art__/scripts/${stage.name}.sh`,
+          );
+        }
+      }
+
+      if (stage.env) {
+        const reservedEnvKey = Object.keys(stage.env).find((k) =>
+          k.startsWith('ART_'),
+        );
+        if (reservedEnvKey) {
+          return invalid(
+            { groupFolder, stage: stage.name, envKey: reservedEnvKey },
+            `Stage "env" key "${reservedEnvKey}" uses reserved ART_* prefix (runtime-injected)`,
+          );
+        }
       }
 
       if (stageAny.prompts !== undefined) {
@@ -217,7 +270,7 @@ export function loadPipelineConfig(
         );
       }
 
-      if (!stage.command && !stage.prompt) {
+      if (!isCommandStage && !stage.prompt) {
         return invalid(
           { groupFolder, stage: stage.name },
           'Agent stage must define prompt',
@@ -496,6 +549,17 @@ export function loadPipelineConfig(
         { groupFolder, err: (err as Error).message },
         'PIPELINE.json contains a cycle — pipelines must be DAGs',
       );
+    }
+
+    // After validation: synthesize the runtime shape for command stages.
+    // Authors write `kind: 'command'` + script file; loader fills in the
+    // `command` field and the read-only scripts mount so the runtime sees
+    // the same internal shape as before.
+    for (const stage of config.stages) {
+      const stageAny = stage as unknown as Record<string, unknown>;
+      if (stageAny.kind !== 'command') continue;
+      stage.command = `bash /workspace/scripts/${stage.name}.sh`;
+      stage.mounts = { ...stage.mounts, scripts: 'ro' };
     }
 
     return config;
