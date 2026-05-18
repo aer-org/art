@@ -65,10 +65,9 @@ function snapshotResponse(projectDir: string, initialized: boolean) {
     : project
       ? buildTemplateOverview(snap?.pipeline ?? null, project.artDir)
       : { nodes: [], edges: [] };
-  const templates =
-    !showLive && project
-      ? collectReferencedTemplates(snap?.pipeline ?? null, project.artDir)
-      : undefined;
+  const templates = project
+    ? collectReferencedTemplates(snap?.pipeline ?? null, project.artDir)
+    : undefined;
   return {
     projectDir,
     initialized,
@@ -158,9 +157,7 @@ export function registerLoadRoutes(app: FastifyInstance): void {
             null,
         })
       : buildTemplateOverview(snap.pipeline, project.artDir);
-    const templates = showLive
-      ? undefined
-      : collectReferencedTemplates(snap.pipeline, project.artDir);
+    const templates = collectReferencedTemplates(snap.pipeline, project.artDir);
     return {
       projectDir: abs,
       initialized,

@@ -167,11 +167,13 @@ export function registerStateRoutes(app: FastifyInstance): void {
           overviewGraphCache = { key, value: graph };
         }
       }
-      // Ship raw template files alongside the overview so the client can
-      // inline-expand a template without a server round-trip. Skipped in
-      // live mode (graph already contains per-stage detail).
+      // Ship raw template files in both modes. Overview needs them for
+      // inline-expansion; Live needs them so the inspector can resolve
+      // authored config for stitched-lane stages (the post-stitch graph
+      // exposes templateName + localName but not the underlying template
+      // body, which is what L2/L3 actually render for un-executed lanes).
       let templates: ReturnType<typeof collectReferencedTemplates> | undefined;
-      if (!showLive) {
+      {
         const key: OverviewKey = [snap.pipeline, project.artDir] as const;
         if (templatesCache && keysEqual(templatesCache.key, key)) {
           templates = templatesCache.value;
