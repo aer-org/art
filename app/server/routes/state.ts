@@ -3,10 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { debugStats } from '../debug-stats.ts';
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
-import {
-  buildTemplateOverview,
-  collectReferencedTemplates,
-} from '../pipeline-template-overview.ts';
+import { collectReferencedTemplates } from '../pipeline-template-overview.ts';
 import { readPipelineStateForRun } from '../run-reader.ts';
 import { runController } from '../run-controller.ts';
 import type {
@@ -38,7 +35,6 @@ type LiveGraphKey = readonly [
 let liveGraphCache: { key: LiveGraphKey; value: Graph } | null = null;
 
 type OverviewKey = readonly [PipelineConfig | null, string];
-let overviewGraphCache: { key: OverviewKey; value: Graph } | null = null;
 let templatesCache: {
   key: OverviewKey;
   value: ReturnType<typeof collectReferencedTemplates>;
@@ -159,13 +155,10 @@ export function registerStateRoutes(app: FastifyInstance): void {
           liveGraphCache = { key, value: graph };
         }
       } else {
-        const key: OverviewKey = [snap.pipeline, project.artDir] as const;
-        if (overviewGraphCache && keysEqual(overviewGraphCache.key, key)) {
-          graph = overviewGraphCache.value;
-        } else {
-          graph = buildTemplateOverview(snap.pipeline, project.artDir);
-          overviewGraphCache = { key, value: graph };
-        }
+        // Overview mode: the client (web/src/lib/templateOverview.ts)
+        // builds the graph from snapshot.pipeline + snapshot.templates.
+        // Server doesn't ship a duplicate.
+        graph = { nodes: [], edges: [] };
       }
       // Ship raw template files in both modes. Overview needs them for
       // inline-expansion; Live needs them so the inspector can resolve
