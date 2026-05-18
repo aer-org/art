@@ -12,7 +12,11 @@ import { createHash } from 'crypto';
 
 import { spawn } from 'child_process';
 
-import { CONTAINER_IMAGE, getDataDir } from './config.js';
+import {
+  CONTAINER_IMAGE,
+  CONTAINER_MAX_OUTPUT_SIZE,
+  getDataDir,
+} from './config.js';
 import {
   buildContainerArgs,
   ContainerOutput,
@@ -43,6 +47,7 @@ import {
 } from './mcp-registry.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
 import { mergeStageEnv } from './stage-env.js';
+import { TailBuffer } from './tail-buffer.js';
 import {
   assertNoNameCollision,
   buildStitchInvocation,
@@ -2065,11 +2070,51 @@ PAYLOAD FORMATS:
 
       this.onProcess(container, containerName);
 
-      let stdout = '';
-      let stderr = '';
+      // Ring-buffered tails — see container-runner.ts. The disk archive
+      // (handle.stageStdoutLog / stageStderrLog / logStream) is the full
+      // transcript; these tails feed the close-time payload scan + the
+      // error tail. Streaming successMarker / errorMarker detection
+      // uses a tiny sliding window (below) instead of materializing the
+      // whole tail on every chunk.
+      const stdoutBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+      const stderrBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+      const streamingMarkerLen = Math.max(
+        stageConfig.successMarker?.length ?? 0,
+        stageConfig.errorMarker?.length ?? 0,
+      );
+      let streamingSearchTail = '';
       let cmdLogRemainder = '';
       let cmdLogStderrRemainder = '';
       let cmdNotifyRemainder = '';
+      // Backpressure plumbing (mirrors container-runner). When any disk
+      // write returns false we pause the source stream until every
+      // stalled writer emits 'drain'.
+      let cmdStdoutStalled = 0;
+      let cmdStderrStalled = 0;
+      const noteCmdStdoutWrite = (
+        s: NodeJS.WritableStream,
+        ok: boolean,
+      ): void => {
+        if (ok) return;
+        cmdStdoutStalled++;
+        if (cmdStdoutStalled === 1) container.stdout!.pause();
+        s.once('drain', () => {
+          cmdStdoutStalled--;
+          if (cmdStdoutStalled === 0) container.stdout!.resume();
+        });
+      };
+      const noteCmdStderrWrite = (
+        s: NodeJS.WritableStream,
+        ok: boolean,
+      ): void => {
+        if (ok) return;
+        cmdStderrStalled++;
+        if (cmdStderrStalled === 1) container.stderr!.pause();
+        s.once('drain', () => {
+          cmdStderrStalled--;
+          if (cmdStderrStalled === 0) container.stderr!.resume();
+        });
+      };
       // Streaming marker detection: resolve pendingResult as soon as a marker
       // is found in stdout, without waiting for process exit.
       let markerResolved = false;
@@ -2108,7 +2153,10 @@ PAYLOAD FORMATS:
         let effectivePayload = payload;
         const scanTransition = transition ?? fallback;
         if (scanTransition && !scanTransition.afterTimeout) {
-          const parsed = parseStageMarkers([stdout], [scanTransition]);
+          const parsed = parseStageMarkers(
+            [stdoutBuf.toString()],
+            [scanTransition],
+          );
           if (parsed.matched && parsed.payload !== null) {
             effectivePayload = parsed.payload;
           }
@@ -2125,8 +2173,13 @@ PAYLOAD FORMATS:
 
       container.stdout.on('data', (data) => {
         const chunk = data.toString();
-        stdout += chunk;
-        if (handle.stageStdoutLog) handle.stageStdoutLog.write(chunk);
+        stdoutBuf.append(chunk);
+        if (handle.stageStdoutLog) {
+          noteCmdStdoutWrite(
+            handle.stageStdoutLog,
+            handle.stageStdoutLog.write(chunk),
+          );
+        }
         if (logStream) {
           const { prefixed, remainder } = prefixLogLines(
             chunk,
@@ -2134,7 +2187,9 @@ PAYLOAD FORMATS:
             cmdLogRemainder,
           );
           cmdLogRemainder = remainder;
-          if (prefixed) logStream.write(prefixed);
+          if (prefixed) {
+            noteCmdStdoutWrite(logStream, logStream.write(prefixed));
+          }
         }
 
         // Stream output to the user (prefixed with stage name).
@@ -2151,11 +2206,15 @@ PAYLOAD FORMATS:
           }
         }
 
-        // Streaming marker detection
-        if (!markerResolved) {
+        // Streaming marker detection: search a small sliding window
+        // (last `streamingMarkerLen` bytes of prior tail + this chunk)
+        // so we catch markers that straddle a chunk boundary without
+        // materializing the whole ring buffer per chunk.
+        if (!markerResolved && streamingMarkerLen > 0) {
+          const window = streamingSearchTail + chunk;
           if (
             stageConfig.successMarker &&
-            stdout.includes(stageConfig.successMarker)
+            window.includes(stageConfig.successMarker)
           ) {
             resolveTransition(
               completeTransition,
@@ -2165,7 +2224,7 @@ PAYLOAD FORMATS:
             );
           } else if (
             stageConfig.errorMarker &&
-            stdout.includes(stageConfig.errorMarker)
+            window.includes(stageConfig.errorMarker)
           ) {
             resolveTransition(
               errorTransition,
@@ -2175,13 +2234,19 @@ PAYLOAD FORMATS:
               true,
             );
           }
+          streamingSearchTail = window.slice(-streamingMarkerLen);
         }
       });
 
       container.stderr.on('data', (data) => {
         const chunk = data.toString();
-        stderr += chunk;
-        if (handle.stageStderrLog) handle.stageStderrLog.write(chunk);
+        stderrBuf.append(chunk);
+        if (handle.stageStderrLog) {
+          noteCmdStderrWrite(
+            handle.stageStderrLog,
+            handle.stageStderrLog.write(chunk),
+          );
+        }
         if (logStream) {
           const { prefixed, remainder } = prefixLogLines(
             chunk,
@@ -2189,7 +2254,9 @@ PAYLOAD FORMATS:
             cmdLogStderrRemainder,
           );
           cmdLogStderrRemainder = remainder;
-          if (prefixed) logStream.write(prefixed);
+          if (prefixed) {
+            noteCmdStderrWrite(logStream, logStream.write(prefixed));
+          }
         }
       });
 
@@ -2204,6 +2271,8 @@ PAYLOAD FORMATS:
 
       container.on('close', (code) => {
         clearTimeout(timeout);
+        const stdout = stdoutBuf.toString();
+        const stderr = stderrBuf.toString();
 
         if (logStream) {
           if (cmdLogRemainder)

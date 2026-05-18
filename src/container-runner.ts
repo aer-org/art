@@ -50,6 +50,7 @@ import { ensureCodexSessionAuth } from './codex-auth.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import type { ResolvedExternalMcpServer } from './mcp-registry.js';
+import { TailBuffer } from './tail-buffer.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -634,10 +635,45 @@ export async function runContainerAgent(
 
     onProcess(container, containerName);
 
-    let stdout = '';
-    let stderr = '';
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
+    // Ring-buffered tails of stdout / stderr. Caps total heap held by
+    // the runner at CONTAINER_MAX_OUTPUT_SIZE bytes each; older content
+    // is dropped from the head as new chunks arrive. The disk archive
+    // (stdoutStream / stderrStream / logStream) is the canonical full
+    // transcript — these tails exist only for marker parsing and the
+    // error-tail snippet returned in ContainerOutput.error.
+    const stdoutBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+    const stderrBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+
+    // Backpressure: if any downstream stream's write() returns false,
+    // pause the container's stdout/stderr until every stalled writer
+    // emits 'drain'. Without this the Node-level write queue grows
+    // unbounded when the consumer (disk, SSE bridge) is slow.
+    let stdoutStalled = 0;
+    let stderrStalled = 0;
+    const noteStdoutWrite = (
+      stream: NodeJS.WritableStream,
+      ok: boolean,
+    ): void => {
+      if (ok) return;
+      stdoutStalled++;
+      if (stdoutStalled === 1) container.stdout!.pause();
+      stream.once('drain', () => {
+        stdoutStalled--;
+        if (stdoutStalled === 0) container.stdout!.resume();
+      });
+    };
+    const noteStderrWrite = (
+      stream: NodeJS.WritableStream,
+      ok: boolean,
+    ): void => {
+      if (ok) return;
+      stderrStalled++;
+      if (stderrStalled === 1) container.stderr!.pause();
+      stream.once('drain', () => {
+        stderrStalled--;
+        if (stderrStalled === 0) container.stderr!.resume();
+      });
+    };
 
     // Stream container output to external log if provided
     if (logStream) {
@@ -669,7 +705,7 @@ export async function runContainerAgent(
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
-      if (stdoutStream) stdoutStream.write(chunk);
+      if (stdoutStream) noteStdoutWrite(stdoutStream, stdoutStream.write(chunk));
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,
@@ -677,23 +713,10 @@ export async function runContainerAgent(
           logRemainder,
         );
         logRemainder = remainder;
-        if (prefixed) logStream.write(prefixed);
+        if (prefixed) noteStdoutWrite(logStream, logStream.write(prefixed));
       }
 
-      // Always accumulate for logging
-      if (!stdoutTruncated) {
-        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
-        if (chunk.length > remaining) {
-          stdout += chunk.slice(0, remaining);
-          stdoutTruncated = true;
-          logger.warn(
-            { group: group.name, size: stdout.length },
-            'Container stdout truncated due to size limit',
-          );
-        } else {
-          stdout += chunk;
-        }
-      }
+      stdoutBuf.append(chunk);
 
       // Stream-parse for output markers
       if (onOutput) {
@@ -731,7 +754,7 @@ export async function runContainerAgent(
 
     container.stderr.on('data', (data) => {
       const chunk = data.toString();
-      if (stderrStream) stderrStream.write(chunk);
+      if (stderrStream) noteStderrWrite(stderrStream, stderrStream.write(chunk));
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,
@@ -739,7 +762,7 @@ export async function runContainerAgent(
           logStderrRemainder,
         );
         logStderrRemainder = remainder;
-        if (prefixed) logStream.write(prefixed);
+        if (prefixed) noteStderrWrite(logStream, logStream.write(prefixed));
       }
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
@@ -747,18 +770,7 @@ export async function runContainerAgent(
       }
       // Don't reset timeout on stderr — SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
-      if (stderrTruncated) return;
-      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
-      if (chunk.length > remaining) {
-        stderr += chunk.slice(0, remaining);
-        stderrTruncated = true;
-        logger.warn(
-          { group: group.name, size: stderr.length },
-          'Container stderr truncated due to size limit',
-        );
-      } else {
-        stderr += chunk;
-      }
+      stderrBuf.append(chunk);
     });
 
     let timedOut = false;
@@ -879,6 +891,14 @@ export async function runContainerAgent(
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
       const isVerbose =
         process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
+
+      // Materialize tails once for the close-time consumers (debug log
+      // file, error message, marker-pair parser). The disk archive has
+      // the full content; these strings are only the recent tail.
+      const stdout = stdoutBuf.toString();
+      const stderr = stderrBuf.toString();
+      const stdoutTruncated = stdoutBuf.truncated;
+      const stderrTruncated = stderrBuf.truncated;
 
       const logLines = [
         `=== Container Run Log ===`,
