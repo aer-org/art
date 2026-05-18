@@ -94,12 +94,20 @@ interface VolumeMount {
 type AgentProvider = 'claude' | 'codex';
 
 function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
-  // Host-managed auth requires containers to reach a host-side proxy, which can
-  // be blocked by local firewall policy. Keep passthrough as the safe default
-  // and allow explicit opt-in where the proxy path is known to work.
-  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
-    ? 'host-managed'
-    : 'passthrough';
+  // Host-managed mirrors Claude's credential-proxy pattern: the
+  // container never sees the real OAuth token — codex-engine inside
+  // the container fetches a short-lived login from a host-side proxy
+  // (codex-auth-proxy `/refresh`) at startup. This is the default now
+  // that ART_HOST_NETWORK is default-on; the bridge → host firewall
+  // blocker that originally forced passthrough is gone.
+  //
+  // Set ART_CODEX_AUTH_MODE=passthrough to bind-mount the host's
+  // ~/.codex/auth.json into the container as plaintext (legacy
+  // behavior, weaker isolation — the in-container codex binary can
+  // read the real refresh + access tokens directly off disk).
+  return process.env.ART_CODEX_AUTH_MODE === 'passthrough'
+    ? 'passthrough'
+    : 'host-managed';
 }
 
 function resolveProvider(
