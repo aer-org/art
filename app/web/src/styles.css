@@ -1790,6 +1790,17 @@ input, textarea {
   max-height: none;
 }
 
+/* Shell-script token highlighting (L3CommandViewer) */
+.l3-sh .sh-shebang { color: #7c8aa3; font-style: italic; }
+.l3-sh .sh-comment { color: #6b7384; font-style: italic; }
+.l3-sh .sh-string  { color: #98c379; }
+.l3-sh .sh-var     { color: #5b8def; }
+.l3-sh .sh-keyword { color: #c678dd; font-weight: 600; }
+.l3-sh .sh-builtin { color: #e5c07b; }
+.l3-sh .sh-op      { color: #56b6c2; }
+.l3-sh .sh-number  { color: #d19a66; }
+.l3-sh .sh-plain   { color: var(--fg); }
+
 /* Markdown render for prompt / initial-handoff viewers */
 .l3-md {
   padding: 12px 14px;

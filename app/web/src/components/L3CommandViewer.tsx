@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { api } from '../lib/api.ts';
+import { tokenizeShell } from '../lib/shellHighlight.ts';
 
 interface Props {
   // Static-text mode (overview): provide command + optional meta
@@ -89,6 +90,11 @@ export function L3CommandViewer({
     stageName,
   ]);
 
+  const tokens = useMemo(
+    () => (data?.sh ? tokenizeShell(data.sh) : []),
+    [data?.sh],
+  );
+
   if (error) return <p className="error">{error}</p>;
   if (data === null) return <p className="muted">Loading…</p>;
 
@@ -118,7 +124,15 @@ export function L3CommandViewer({
           </button>
         )}
       </div>
-      <pre className="l3-pre">{data.sh ?? '(no command.sh)'}</pre>
+      <pre className="l3-pre l3-sh">
+        {data.sh
+          ? tokens.map((t, idx) => (
+              <span key={idx} className={`sh-${t.type}`}>
+                {t.text}
+              </span>
+            ))
+          : '(no command.sh)'}
+      </pre>
       {envKeys.length > 0 && (
         <>
           <h4 className="l3-h4">Environment</h4>
