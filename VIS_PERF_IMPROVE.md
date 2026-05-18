@@ -290,3 +290,46 @@ Files:
 - `/tmp/perf-phase2-before.csv` + `.summary.json`
 - `/tmp/perf-phase2-after.csv` + `.summary.json`
 - `/tmp/perf-server-phase2-{before,after}.log`
+
+## Phase 3 — client layout memoization + narrowed snapshot deps
+
+**Changes**
+
+- `app/web/src/components/PipelineGraph.tsx`: cache the dagre layout
+  result keyed by a structural fingerprint of `(nodes, edges)` —
+  captures `id`, `kind`, `isStitched`, `templateName`, edge endpoints,
+  and `marker`/`isRetry`/`isTemplate`. Excludes `status`, `retryCount`,
+  `label`, `error`, and other per-tick mutations.
+  - On cache hit: reuse positions, swap each ReactFlow node's
+    `data.stage` to the freshest `GraphNode` so status / retry pip /
+    error border render correctly while the layout itself is skipped.
+  - On cache miss: run the 3-pass hierarchical dagre layout once and
+    store. Subsequent status-only ticks return in O(nodes) instead of
+    O(nodes·edges) with three dagre passes.
+- `app/web/src/pages/LivePage.tsx`: narrowed `displayGraph` useMemo
+  deps from `[snapshot, expandedTemplates]` to
+  `[snapshot.graph, snapshot.graphMode, snapshot.templates,
+   snapshot.pipeline, expandedTemplates]`. The snapshot envelope is
+  re-parsed by the SSE handler on every tick, so referring to the
+  whole envelope invalidated the memo even when none of the relevant
+  sub-fields changed.
+
+**Measurement**
+
+Client perf is not visible to the server-side probe. The architectural
+property is the win here: a status-only snapshot tick now skips dagre
+entirely (the dominant client-CPU work according to the Phase 0
+diagnostic), and the layout-fingerprint string is O(nodes + edges) —
+negligible compared to a dagre pass on the same graph.
+
+A typical ~70 s stress run produces ~30 snapshot broadcasts. Before
+Phase 3, dagre ran ~30 times on the client per tab. After Phase 3,
+dagre runs once per *structural* change — usually 5–10 times across
+the same run (initial layout + stitches + barrier additions).
+
+Re-running the Phase 2 server-side probe with the post-Phase-3 client
+build still gives the same server-side numbers — Phase 3 doesn't
+change SSE payload size or count — so no separate measurement table
+here. Headline win is qualitative and best seen with Chrome DevTools
+Performance panel during a long run; the layout pass that previously
+showed up on every tick is now gone except on structural changes.

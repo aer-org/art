@@ -114,7 +114,18 @@ export function LivePage(props: {
       return buildTemplateOverviewGraph(snapshot, expandedTemplates);
     }
     return snapshot.graph ?? { nodes: [], edges: [] };
-  }, [snapshot, expandedTemplates]);
+    // Deps are narrowed to the fields buildTemplateOverviewGraph /
+    // snapshot.graph actually consume. Snapshot object identity churns
+    // on every SSE tick because the whole envelope is re-parsed; pinning
+    // these specific refs lets the layout cache in PipelineGraph hit
+    // when the structural shape hasn't changed.
+  }, [
+    snapshot.graph,
+    snapshot.graphMode,
+    snapshot.templates,
+    snapshot.pipeline,
+    expandedTemplates,
+  ]);
 
 
   // Overview vs live: both render a StageSidebar + L3Panel inspector
