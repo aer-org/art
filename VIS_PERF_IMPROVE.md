@@ -367,3 +367,53 @@ Server-side metrics are unaffected (SSE payload + count are the
 same). The win lands on client paint / layout / scripting time,
 visible in DevTools' Performance panel as flat per-tick frame
 budgets instead of a creeping climb after thousands of log lines.
+
+## Phase 5 — drop run-log/node-log SSE writes under backpressure
+
+Phase 2's measurement surfaced the real elephant: the server's RSS
+sat at 2.8 GB during a 70 s busy run, and the SSE socket recorded
+**49 945 backpressured writes**. Heap caching helped (1154 → 447 MB)
+but RSS hardly budged because almost all the bloat was kernel-side:
+unflushed log-line payloads queued for a single SSE consumer that
+couldn't drain ~80 000 lines/min.
+
+**Change**
+
+`app/server/routes/state.ts`: in the SSE `send()` helper, when
+`reply.raw.writableNeedDrain` is true, drop `run-log` and `node-log`
+events on the floor (bump the backpressure counter and return). All
+other events (`snapshot`, `run-exit`, `run-log-reset`,
+`*-starting`) still write unconditionally — they're rare and convey
+state transitions that can't be inferred from missed log lines.
+
+The disk archive (`stages/<n>/stdout.log`, agent stream log) is the
+canonical record; the next snapshot tick brings the client back to
+a consistent view. UX cost is that the in-browser run log may skip
+lines during the busiest stretches — the price for not running the
+server's RSS to 3 GB.
+
+**Measurement**
+
+Same 70 s stress run, 1 SSE consumer, `/tmp/test_backpressure`.
+
+|                       | baseline-phase2 | phase2-after | **phase5-after** | Δ vs baseline |
+|-----------------------|----------------:|-------------:|-----------------:|--------------:|
+| server peakHeapMB     |          1154.9 |        447.2 |           **87** | **−92.5%**    |
+| server peakRssMB      |          3001.1 |       2848.0 |          **213** | **−92.9%**    |
+| sseBackpressuredTotal |          49 945 |       49 603 |           **69** | **−99.9%**    |
+| snapshotSendsTotal    |              27 |           30 |                3 | —             |
+| CLI peakRssMB         |              80 |           81 |               81 | noise         |
+
+The server is finally responsive during a high-volume run.
+
+Files:
+
+- `/tmp/perf-phase5-after.csv` + `.summary.json`
+- `/tmp/perf-server-phase5-after.log`
+
+The other Phase 5 candidates (`recentLogs` LRU cap, `LiveDetail`
+5 s polling removal) were inspected and not pursued: the `Map` is
+bounded per project at 2000 lines (~200 KB) and only grows in
+distinct-project count, which is not a real-world OOM driver; the
+5 s polling fires only while a run is active and at ~12 calls/min
+is dwarfed by the SSE traffic it would otherwise replace.

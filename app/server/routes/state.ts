@@ -71,7 +71,23 @@ export function registerStateRoutes(app: FastifyInstance): void {
     debugStats.sseConnections += 1;
     debugStats.sseTotalConnections += 1;
 
+    // Drop high-volume log events while the socket's write queue is
+    // already saturated. A busy run can emit ~80 000 run-log / node-log
+    // lines in 70 s — far faster than a typical client can drain — and
+    // queueing them all has been observed to push server RSS to multi-
+    // GB. The disk archive (stages/<n>/stdout.log, agent stream log)
+    // is the canonical record; the next snapshot tick brings the
+    // client back to a consistent view.
+    //
+    // Critical events (snapshot, run-exit, run-log-reset, run-starting)
+    // are always sent — they're rare and convey state transitions that
+    // can't be inferred from missed log lines.
+    const DROPPABLE = new Set(['run-log', 'node-log']);
     const send = (event: string, data: unknown) => {
+      if (DROPPABLE.has(event) && reply.raw.writableNeedDrain) {
+        debugStats.sseWritesBackpressured += 1;
+        return;
+      }
       const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
       debugStats.sseWritesTotal += 1;
       const ok = reply.raw.write(payload);
