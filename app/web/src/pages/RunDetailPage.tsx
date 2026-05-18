@@ -266,7 +266,7 @@ export function RunDetailPage(props: {
         </div>
         {sidebarOpen && selectedNode && (
           <StageSidebar
-            nodeId={selectedNode.nodeId ?? 'root'}
+            nodeId={selectedNode.nodeId ?? undefined}
             stageName={selectedStage!}
             authored={authored}
             execution={execution}
@@ -277,7 +277,7 @@ export function RunDetailPage(props: {
         {l3Open && selectedStage && selectedNode && (
           <L3Panel
             runId={props.runId}
-            nodeId={selectedNode.nodeId ?? 'root'}
+            nodeId={selectedNode.nodeId ?? undefined}
             stageName={selectedStage}
             authored={authored}
             execution={execution}

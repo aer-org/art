@@ -20,7 +20,10 @@ import type { AuthoredStage, StageDetail } from '../lib/api.ts';
 import type { StageSidebarData } from '../hooks/useStageDetail.ts';
 
 interface Props {
-  nodeId: string;
+  // The dispatch scope this stage executed in (e.g. 'root', 'd_…').
+  // Optional because in overview mode (no run yet), there's no scope
+  // — the sidebar simply omits the "node" sub-line in that case.
+  nodeId?: string;
   stageName: string;
   authored: AuthoredStage | null;
   execution: StageSidebarData | null;
@@ -60,11 +63,16 @@ export function StageSidebar({
           <div className="label">stage</div>
           <div className="value large">{stageName}</div>
           <div className="sub">
-            <span className="muted">node </span>
-            <code>{nodeId}</code>
+            {nodeId && (
+              <>
+                <span className="muted">node </span>
+                <code>{nodeId}</code>
+              </>
+            )}
             {authored?.templateName && (
               <>
-                <span className="muted"> · template </span>
+                {nodeId && <span className="muted"> · </span>}
+                <span className="muted">template </span>
                 <code>{authored.templateName}</code>
               </>
             )}

@@ -24,10 +24,12 @@ import type { StageSidebarData } from '../hooks/useStageDetail.ts';
 import type { AuthoredStage } from '../lib/api.ts';
 
 interface Props {
-  // What this panel applies to.
-  nodeId: string;
+  // The dispatch scope this stage executed in. Only meaningful when
+  // runId is also non-null (i.e. we have execution data to fetch).
+  // In overview mode both are null and the panel renders authored
+  // content only.
+  nodeId?: string;
   stageName: string;
-  // null when the user is browsing without a run in scope (overview).
   runId: string | null;
   // The two sources. Either may be null; the panel picks based on
   // what's available for the requested `kind`.
@@ -123,7 +125,7 @@ export function L3Panel({
         {kind === 'prompt' && (
           <PromptPanel
             runId={runId}
-            nodeId={nodeId}
+            nodeId={nodeId ?? null}
             stageName={stageName}
             authored={authored}
             executionPromptSource={exec?.promptSource ?? null}
@@ -133,7 +135,7 @@ export function L3Panel({
         {kind === 'initial' && (
           <InitialPanel
             runId={runId}
-            nodeId={nodeId}
+            nodeId={nodeId ?? null}
             stageName={stageName}
             available={exec?.hasInitial === true}
           />
@@ -141,7 +143,7 @@ export function L3Panel({
         {kind === 'command' && (
           <CommandPanel
             runId={runId}
-            nodeId={nodeId}
+            nodeId={nodeId ?? null}
             stageName={stageName}
             authored={authored}
             executionHasCommand={exec?.hasCommand === true}
@@ -153,7 +155,7 @@ export function L3Panel({
         {kind === 'diff' && (
           <DiffPanel
             runId={runId}
-            nodeId={nodeId}
+            nodeId={nodeId ?? null}
             stageName={stageName}
             diffMounts={exec?.diffMounts ?? []}
             summary={execution?.diffSummary ?? null}
@@ -164,7 +166,7 @@ export function L3Panel({
           <L3TurnsTable turns={execution?.turns ?? []} />
         )}
         {kind === 'transcript' &&
-          (runId && exec?.hasTranscript ? (
+          (runId && nodeId && exec?.hasTranscript ? (
             <L3TranscriptViewer
               runId={runId}
               nodeId={nodeId}
@@ -177,7 +179,7 @@ export function L3Panel({
           <L3DecisionsList events={execution?.events ?? []} />
         )}
         {kind === 'stream' &&
-          (runId && exec ? (
+          (runId && nodeId && exec ? (
             <L3StreamTail
               runId={runId}
               nodeId={nodeId}
@@ -196,7 +198,7 @@ export function L3Panel({
 
 function PromptPanel(props: {
   runId: string | null;
-  nodeId: string;
+  nodeId: string | null;
   stageName: string;
   authored: AuthoredStage | null;
   executionPromptSource: string | null;
@@ -205,7 +207,7 @@ function PromptPanel(props: {
   // Prefer the per-run archive (might differ from authored if the
   // pipeline file was edited between this run and now). Fall back to
   // the authored body for un-executed lanes.
-  if (props.runId && props.executionHasPrompt) {
+  if (props.runId && props.nodeId && props.executionHasPrompt) {
     return (
       <L3PromptViewer
         runId={props.runId}
@@ -228,11 +230,12 @@ function PromptPanel(props: {
 
 function InitialPanel(props: {
   runId: string | null;
-  nodeId: string;
+  nodeId: string | null;
   stageName: string;
   available: boolean;
 }) {
-  if (!props.runId || !props.available) return <NoExecution label="initial" />;
+  if (!props.runId || !props.nodeId || !props.available)
+    return <NoExecution label="initial" />;
   return (
     <L3PromptViewer
       runId={props.runId}
@@ -245,12 +248,12 @@ function InitialPanel(props: {
 
 function CommandPanel(props: {
   runId: string | null;
-  nodeId: string;
+  nodeId: string | null;
   stageName: string;
   authored: AuthoredStage | null;
   executionHasCommand: boolean;
 }) {
-  if (props.runId && props.executionHasCommand) {
+  if (props.runId && props.nodeId && props.executionHasCommand) {
     return (
       <L3CommandViewer
         runId={props.runId}
@@ -293,13 +296,13 @@ function MountsPanel(props: {
 
 function DiffPanel(props: {
   runId: string | null;
-  nodeId: string;
+  nodeId: string | null;
   stageName: string;
   diffMounts: string[];
   summary: Record<string, unknown> | null;
   initialMount?: string;
 }) {
-  if (!props.runId) return <NoExecution label="diff" />;
+  if (!props.runId || !props.nodeId) return <NoExecution label="diff" />;
   return (
     <L3DiffViewer
       runId={props.runId}

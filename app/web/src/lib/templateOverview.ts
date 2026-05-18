@@ -416,12 +416,8 @@ export function buildTemplateOverviewGraph(
   return { nodes, edges };
 }
 
-export function isTemplateStageId(id: string): boolean {
-  return id.startsWith('tpl::');
-}
-
-export function templateOfStageId(id: string): string | null {
-  if (!isTemplateStageId(id)) return null;
-  const m = /^tpl::([^:]+)::/.exec(id);
-  return m ? m[1] : null;
-}
+// Note: the `tpl::<name>::<stage>` id format is an internal unique-key
+// scheme for the overview graph (base stage names can collide with
+// stages inside templates). Consumers must never parse it — read
+// `templateName` and `localName` off the GraphNode itself, both of
+// which are set by every builder.

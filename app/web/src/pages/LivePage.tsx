@@ -339,7 +339,7 @@ export function LivePage(props: {
             </div>
             {inspectorOpen && selectedStage && (
               <StageSidebar
-                nodeId={executionNodeId ?? 'root'}
+                nodeId={executionNodeId ?? undefined}
                 stageName={selectedStage}
                 authored={authored}
                 execution={execution}
@@ -350,7 +350,7 @@ export function LivePage(props: {
             {l3Open && selectedStage && (
               <L3Panel
                 runId={liveRunId}
-                nodeId={executionNodeId ?? 'root'}
+                nodeId={executionNodeId ?? undefined}
                 stageName={selectedStage}
                 authored={authored}
                 execution={execution}
