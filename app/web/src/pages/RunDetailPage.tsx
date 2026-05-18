@@ -24,6 +24,7 @@ import {
   type L3PanelKind,
 } from '../components/StageSidebar.tsx';
 import { useAuthoredStage } from '../hooks/useAuthoredStage.ts';
+import { useInspectorEscape } from '../hooks/useInspectorEscape.ts';
 import { useStageDetail } from '../hooks/useStageDetail.ts';
 import {
   api,
@@ -171,16 +172,11 @@ export function RunDetailPage(props: {
   const authored = useAuthoredStage(authoredSnapshot, selectedNode);
 
   // Esc cascade: L4 → L3 → sidebar.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (l4) setL4(null);
-      else if (l3) setL3(null);
-      else if (selectedStage) setSelectedStage(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [selectedStage, l3, l4]);
+  useInspectorEscape([
+    { open: l4, close: () => setL4(null) },
+    { open: l3, close: () => setL3(null) },
+    { open: selectedStage, close: () => setSelectedStage(null) },
+  ]);
 
   useEffect(() => {
     if (!selectedStage) setL3(null);

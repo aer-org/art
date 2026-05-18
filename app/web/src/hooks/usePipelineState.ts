@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, subscribeSSE, type NodeLogLine, type PipelineSnapshot } from '../lib/api.ts';
+import {
+  api,
+  subscribeSSE,
+  type NodeLogLine,
+  type PipelineSnapshot,
+} from '../lib/api.ts';
 
 export interface RunLogLine {
   kind: 'stdout' | 'stderr';
@@ -11,12 +16,15 @@ export interface RunLogLine {
   seq?: number;
 }
 
+const MAX_RUN_LOG = 1000;
+const MAX_NODE_LOG = 1000;
+
 export function usePipelineState() {
-  const [snapshot, setSnapshot] = useState<PipelineSnapshot>({ projectDir: null });
+  const [snapshot, setSnapshot] = useState<PipelineSnapshot>({
+    projectDir: null,
+  });
   const [runLog, setRunLog] = useState<RunLogLine[]>([]);
   const [nodeLogs, setNodeLogs] = useState<Record<string, NodeLogLine[]>>({});
-  const runLogRef = useRef<RunLogLine[]>([]);
-  const nodeLogsRef = useRef<Record<string, NodeLogLine[]>>({});
   const runLogSeqRef = useRef(0);
 
   function appendRunLog(line: RunLogLine) {
@@ -24,45 +32,43 @@ export function usePipelineState() {
       typeof line.seq === 'number'
         ? line
         : { ...line, seq: ++runLogSeqRef.current };
-    const next = [...runLogRef.current, stamped];
-    runLogRef.current = next.length > 1000 ? next.slice(-1000) : next;
-    setRunLog([...runLogRef.current]);
+    setRunLog((prev) => {
+      const next = [...prev, stamped];
+      return next.length > MAX_RUN_LOG ? next.slice(-MAX_RUN_LOG) : next;
+    });
   }
 
   function resetRunLog() {
-    runLogRef.current = [];
     setRunLog([]);
   }
 
   function appendNodeLog(line: NodeLogLine) {
-    const current = nodeLogsRef.current[line.stage] ?? [];
-    const nextLines = [...current, line];
-    nodeLogsRef.current = {
-      ...nodeLogsRef.current,
-      [line.stage]: nextLines.length > 1000 ? nextLines.slice(-1000) : nextLines,
-    };
-    setNodeLogs({ ...nodeLogsRef.current });
+    setNodeLogs((prev) => {
+      const current = prev[line.stage] ?? [];
+      const nextLines = [...current, line];
+      return {
+        ...prev,
+        [line.stage]:
+          nextLines.length > MAX_NODE_LOG
+            ? nextLines.slice(-MAX_NODE_LOG)
+            : nextLines,
+      };
+    });
   }
 
   function setNodeLog(stage: string, lines: NodeLogLine[]) {
-    nodeLogsRef.current = {
-      ...nodeLogsRef.current,
-      [stage]: lines.slice(-1000),
-    };
-    setNodeLogs({ ...nodeLogsRef.current });
+    setNodeLogs((prev) => ({
+      ...prev,
+      [stage]: lines.slice(-MAX_NODE_LOG),
+    }));
   }
 
   function clearNodeLog(stage?: string) {
     if (!stage) {
-      nodeLogsRef.current = {};
       setNodeLogs({});
       return;
     }
-    nodeLogsRef.current = {
-      ...nodeLogsRef.current,
-      [stage]: [],
-    };
-    setNodeLogs({ ...nodeLogsRef.current });
+    setNodeLogs((prev) => ({ ...prev, [stage]: [] }));
   }
 
   function markRunStarting() {
@@ -83,7 +89,10 @@ export function usePipelineState() {
   }
 
   useEffect(() => {
-    api.current().then(setSnapshot).catch(() => {});
+    api
+      .current()
+      .then(setSnapshot)
+      .catch(() => {});
 
     const dispose = subscribeSSE('/api/events', {
       snapshot: (data) => setSnapshot(data),
@@ -107,6 +116,10 @@ export function usePipelineState() {
       },
     });
     return dispose;
+    // appendRunLog / appendNodeLog / setNodeLog / clearNodeLog are
+    // freshly created each render but capture only refs and the stable
+    // useState setters, so binding them once is safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {

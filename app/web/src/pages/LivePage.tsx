@@ -33,6 +33,7 @@ import {
 } from '../components/StageSidebar.tsx';
 import type { usePipelineState } from '../hooks/usePipelineState.ts';
 import { useAuthoredStage } from '../hooks/useAuthoredStage.ts';
+import { useInspectorEscape } from '../hooks/useInspectorEscape.ts';
 import { useStageDetail } from '../hooks/useStageDetail.ts';
 import {
   api,
@@ -188,15 +189,10 @@ export function LivePage(props: {
       : '';
 
   // Esc cascade: L3 → sidebar.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (l3) setL3(null);
-      else if (selectedStage) setSelectedStage(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [selectedStage, l3]);
+  useInspectorEscape([
+    { open: l3, close: () => setL3(null) },
+    { open: selectedStage, close: () => setSelectedStage(null) },
+  ]);
 
   // Close L3 if stage selection changes.
   useEffect(() => {
