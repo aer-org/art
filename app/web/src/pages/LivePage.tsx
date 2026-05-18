@@ -112,7 +112,30 @@ export function LivePage(props: {
     if (snapshot.graphMode === 'template-overview' && snapshot.templates) {
       return buildTemplateOverviewGraph(snapshot, expandedTemplates);
     }
-    return snapshot.graph ?? { nodes: [], edges: [] };
+    const base = snapshot.graph ?? { nodes: [], edges: [] };
+    // Server's buildGraph doesn't load template files, so barrier /
+    // ghost-template nodes ship without templateStageCount — the
+    // "template · N stages" label otherwise reads as "0 stages" mid-
+    // run. Fill the count from snapshot.templates (always shipped
+    // since the Live-mode templates fix) so the UI matches overview.
+    const templates = snapshot.templates;
+    if (!templates) return base;
+    let patched = false;
+    const nodes = base.nodes.map((n) => {
+      if (
+        (n.kind === 'barrier' || n.kind === 'template') &&
+        n.templateName &&
+        n.templateStageCount == null
+      ) {
+        const count = templates[n.templateName]?.stages?.length;
+        if (typeof count === 'number') {
+          patched = true;
+          return { ...n, templateStageCount: count };
+        }
+      }
+      return n;
+    });
+    return patched ? { nodes, edges: base.edges } : base;
     // Deps are narrowed to the fields buildTemplateOverviewGraph /
     // snapshot.graph actually consume. Snapshot object identity churns
     // on every SSE tick because the whole envelope is re-parsed; pinning
