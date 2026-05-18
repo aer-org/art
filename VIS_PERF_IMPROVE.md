@@ -232,3 +232,61 @@ Files:
 - `/tmp/perf-phase1-after.csv` — 137 samples (baseline workload)
 - `/tmp/perf-baseline-heavy.csv` + `/tmp/perf-phase1-heavy-after.csv`
 - `/tmp/test_heavy/__art__/` — single-stage 55 MB stress fixture
+
+## Phase 2 — server graph rebuild caching
+
+**Changes**
+
+- `app/server/pipeline-watcher.ts`: added a module-level
+  `Map<path, {mtimeMs, size, value}>` file cache. `readCachedJson<T>` /
+  `readCachedText` return **the same object reference** across
+  refreshes whenever the underlying file is byte-identical. Applied to
+  PIPELINE.json parsing, root state file (`PIPELINE_STATE.json`),
+  per-run `run.json` + `summary.json`, and to agent-ref files
+  (`agents/*.md`) loaded by `resolveAgentRefsInPlace`.
+- `app/server/routes/state.ts`: added single-entry caches for
+  `buildGraph(...)`, `buildTemplateOverview(...)`, and
+  `collectReferencedTemplates(...)`. Key tuples are compared by
+  identity — possible only because the file-level cache above keeps
+  `snap.pipeline` and `snap.state` references stable. Without that
+  upstream change the key would change on every refresh and the cache
+  would never hit.
+
+`resolveAgentRefsInPlace` is idempotent (skips stages whose
+`prompt` is already set), so re-invoking it on a cached pipeline
+object is a no-op after the first call — keeps the object reference
+stable across subsequent refreshes.
+
+**Measurement setup**
+
+Visualizer server brought up under Node 22.22.2 on port 4001
+(`AER_ART_APP_PORT=4001 node --experimental-strip-types
+server/index.ts`). One SSE consumer attached (`curl -N
+/api/events`). Then `art run /tmp/test_backpressure` against the
+loaded project. probe at 500 ms cadence over the ~70 s run.
+
+| metric                 | baseline-phase2 | phase2-after | delta             |
+|------------------------|----------------:|-------------:|-------------------|
+| **server peakHeapMB**  | **1154.9**      | **447.2**    | **−707 MB (−61%)**|
+| server peakRssMB       | 3001.1          | 2848.0       | −153 MB (−5%)     |
+| sseBackpressuredTotal  | 49 945          | 49 603       | −0.7%             |
+| snapshotSendsTotal     | 27              | 30           | ~same             |
+| CLI peakRssMB          | 80              | 81           | noise             |
+
+Heap win is the headline: graph + templates + agent-ref-file reads
+no longer churn through a fresh allocation each chokidar tick. Heap
+GC pressure on the server during a busy run drops by more than half.
+
+**The RSS gap (2.8 GB) is not Phase 2's territory.** Almost all of
+it is the kernel-level SSE socket write queue, accumulating because
+the per-log-line `run-log` events fire ~80 000× per run and the
+attached curl client can't drain that fast. `writesBackpressured`
+sat at ~50 000 in both runs, confirming the bottleneck. Phase 5 will
+need to address this directly (batching log-line emissions, or
+shedding when backpressured), since Phase 3 / 4 are client-side.
+
+Files:
+
+- `/tmp/perf-phase2-before.csv` + `.summary.json`
+- `/tmp/perf-phase2-after.csv` + `.summary.json`
+- `/tmp/perf-server-phase2-{before,after}.log`

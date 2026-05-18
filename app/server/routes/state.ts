@@ -9,9 +9,46 @@ import {
 } from '../pipeline-template-overview.ts';
 import { readPipelineStateForRun } from '../run-reader.ts';
 import { runController } from '../run-controller.ts';
-import type { NodeLogLine, PipelineState } from '../types.ts';
+import type {
+  Graph,
+  NodeLogLine,
+  PipelineConfig,
+  PipelineState,
+} from '../types.ts';
 
 const RUN_STARTING_CLOCK_SKEW_MS = 1000;
+
+// Per-mode single-entry caches keyed by the inputs that actually drive
+// the output. pipeline-watcher's readCachedJson preserves object
+// identity for unchanged files, so identity comparison here is exact
+// enough — every member of `key` is the same reference across SSE
+// broadcasts when the underlying inputs haven't changed.
+//
+// Without this, every connected client recomputed buildGraph (~hundreds
+// of stages worst case) on every chokidar-driven snapshot tick. With
+// multiple tabs open during a long run this was the dominant CPU draw
+// on the server side.
+type LiveGraphKey = readonly [
+  PipelineConfig | null,
+  PipelineState | null,
+  boolean, // isRunning
+  boolean, // isRunStarting
+  number | null, // activeRunStartedAt
+];
+let liveGraphCache: { key: LiveGraphKey; value: Graph } | null = null;
+
+type OverviewKey = readonly [PipelineConfig | null, string];
+let overviewGraphCache: { key: OverviewKey; value: Graph } | null = null;
+let templatesCache: {
+  key: OverviewKey;
+  value: ReturnType<typeof collectReferencedTemplates>;
+} | null = null;
+
+function keysEqual<T extends readonly unknown[]>(a: T, b: T): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 function stateCatchesRunStart(
   state: { lastUpdated?: unknown } | null | undefined,
@@ -82,22 +119,51 @@ export function registerStateRoutes(app: FastifyInstance): void {
               liveRunId,
             ) as PipelineState | null) ?? snap.state)
           : snap.state;
-      const graph = showLive
-        ? buildGraph(snap.pipeline, liveState, {
+      let graph: Graph;
+      if (showLive) {
+        const activeStartedAt =
+          activeRun?.startedAt ??
+          (isRunStarting ? (runStarting?.startedAt ?? null) : null) ??
+          null;
+        const key: LiveGraphKey = [
+          snap.pipeline,
+          liveState,
+          isRunning,
+          isRunStarting,
+          activeStartedAt,
+        ] as const;
+        if (liveGraphCache && keysEqual(liveGraphCache.key, key)) {
+          graph = liveGraphCache.value;
+        } else {
+          graph = buildGraph(snap.pipeline, liveState, {
             isRunning,
             isRunStarting,
-            activeRunStartedAt:
-              activeRun?.startedAt ??
-              (isRunStarting ? runStarting?.startedAt : null) ??
-              null,
-          })
-        : buildTemplateOverview(snap.pipeline, project.artDir);
+            activeRunStartedAt: activeStartedAt,
+          });
+          liveGraphCache = { key, value: graph };
+        }
+      } else {
+        const key: OverviewKey = [snap.pipeline, project.artDir] as const;
+        if (overviewGraphCache && keysEqual(overviewGraphCache.key, key)) {
+          graph = overviewGraphCache.value;
+        } else {
+          graph = buildTemplateOverview(snap.pipeline, project.artDir);
+          overviewGraphCache = { key, value: graph };
+        }
+      }
       // Ship raw template files alongside the overview so the client can
       // inline-expand a template without a server round-trip. Skipped in
       // live mode (graph already contains per-stage detail).
-      const templates = showLive
-        ? undefined
-        : collectReferencedTemplates(snap.pipeline, project.artDir);
+      let templates: ReturnType<typeof collectReferencedTemplates> | undefined;
+      if (!showLive) {
+        const key: OverviewKey = [snap.pipeline, project.artDir] as const;
+        if (templatesCache && keysEqual(templatesCache.key, key)) {
+          templates = templatesCache.value;
+        } else {
+          templates = collectReferencedTemplates(snap.pipeline, project.artDir);
+          templatesCache = { key, value: templates };
+        }
+      }
       send('snapshot', {
         projectDir: project.projectDir,
         pipeline: snap.pipeline,
