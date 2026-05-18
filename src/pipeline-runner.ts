@@ -1418,10 +1418,26 @@ PAYLOAD FORMATS:
         );
       }
       if (stageConfig.command) {
-        fs.writeFileSync(
-          path.join(stageDir, 'command.sh'),
-          stageConfig.command,
-        );
+        // For script-only command stages (`kind: 'command'`), the loader
+        // synthesizes `stageConfig.command` as `bash /workspace/scripts/
+        // <localName>.sh`. Archive the actual script body so the run's
+        // L3 viewer + the command-hash provenance reflect what ran, not
+        // the invocation wrapper.
+        let body = stageConfig.command;
+        if ((stageConfig as { kind?: string }).kind === 'command') {
+          const localName = stageConfig.dispatch?.localName ?? stageConfig.name;
+          try {
+            body = fs.readFileSync(
+              path.join(this.bundleDir, 'scripts', `${localName}.sh`),
+              'utf-8',
+            );
+          } catch {
+            // Script missing — fall back to the invocation one-liner so
+            // the archive is non-empty. Validator should have caught this
+            // upstream; keep a soft fallback for in-flight migrations.
+          }
+        }
+        fs.writeFileSync(path.join(stageDir, 'command.sh'), body);
         // Command stages also have shell/timeout/env worth preserving.
         // Kept separate from command.sh so the .sh file is exec-friendly.
         fs.writeFileSync(

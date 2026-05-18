@@ -4035,6 +4035,67 @@ describe('Command mode stage', () => {
       );
     expect(recoveryCalls).toHaveLength(1);
   }, 15000);
+
+  it('archives the script body in command.sh for script-only command stages', async () => {
+    const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
+    fs.mkdirSync(path.join(groupDir, 'scripts'), { recursive: true });
+    const scriptBody = "#!/usr/bin/env bash\necho 'hello from script'\necho '[STAGE_COMPLETE]'\n";
+    fs.writeFileSync(path.join(groupDir, 'scripts', 'lint.sh'), scriptBody);
+
+    // Mirror what the loader would synthesize for a kind:'command' stage.
+    const config: PipelineConfig = {
+      stages: [
+        {
+          name: 'lint',
+          kind: 'command',
+          command: 'bash /workspace/scripts/lint.sh',
+          mounts: { scripts: 'ro' },
+          transitions: [{ marker: 'STAGE_COMPLETE', next: null }],
+        } as PipelineStage,
+      ],
+    };
+
+    const ipcDir = path.join(
+      TEST_IPC_BASE,
+      `${group.folder}__pipeline_lint`,
+      'input',
+    );
+    fs.mkdirSync(ipcDir, { recursive: true });
+
+    const runner = new PipelineRunner(
+      group,
+      'test@g.us',
+      config,
+      async () => {},
+      () => {},
+      groupDir,
+    );
+
+    const runPromise = runner.run();
+    await new Promise((r) => setTimeout(r, 50));
+    fakeProc!.stdout.push('hello from script\n[STAGE_COMPLETE]\n');
+    fakeProc!.stdout.push(null);
+    fakeProc!.emit('close', 0);
+
+    await expect(runPromise).resolves.toBe('success');
+
+    const stageDir = path.join(
+      groupDir,
+      '.state',
+      'runs',
+      runner.getRunId(),
+      'nodes',
+      'root',
+      'stages',
+      'lint',
+    );
+    const archived = fs.readFileSync(
+      path.join(stageDir, 'command.sh'),
+      'utf-8',
+    );
+    expect(archived).toBe(scriptBody);
+    expect(archived).not.toContain('bash /workspace/scripts/lint.sh');
+  }, 15000);
 });
 
 describe('ExclusiveLock serialization', () => {
