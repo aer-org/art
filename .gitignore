@@ -40,6 +40,7 @@ agents-sdk-docs
 # Runtime output
 __art__/
 !examples/**/__art__/
+!tests/e2e/fixtures/**/__art__/
 
 
 CLAUDE.md
