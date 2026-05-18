@@ -23,12 +23,15 @@ import {
   StageSidebar,
   type L3PanelKind,
 } from '../components/StageSidebar.tsx';
+import { useAuthoredStage } from '../hooks/useAuthoredStage.ts';
 import { useStageDetail } from '../hooks/useStageDetail.ts';
 import {
   api,
   type GraphEdge,
   type GraphNode,
+  type PipelineSnapshot,
   type RunDetail,
+  type TemplateFile,
 } from '../lib/api.ts';
 import { replaceRunDetailParams } from '../router.tsx';
 
@@ -66,6 +69,12 @@ export function RunDetailPage(props: {
   const [graph, setGraph] = useState<{
     nodes: GraphNode[];
     edges: GraphEdge[];
+  } | null>(null);
+  // Snapshot of PIPELINE.json captured at run start. Drives the
+  // Authored section of the inspector — the source of truth for what
+  // the user wrote, frozen at the moment this run kicked off.
+  const [pipelineSnap, setPipelineSnap] = useState<{
+    stages?: Array<{ name: string; [k: string]: unknown }>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<string | null>(
@@ -106,13 +115,16 @@ export function RunDetailPage(props: {
 
     const load = async () => {
       try {
-        const [d, g] = await Promise.all([
+        const [d, g, snap] = await Promise.all([
           api.runDetail(props.runId),
           api.runGraph(props.runId).catch(() => null),
+          // pipeline-snap is optional — pre-snapshot runs return 404.
+          api.runPipelineSnap(props.runId).catch(() => null),
         ]);
         if (cancelled) return;
         setDetail(d);
         setGraph(g);
+        setPipelineSnap(snap as typeof pipelineSnap);
         setError(null);
         if (d.state === 'live') {
           pollTimer = window.setTimeout(load, LIVE_POLL_MS);
@@ -129,13 +141,34 @@ export function RunDetailPage(props: {
     };
   }, [props.runId]);
 
-  const selectedNodeId = useMemo(() => {
+  const selectedNode = useMemo<GraphNode | null>(() => {
     if (!selectedStage || !graph) return null;
-    const node = graph.nodes.find((n) => n.name === selectedStage);
-    return node?.nodeId ?? 'root';
+    return (
+      graph.nodes.find(
+        (n) => n.id === selectedStage || n.name === selectedStage,
+      ) ?? null
+    );
   }, [selectedStage, graph]);
 
-  const stageData = useStageDetail(detail, selectedNodeId, selectedStage);
+  const execution = useStageDetail(
+    detail,
+    selectedNode?.nodeId ?? null,
+    selectedStage,
+  );
+
+  // Build a snapshot-shaped object the authored-stage hook accepts.
+  // Archived runs have a base pipeline snapshot (pipeline-snap.json)
+  // but no per-run template snapshot — stitched lanes' authored config
+  // is only resolvable in the Live view, not here.
+  const authoredSnapshot = useMemo<PipelineSnapshot>(
+    () => ({
+      projectDir: null,
+      pipeline: pipelineSnap ?? undefined,
+      templates: undefined as Record<string, TemplateFile> | undefined,
+    }),
+    [pipelineSnap],
+  );
+  const authored = useAuthoredStage(authoredSnapshot, selectedNode);
 
   // Esc cascade: L4 → L3 → sidebar.
   useEffect(() => {
@@ -179,8 +212,11 @@ export function RunDetailPage(props: {
     );
   }
 
+  const hasExecution = execution.stage !== null;
   const sidebarOpen =
-    !!selectedStage && !!selectedNodeId && stageData.stage !== null;
+    !!selectedStage &&
+    !!selectedNode &&
+    (authored !== null || hasExecution || execution.loading);
   const l3Open = sidebarOpen && l3 !== null;
   const l4Open = l4 !== null;
 
@@ -228,26 +264,25 @@ export function RunDetailPage(props: {
             </div>
           )}
         </div>
-        {sidebarOpen && (
+        {sidebarOpen && selectedNode && (
           <StageSidebar
-            nodeId={selectedNodeId!}
+            nodeId={selectedNode.nodeId ?? 'root'}
             stageName={selectedStage!}
-            data={stageData}
+            authored={authored}
+            execution={execution}
             onClose={() => setSelectedStage(null)}
             onOpenPanel={(kind, mount) => setL3({ kind, mount })}
           />
         )}
-        {l3Open && selectedStage && selectedNodeId && (
+        {l3Open && selectedStage && selectedNode && (
           <L3Panel
             runId={props.runId}
-            nodeId={selectedNodeId}
+            nodeId={selectedNode.nodeId ?? 'root'}
             stageName={selectedStage}
+            authored={authored}
+            execution={execution}
             kind={l3!.kind}
             mount={l3!.mount}
-            stage={stageData.stage}
-            events={stageData.events}
-            turns={stageData.turns}
-            diffSummary={stageData.diffSummary}
             onClose={() => setL3(null)}
           />
         )}

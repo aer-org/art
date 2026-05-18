@@ -233,6 +233,7 @@ export function buildTemplateOverviewGraph(
       status: 'pending',
       isStitched: false,
       isTemplatePlaceholder: false,
+      localName: s.name,
     });
   }
 
@@ -249,6 +250,7 @@ export function buildTemplateOverviewGraph(
         isStitched: true,
         isTemplatePlaceholder: false,
         templateName: tplName,
+        localName: s.name,
       });
     }
   }

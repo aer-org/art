@@ -7,6 +7,16 @@
  * Runs — earlier the hook lived here, so switching tabs unmounted the
  * subscription and dropped any logs that arrived while the user was on
  * the Runs page.
+ *
+ * Inspector data model (see app/web/src/components/StageSidebar.tsx):
+ *   The selected stage's information has two independent sources:
+ *     - Authored  (Tier 1) — resolved from the snapshot's pipeline +
+ *                            templates via the selected GraphNode's
+ *                            templateName + localName fields.
+ *     - Execution (Tier 2c) — fetched per-run from
+ *                            /api/runs/<liveRunId>/stages/<nodeId>/<name>.
+ *   Both are passed independently to StageSidebar / L3Panel; neither
+ *   pretends to be the other.
  */
 import { useEffect, useMemo, useState } from 'react';
 
@@ -22,22 +32,16 @@ import {
   type L3PanelKind,
 } from '../components/StageSidebar.tsx';
 import type { usePipelineState } from '../hooks/usePipelineState.ts';
+import { useAuthoredStage } from '../hooks/useAuthoredStage.ts';
 import { useStageDetail } from '../hooks/useStageDetail.ts';
-import { useStaticStageDetail } from '../hooks/useStaticStageDetail.ts';
 import {
   api,
+  type GraphNode,
   type PipelineSnapshot,
   type PreflightResponse,
   type RunDetail,
 } from '../lib/api.ts';
-import {
-  buildTemplateOverviewGraph,
-  isTemplateStageId,
-  templateOfStageId,
-} from '../lib/templateOverview.ts';
-
-// L3 panel kinds that make sense in overview mode (no run yet).
-const OVERVIEW_L3_KINDS: L3PanelKind[] = ['prompt', 'command', 'mounts'];
+import { buildTemplateOverviewGraph } from '../lib/templateOverview.ts';
 
 export function LivePage(props: {
   preflight: PreflightResponse | null;
@@ -48,24 +52,18 @@ export function LivePage(props: {
     snapshot,
     setSnapshot,
     runLog,
-    nodeLogs,
     appendRunLog,
     markRunStarting,
     resetRunLog,
     clearRunLog,
-    setNodeLog,
     clearNodeLog,
   } = props.pipeline;
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
-  const [overviewL3, setOverviewL3] = useState<L3PanelKind | null>(null);
-  // L3 panel for live mode (in-progress run inspector — same UX as
-  // RunDetailPage, but pointed at the active run).
-  const [liveL3, setLiveL3] = useState<{
-    kind: L3PanelKind;
-    mount?: string;
-  } | null>(null);
-  // RunDetail for the active run, polled while live so the L2 / L3
-  // panels see fresh `stage.json` / turn / diff data.
+  const [l3, setL3] = useState<{ kind: L3PanelKind; mount?: string } | null>(
+    null,
+  );
+  // RunDetail for the active run; polled while live so per-stage fetches
+  // see fresh archive contents (stage.json, turns, diff, …).
   const [liveDetail, setLiveDetail] = useState<RunDetail | null>(null);
   // Chat-pane collapse, persisted across reloads. ChatPanel stays
   // mounted while collapsed so useChat's session + messages survive
@@ -127,100 +125,25 @@ export function LivePage(props: {
     expandedTemplates,
   ]);
 
+  // Resolve the selected GraphNode from displayGraph. Single source —
+  // both overview and live graphs put templateName + localName on
+  // every node, so the inspector lookups can be uniform.
+  const selectedNode: GraphNode | null = useMemo(() => {
+    if (!selectedStage) return null;
+    return displayGraph.nodes.find((n) => n.id === selectedStage) ?? null;
+  }, [displayGraph.nodes, selectedStage]);
 
-  // Overview vs live: both render a StageSidebar + L3Panel inspector
-  // on stage click. Overview synthesizes data from PIPELINE.json via
-  // useStaticStageDetail; live fetches from /api/runs/<liveRunId>/...
-  // via useStageDetail (same hook RunDetailPage uses).
+  const authored = useAuthoredStage(snapshot, selectedNode);
+
   const isOverview = snapshot.graphMode === 'template-overview';
-  const selectedConfigStage = useMemo(() => {
-    if (!isOverview || !selectedStage) return null;
-    // Template-internal stage id (e.g. `tpl::experiment::run`) — look the
-    // stage up inside the template definition instead of the base pipeline.
-    if (isTemplateStageId(selectedStage)) {
-      const tplName = templateOfStageId(selectedStage);
-      if (!tplName) return null;
-      const tpl = snapshot.templates?.[tplName];
-      const localName = selectedStage.slice(`tpl::${tplName}::`.length);
-      const stages = (tpl?.stages ?? []) as Array<{
-        name: string;
-        [k: string]: unknown;
-      }>;
-      return stages.find((s) => s.name === localName) ?? null;
-    }
-    const stages = (snapshot.pipeline?.stages ?? []) as Array<{
-      name: string;
-      [k: string]: unknown;
-    }>;
-    return stages.find((s) => s.name === selectedStage) ?? null;
-  }, [isOverview, selectedStage, snapshot.pipeline, snapshot.templates]);
-  const staticStageData = useStaticStageDetail(selectedConfigStage);
-  const overviewSidebarOpen =
-    isOverview && !!selectedStage && staticStageData.stage !== null;
-  const overviewL3Open = overviewSidebarOpen && overviewL3 !== null;
-  const overviewLayoutClass = overviewL3Open
-    ? 'inspector-with-l3'
-    : overviewSidebarOpen
-      ? 'inspector-with-sidebar'
-      : '';
-  const overviewStaticTexts = useMemo(() => {
-    if (!selectedConfigStage) return undefined;
-    const s = selectedConfigStage as {
-      name: string;
-      kind?: string;
-      prompt?: string;
-      command?: string;
-      successMarker?: string;
-      errorMarker?: string;
-      timeout?: number;
-      env?: Record<string, string>;
-    };
-    const isCommand = s.kind === 'command' || typeof s.command === 'string';
-    return {
-      prompt: s.prompt ?? null,
-      command: s.command ?? null,
-      // Command stages by convention have a script file at the same
-      // local name; surface that to the viewer so it pulls the body
-      // instead of the synthesized one-liner. Legacy command stages
-      // (no kind: 'command') fall back to the inline command text.
-      scriptStageName: isCommand ? s.name : undefined,
-      commandMeta: isCommand
-        ? {
-            shell: 'sh -c',
-            timeoutMs: s.timeout,
-            successMarker: s.successMarker,
-            errorMarker: s.errorMarker,
-            env: s.env ?? {},
-          }
-        : null,
-    };
-  }, [selectedConfigStage]);
 
-  // Esc cascade for overview inspector: L3 → sidebar.
-  useEffect(() => {
-    if (!isOverview) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (overviewL3) setOverviewL3(null);
-      else if (selectedStage) setSelectedStage(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOverview, selectedStage, overviewL3]);
-
-  // Close L3 if stage selection changes.
-  useEffect(() => {
-    if (!selectedStage) {
-      setOverviewL3(null);
-      setLiveL3(null);
-    }
-  }, [selectedStage]);
-
-  // === Live-mode inspector (same UX as RunDetailPage) =====================
+  // === Live-mode execution data ===========================================
   // While a run is active, fetch the same RunDetail RunDetailPage uses so
-  // the StageSidebar / L3Panel pull live-archived `runs/<id>/...` data.
+  // the StageSidebar / L3Panel see fresh stage.json / turns / diff data.
   const liveRunId =
-    !isOverview && snapshot.isRunning ? (snapshot.latestRun?.runId ?? null) : null;
+    !isOverview && snapshot.isRunning
+      ? (snapshot.latestRun?.runId ?? null)
+      : null;
   useEffect(() => {
     if (!liveRunId) {
       setLiveDetail(null);
@@ -243,42 +166,42 @@ export function LivePage(props: {
     };
   }, [liveRunId]);
 
-  const liveSelectedNodeId = useMemo(() => {
-    if (isOverview || !selectedStage) return null;
-    const node = displayGraph.nodes.find(
-      (n) => n.name === selectedStage || n.id === selectedStage,
-    );
-    return node?.nodeId ?? 'root';
-  }, [isOverview, selectedStage, displayGraph]);
-  const liveStageData = useStageDetail(
+  const executionNodeId = selectedNode?.nodeId ?? null;
+  const execution = useStageDetail(
     liveDetail,
-    liveSelectedNodeId,
-    !isOverview ? selectedStage : null,
+    isOverview ? null : executionNodeId,
+    isOverview ? null : (selectedStage ?? null),
   );
-  const liveSidebarOpen =
-    !isOverview &&
-    !!liveRunId &&
-    !!selectedStage &&
-    !!liveSelectedNodeId &&
-    liveStageData.stage !== null;
-  const liveL3Open = liveSidebarOpen && liveL3 !== null;
-  const liveLayoutClass = liveL3Open
+
+  // Sidebar opens whenever there's something to show — either an
+  // authored config or an execution record (or both). We do not
+  // pre-require either: a still-loading state renders "Loading…"
+  // inside the sidebar instead of refusing to open.
+  const hasExecution = execution.stage !== null;
+  const inspectorOpen =
+    !!selectedStage && (authored !== null || hasExecution || execution.loading);
+  const l3Open = inspectorOpen && l3 !== null;
+  const layoutClass = l3Open
     ? 'inspector-with-l3'
-    : liveSidebarOpen
+    : inspectorOpen
       ? 'inspector-with-sidebar'
       : '';
 
-  // Esc cascade for live inspector: L3 → sidebar.
+  // Esc cascade: L3 → sidebar.
   useEffect(() => {
-    if (isOverview) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (liveL3) setLiveL3(null);
+      if (l3) setL3(null);
       else if (selectedStage) setSelectedStage(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOverview, selectedStage, liveL3]);
+  }, [selectedStage, l3]);
+
+  // Close L3 if stage selection changes.
+  useEffect(() => {
+    if (!selectedStage) setL3(null);
+  }, [selectedStage]);
 
   function handleGraphNodeClick(nodeId: string): void {
     const node = displayGraph.nodes.find((n) => n.id === nodeId);
@@ -303,13 +226,6 @@ export function LivePage(props: {
     setSelectedStage(nodeId);
   }
 
-  // (Removed) auto-select of the currently-running stage. The old
-  // bottom NodeLogPanel showed a small log tail and the auto-select
-  // was a convenience; now that stage selection opens the wider
-  // StageSidebar + L3 inspector, auto-selecting fights the user's
-  // dismiss. The graph still pulses the running stage so it's
-  // visually identifiable without a forced sidebar.
-
   async function refresh() {
     const cur = await api.current().catch(() => null);
     if (cur) setSnapshot(cur);
@@ -319,8 +235,7 @@ export function LivePage(props: {
     clearRunLog();
     clearNodeLog();
     setSelectedStage(null);
-    setLiveL3(null);
-    setOverviewL3(null);
+    setL3(null);
     setSnapshot(loaded);
     setLoadNotice(
       loaded.initialized
@@ -328,7 +243,10 @@ export function LivePage(props: {
         : 'Loaded project.',
     );
     setShowPicker(false);
-    api.preflightForce().then(setPreflight).catch(() => {});
+    api
+      .preflightForce()
+      .then(setPreflight)
+      .catch(() => {});
   }
 
   function handleRunStarting() {
@@ -410,95 +328,40 @@ export function LivePage(props: {
             </button>
           </div>
         )}
-        {isOverview ? (
-          <div className={`inspector ${overviewLayoutClass}`}>
-            <div className="inspector-body">
-              <div className="inspector-canvas">
-                <PipelineGraph
-                  nodes={displayGraph.nodes}
-                  edges={displayGraph.edges}
-                  onNodeClick={handleGraphNodeClick}
-                />
-              </div>
-              {overviewSidebarOpen && (
-                <StageSidebar
-                  nodeId={
-                    selectedStage && isTemplateStageId(selectedStage)
-                      ? `template:${templateOfStageId(selectedStage) ?? '?'}`
-                      : 'root'
-                  }
-                  stageName={
-                    (selectedConfigStage as { name?: string } | null)?.name ??
-                    selectedStage!
-                  }
-                  data={staticStageData}
-                  onClose={() => setSelectedStage(null)}
-                  onOpenPanel={(kind) => {
-                    if (OVERVIEW_L3_KINDS.includes(kind)) setOverviewL3(kind);
-                  }}
-                  overview
-                />
-              )}
-              {overviewL3Open && selectedStage && (
-                <L3Panel
-                  runId=""
-                  nodeId="root"
-                  stageName={selectedStage}
-                  kind={overviewL3!}
-                  stage={staticStageData.stage}
-                  events={[]}
-                  turns={[]}
-                  diffSummary={null}
-                  onClose={() => setOverviewL3(null)}
-                  staticTexts={overviewStaticTexts}
-                />
-              )}
+        <div className={`inspector ${layoutClass}`}>
+          <div className="inspector-body">
+            <div className="inspector-canvas">
+              <PipelineGraph
+                nodes={displayGraph.nodes}
+                edges={displayGraph.edges}
+                onNodeClick={handleGraphNodeClick}
+              />
             </div>
-            <RunLogTray lines={runLog} onClear={clearRunLog} />
+            {inspectorOpen && selectedStage && (
+              <StageSidebar
+                nodeId={executionNodeId ?? 'root'}
+                stageName={selectedStage}
+                authored={authored}
+                execution={execution}
+                onClose={() => setSelectedStage(null)}
+                onOpenPanel={(kind, mount) => setL3({ kind, mount })}
+              />
+            )}
+            {l3Open && selectedStage && (
+              <L3Panel
+                runId={liveRunId}
+                nodeId={executionNodeId ?? 'root'}
+                stageName={selectedStage}
+                authored={authored}
+                execution={execution}
+                kind={l3!.kind}
+                mount={l3?.mount}
+                onClose={() => setL3(null)}
+              />
+            )}
           </div>
-        ) : (
-          // Live mode: same StageSidebar + L3Panel layout RunDetailPage
-          // uses, pointed at the active run. Per-stage data is fetched
-          // through useStageDetail against /api/runs/<liveRunId>/...
-          <div className={`inspector ${liveLayoutClass}`}>
-            <div className="inspector-body">
-              <div className="inspector-canvas">
-                <PipelineGraph
-                  nodes={displayGraph.nodes}
-                  edges={displayGraph.edges}
-                  onNodeClick={handleGraphNodeClick}
-                />
-              </div>
-              {liveSidebarOpen && (
-                <StageSidebar
-                  nodeId={liveSelectedNodeId!}
-                  stageName={selectedStage!}
-                  data={liveStageData}
-                  onClose={() => setSelectedStage(null)}
-                  onOpenPanel={(kind, mount) => setLiveL3({ kind, mount })}
-                />
-              )}
-              {liveL3Open &&
-                selectedStage &&
-                liveSelectedNodeId &&
-                liveRunId && (
-                  <L3Panel
-                    runId={liveRunId}
-                    nodeId={liveSelectedNodeId}
-                    stageName={selectedStage}
-                    kind={liveL3!.kind}
-                    mount={liveL3?.mount}
-                    stage={liveStageData.stage}
-                    events={liveStageData.events}
-                    turns={liveStageData.turns}
-                    diffSummary={liveStageData.diffSummary}
-                    onClose={() => setLiveL3(null)}
-                  />
-                )}
-            </div>
-            <RunLogTray lines={runLog} onClear={clearRunLog} />
-          </div>
-        )}
+          <RunLogTray lines={runLog} onClear={clearRunLog} />
+        </div>
         {showSetup && (
           <SetupModal
             preflight={preflight}

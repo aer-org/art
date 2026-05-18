@@ -1,29 +1,31 @@
 /**
  * StageSidebar — L2 of the visualizer UX (app/VISUALIZER-PLAN.md §2).
  *
- * Three accordion sections, all visible (scroll inside):
- *   Input    — prompt source, substitutions, initial preview, command,
- *              container summary
- *   Output   — outcome, matched marker, transition, retry/exit/duration,
- *              diff summary per mount
- *   Internal — turn count + aggregate, decision counts, stream sizes
+ * Renders a stage's information split by source of truth:
  *
- * Each section's "View …" buttons currently emit a `View Y` placeholder
- * — wires into L3 panels in Phase E. The sidebar itself is fully usable
- * for at-a-glance triage today.
+ *   Authored  — Tier 1: what the user wrote in PIPELINE.json / templates/.
+ *               Always present whenever the snapshot can resolve the
+ *               authored config (so un-executed lanes still get a useful
+ *               inspector card).
+ *
+ *   Execution — Tier 2c: what the runtime archived for one specific run
+ *               of this stage (stage.json + container.json + substitutions
+ *               + per-stage outputs). Only rendered when the run has at
+ *               least spawned this stage.
+ *
+ * Each section's "view" buttons emit L3PanelKind events; the parent
+ * decides which data shape (authored / execution) feeds the L3 panel.
  */
+import type { AuthoredStage, StageDetail } from '../lib/api.ts';
 import type { StageSidebarData } from '../hooks/useStageDetail.ts';
 
 interface Props {
   nodeId: string;
   stageName: string;
-  data: StageSidebarData;
+  authored: AuthoredStage | null;
+  execution: StageSidebarData | null;
   onClose: () => void;
   onOpenPanel?: (panel: L3PanelKind, mount?: string) => void;
-  // Overview mode (no run yet): hide Output and Internal sections plus
-  // run-only Input rows (substitutions, initial handoff). Only the
-  // authoring inputs — prompt source, command, container — remain.
-  overview?: boolean;
 }
 
 export type L3PanelKind =
@@ -40,13 +42,16 @@ export type L3PanelKind =
 export function StageSidebar({
   nodeId,
   stageName,
-  data,
+  authored,
+  execution,
   onClose,
   onOpenPanel,
-  overview = false,
 }: Props) {
-  const { stage, events, turns, diffSummary, loading, error } = data;
-  const stageRec = stage?.stage as Record<string, unknown> | null;
+  const exec = execution?.stage ?? null;
+  const stageRec = exec?.stage as Record<string, unknown> | null;
+  const executionAvailable = exec !== null;
+  const loading = execution?.loading ?? false;
+  const error = execution?.error ?? null;
 
   return (
     <aside className="stage-sidebar inspector">
@@ -57,6 +62,12 @@ export function StageSidebar({
           <div className="sub">
             <span className="muted">node </span>
             <code>{nodeId}</code>
+            {authored?.templateName && (
+              <>
+                <span className="muted"> · template </span>
+                <code>{authored.templateName}</code>
+              </>
+            )}
           </div>
         </div>
         <button className="sidebar-close" onClick={onClose} title="Close (Esc)">
@@ -65,134 +76,145 @@ export function StageSidebar({
       </header>
 
       {error && <div className="sidebar-error">{error}</div>}
-      {loading && <div className="sidebar-loading">Loading…</div>}
+      {loading && !executionAvailable && (
+        <div className="sidebar-loading">Loading…</div>
+      )}
 
-      {!loading && !error && (
-        <div className="sidebar-sections">
-          <Section title="Input">
+      {!loading && !error && !authored && !executionAvailable && (
+        <div className="sidebar-empty muted">
+          No authored config and no execution record for this stage.
+        </div>
+      )}
+
+      <div className="sidebar-sections">
+        {authored && (
+          <Section title="Authored">
+            <Field label="kind">
+              <code>{authored.kind}</code>
+            </Field>
             <Field label="prompt source">
-              {stage?.promptSource ? (
-                <code>{stage.promptSource}</code>
+              {authored.promptSource ? (
+                <code>{authored.promptSource}</code>
+              ) : authored.prompt ? (
+                <code>inline</code>
               ) : (
                 <span className="muted">—</span>
               )}
-              {stage?.hasPrompt && (
+              {authored.prompt && (
                 <BtnLink onClick={() => onOpenPanel?.('prompt')}>view</BtnLink>
               )}
             </Field>
-            {!overview && (
-              <Field label="initial handoff">
-                {stage?.hasInitial ? (
-                  <BtnLink onClick={() => onOpenPanel?.('initial')}>
-                    view
-                  </BtnLink>
-                ) : (
-                  <span className="muted">—</span>
-                )}
-              </Field>
-            )}
             <Field label="command">
-              {stage?.hasCommand ? (
+              {authored.kind === 'command' ? (
                 <BtnLink onClick={() => onOpenPanel?.('command')}>view</BtnLink>
               ) : (
                 <span className="muted">agent mode</span>
               )}
             </Field>
-            {!overview && (
-              <Field label="substitutions">
-                {stage?.substitutions ? (
-                  <SubsLine subs={stage.substitutions} />
-                ) : (
-                  <span className="muted">—</span>
-                )}
-              </Field>
-            )}
             <Field label="container">
-              {stage?.container ? (
-                <ContainerLine container={stage.container} />
-              ) : (
-                <span className="muted">—</span>
-              )}
-              {stage?.container && (
+              <AuthoredContainerLine authored={authored} />
+              {(authored.image ||
+                (authored.mounts && Object.keys(authored.mounts).length > 0) ||
+                (authored.hostMounts && authored.hostMounts.length > 0)) && (
                 <BtnLink onClick={() => onOpenPanel?.('mounts')}>view</BtnLink>
               )}
             </Field>
+            <Field label="markers">
+              <MarkersLine authored={authored} />
+            </Field>
           </Section>
+        )}
 
-          {!overview && (
-            <Section title="Output">
-              <Field label="outcome">
-                <OutcomeChip outcome={pickStr(stageRec, 'result')} />
-              </Field>
-              <Field label="matched marker">
-                {pickStr(stageRec, 'matchedMarker') ? (
-                  <code>[{pickStr(stageRec, 'matchedMarker')}]</code>
-                ) : (
-                  <span className="muted">—</span>
-                )}
-              </Field>
-              <Field label="transition target">
-                {fmtTarget(stageRec?.transitionTarget)}
-              </Field>
-              <Field label="duration">
-                {fmtDuration(pickNum(stageRec, 'durationMs'))}
-              </Field>
-              <Field label="retry / exit">
-                <RetryExit
-                  retryCount={pickNum(stageRec, 'retryCount')}
-                  exitCode={pickNum(stageRec, 'exitCode')}
-                />
-              </Field>
-              <Field label="diff">
-                <DiffSummaryLine
-                  summary={diffSummary}
-                  onView={(m) => onOpenPanel?.('diff', m)}
-                />
-              </Field>
-              <Field label="payload">
-                <PayloadLine len={pickNum(stageRec, 'payloadLen')} />
-              </Field>
-            </Section>
-          )}
-
-          {!overview && (
-            <Section title="Internal">
-              <Field label="turns">
-                <TurnsLine turns={turns} />
-                {turns.length > 0 && (
-                  <BtnLink onClick={() => onOpenPanel?.('turns')}>view</BtnLink>
-                )}
-              </Field>
-              <Field label="transcript">
-                <span className="muted">
-                  {stage?.hasTranscript ? 'archived' : 'n/a'}
-                </span>
-                {stage?.hasTranscript && (
-                  <BtnLink onClick={() => onOpenPanel?.('transcript')}>
-                    view
-                  </BtnLink>
-                )}
-              </Field>
-              <Field label="decisions">
-                <DecisionsLine events={events} />
-                {events.length > 0 && (
-                  <BtnLink onClick={() => onOpenPanel?.('decisions')}>
-                    view
-                  </BtnLink>
-                )}
-              </Field>
-              <Field label="streams">
-                <StreamsLine sizes={stage?.streamSizes} />
-                {stage && hasAnyStream(stage.streamSizes) && (
-                  <BtnLink onClick={() => onOpenPanel?.('stream')}>
-                    view
-                  </BtnLink>
-                )}
-              </Field>
-            </Section>
-          )}
-        </div>
-      )}
+        {executionAvailable && (
+          <Section title="Execution">
+            <Field label="initial handoff">
+              {exec?.hasInitial ? (
+                <BtnLink onClick={() => onOpenPanel?.('initial')}>view</BtnLink>
+              ) : (
+                <span className="muted">—</span>
+              )}
+            </Field>
+            <Field label="substitutions">
+              {exec?.substitutions ? (
+                <SubsLine subs={exec.substitutions} />
+              ) : (
+                <span className="muted">—</span>
+              )}
+            </Field>
+            <Field label="container (resolved)">
+              {exec?.container ? (
+                <ContainerLine container={exec.container} />
+              ) : (
+                <span className="muted">—</span>
+              )}
+              {exec?.container && (
+                <BtnLink onClick={() => onOpenPanel?.('mounts')}>view</BtnLink>
+              )}
+            </Field>
+            <Field label="outcome">
+              <OutcomeChip outcome={pickStr(stageRec, 'result')} />
+            </Field>
+            <Field label="matched marker">
+              {pickStr(stageRec, 'matchedMarker') ? (
+                <code>[{pickStr(stageRec, 'matchedMarker')}]</code>
+              ) : (
+                <span className="muted">—</span>
+              )}
+            </Field>
+            <Field label="transition target">
+              {fmtTarget(stageRec?.transitionTarget)}
+            </Field>
+            <Field label="duration">
+              {fmtDuration(pickNum(stageRec, 'durationMs'))}
+            </Field>
+            <Field label="retry / exit">
+              <RetryExit
+                retryCount={pickNum(stageRec, 'retryCount')}
+                exitCode={pickNum(stageRec, 'exitCode')}
+              />
+            </Field>
+            <Field label="diff">
+              <DiffSummaryLine
+                summary={execution?.diffSummary ?? null}
+                onView={(m) => onOpenPanel?.('diff', m)}
+              />
+            </Field>
+            <Field label="payload">
+              <PayloadLine len={pickNum(stageRec, 'payloadLen')} />
+            </Field>
+            <Field label="turns">
+              <TurnsLine turns={execution?.turns ?? []} />
+              {(execution?.turns?.length ?? 0) > 0 && (
+                <BtnLink onClick={() => onOpenPanel?.('turns')}>view</BtnLink>
+              )}
+            </Field>
+            <Field label="transcript">
+              <span className="muted">
+                {exec?.hasTranscript ? 'archived' : 'n/a'}
+              </span>
+              {exec?.hasTranscript && (
+                <BtnLink onClick={() => onOpenPanel?.('transcript')}>
+                  view
+                </BtnLink>
+              )}
+            </Field>
+            <Field label="decisions">
+              <DecisionsLine events={execution?.events ?? []} />
+              {(execution?.events?.length ?? 0) > 0 && (
+                <BtnLink onClick={() => onOpenPanel?.('decisions')}>
+                  view
+                </BtnLink>
+              )}
+            </Field>
+            <Field label="streams">
+              <StreamsLine sizes={exec?.streamSizes} />
+              {exec && hasAnyStream(exec.streamSizes) && (
+                <BtnLink onClick={() => onOpenPanel?.('stream')}>view</BtnLink>
+              )}
+            </Field>
+          </Section>
+        )}
+      </div>
     </aside>
   );
 }
@@ -286,7 +308,8 @@ function SubsLine({ subs }: { subs: Record<string, unknown> }) {
       ? (subs.substitutions as Record<string, unknown>)
       : null;
   const payloadKeys =
-    payload && Object.keys(payload).filter((k) => k !== 'insertId' && k !== 'index');
+    payload &&
+    Object.keys(payload).filter((k) => k !== 'insertId' && k !== 'index');
   return (
     <span className="subs-line">
       {insertId && <code>{insertId}</code>}
@@ -294,7 +317,7 @@ function SubsLine({ subs }: { subs: Record<string, unknown> }) {
       {payloadKeys && payloadKeys.length > 0 && (
         <span className="muted"> · {payloadKeys.length} fields</span>
       )}
-      {(!insertId && index === null) && <span className="muted">—</span>}
+      {!insertId && index === null && <span className="muted">—</span>}
     </span>
   );
 }
@@ -322,6 +345,53 @@ function ContainerLine({ container }: { container: Record<string, unknown> }) {
       )}
     </span>
   );
+}
+
+function AuthoredContainerLine({ authored }: { authored: AuthoredStage }) {
+  const image = authored.image ?? null;
+  const mountKeys = Object.entries(authored.mounts ?? {}).filter(
+    ([, mode]) => mode != null,
+  );
+  const rw = mountKeys.filter(([, m]) => m === 'rw').length;
+  const ro = mountKeys.length - rw;
+  const host = authored.hostMounts?.length ?? 0;
+  if (!image && mountKeys.length === 0 && host === 0) {
+    return <span className="muted">—</span>;
+  }
+  return (
+    <span className="container-line">
+      <span className="muted">{authored.kind} · </span>
+      <code>{image ?? '(default)'}</code>
+      {mountKeys.length > 0 && (
+        <span className="muted">
+          {' '}
+          · {rw}rw / {ro}ro
+        </span>
+      )}
+      {host > 0 && <span className="muted"> · {host} host</span>}
+    </span>
+  );
+}
+
+function MarkersLine({ authored }: { authored: AuthoredStage }) {
+  const parts: React.ReactNode[] = [];
+  if (authored.successMarker) {
+    parts.push(
+      <span key="s">
+        success <code>[{authored.successMarker}]</code>
+      </span>,
+    );
+  }
+  if (authored.errorMarker) {
+    parts.push(
+      <span key="e" className="muted">
+        {' '}
+        · error <code>[{authored.errorMarker}]</code>
+      </span>,
+    );
+  }
+  if (parts.length === 0) return <span className="muted">—</span>;
+  return <>{parts}</>;
 }
 
 function DiffSummaryLine({
@@ -362,7 +432,8 @@ function DiffSummaryLine({
 }
 
 function PayloadLine({ len }: { len?: number | null }) {
-  if (typeof len !== 'number' || len === 0) return <span className="muted">—</span>;
+  if (typeof len !== 'number' || len === 0)
+    return <span className="muted">—</span>;
   return <span>{len} chars</span>;
 }
 
@@ -472,9 +543,11 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)}MB`;
 }
 
-function hasAnyStream(
-  sizes?: { agent: number; stdout: number; stderr: number },
-): boolean {
+function hasAnyStream(sizes?: {
+  agent: number;
+  stdout: number;
+  stderr: number;
+}): boolean {
   if (!sizes) return false;
   return sizes.agent > 0 || sizes.stdout > 0 || sizes.stderr > 0;
 }

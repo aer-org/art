@@ -63,6 +63,10 @@ export interface GraphNode {
   isStitched: boolean;
   isTemplatePlaceholder: boolean;
   templateName?: string;
+  // Authored local name (pre dispatch-scope rename). Same as `name`
+  // for base stages; for stitched lanes, the source-template stage
+  // name — used to look up static config.
+  localName?: string;
   // Run-detail mode only.
   retryCount?: number;
   nodeId?: string;
@@ -396,6 +400,56 @@ export interface StageDetail {
   diffMounts: string[];
   turnCount: number;
   streamSizes: { agent: number; stdout: number; stderr: number };
+}
+
+/**
+ * AuthoredStage — Tier 1 source of truth (what the user wrote in
+ * PIPELINE.json or templates/<name>.json). Independent of any run.
+ *
+ * Distinct from StageDetail (Tier 2c — what the runtime archived for a
+ * specific stage execution). The two get rendered in different sections
+ * of the inspector so the user can tell "what was designed" from "what
+ * actually ran".
+ *
+ * For stitched lanes, the authored config lives inside the source
+ * template (`templateName`); `localName` is the pre-rename stage name
+ * used to look it up.
+ */
+export interface AuthoredStage {
+  name: string;
+  kind: 'agent' | 'command';
+  agent?: string;
+  prompt?: string;
+  promptSource?: string;
+  command?: string;
+  // For kind: 'command' the runtime synthesizes `command` as
+  // `bash /workspace/scripts/<localName>.sh`. The L3 viewer fetches
+  // the script body via /api/stage/:name/script when this is set.
+  scriptStageName?: string;
+  image?: string;
+  mounts?: Record<string, 'ro' | 'rw' | null | undefined>;
+  hostMounts?: Array<{
+    hostPath: string;
+    containerPath?: string;
+    readonly?: boolean;
+  }>;
+  env?: Record<string, string>;
+  successMarker?: string;
+  errorMarker?: string;
+  timeout?: number;
+  privileged?: boolean;
+  runAsRoot?: boolean;
+  transitions?: Array<{
+    marker?: string;
+    next?: string | string[] | null;
+    template?: string;
+  }>;
+  // null for a base-pipeline stage; the source template name for a
+  // stitched-lane stage.
+  templateName?: string;
+  // For stitched lanes, the authored stage name (before dispatch-scope
+  // rename). For base stages, equal to `name`.
+  localName: string;
 }
 
 export interface ChatOptions {
