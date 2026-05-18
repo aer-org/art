@@ -63,7 +63,9 @@ describe('TailBuffer', () => {
     for (let i = 0; i < 1000; i++) {
       b.append(`noise line ${i}\n`);
     }
-    b.append('[STAGE_COMPLETE]\n---PAYLOAD_START---\n{"ok":true}\n---PAYLOAD_END---\n');
+    b.append(
+      '[STAGE_COMPLETE]\n---PAYLOAD_START---\n{"ok":true}\n---PAYLOAD_END---\n',
+    );
     const tail = b.toString();
     expect(tail).toContain('[STAGE_COMPLETE]');
     expect(tail).toContain('---PAYLOAD_START---');

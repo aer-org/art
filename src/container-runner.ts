@@ -705,7 +705,8 @@ export async function runContainerAgent(
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
-      if (stdoutStream) noteStdoutWrite(stdoutStream, stdoutStream.write(chunk));
+      if (stdoutStream)
+        noteStdoutWrite(stdoutStream, stdoutStream.write(chunk));
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,
@@ -754,7 +755,8 @@ export async function runContainerAgent(
 
     container.stderr.on('data', (data) => {
       const chunk = data.toString();
-      if (stderrStream) noteStderrWrite(stderrStream, stderrStream.write(chunk));
+      if (stderrStream)
+        noteStderrWrite(stderrStream, stderrStream.write(chunk));
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,
