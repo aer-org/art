@@ -333,3 +333,37 @@ change SSE payload size or count — so no separate measurement table
 here. Headline win is qualitative and best seen with Chrome DevTools
 Performance panel during a long run; the layout pass that previously
 showed up on every tick is now gone except on structural changes.
+
+## Phase 4 — virtualize RunLogTray
+
+**Changes**
+
+- `app/web/src/hooks/usePipelineState.ts`: tag each `RunLogLine` with
+  a monotonic `seq` at append time. `appendRunLog` now stamps a
+  `seq` if the caller didn't supply one. Stable across the
+  `slice(-1000)` ring eviction.
+- `app/web/src/components/RunLogTray.tsx`: replace the "render all
+  1000 `<div>`s with `key={index}`" implementation with a manual
+  windowed list (fixed `LINE_HEIGHT = 17px`, `OVERSCAN = 20`).
+  Only the visible slice of lines is mounted; the rest is a sentinel
+  div sized to `lines.length * LINE_HEIGHT`. Keys are `seq`, so when
+  the array shifts on overflow, React doesn't re-reconcile every
+  remaining line.
+- Scroll-on-append now only fires while the user is at the bottom
+  (`stuckToBottomRef`). Scrolling up to read older lines no longer
+  yanks the view back to the tail on every new line.
+
+**Cost model**
+
+- Before: 1000 `<div>`s in the DOM at all times. Each append:
+  React reconciles 1000 children because index keys all shifted by
+  one. Auto-scroll fires unconditionally on every append.
+- After: ~`viewportHeight/17 + 2*OVERSCAN` ≈ 30–60 `<div>`s in the
+  DOM. Each append: React reconciles only the visible window;
+  unchanged-key entries (most of them) skip work entirely.
+  Auto-scroll fires only when the user is parked at the tail.
+
+Server-side metrics are unaffected (SSE payload + count are the
+same). The win lands on client paint / layout / scripting time,
+visible in DevTools' Performance panel as flat per-tick frame
+budgets instead of a creeping climb after thousands of log lines.

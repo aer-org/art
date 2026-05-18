@@ -4,6 +4,11 @@ import { api, subscribeSSE, type NodeLogLine, type PipelineSnapshot } from '../l
 export interface RunLogLine {
   kind: 'stdout' | 'stderr';
   line: string;
+  /** Monotonic counter assigned at append time. Stable across array
+   * shifts (slice(-1000)) so RunLogTray can use it as a React key
+   * without triggering whole-list re-reconciliation on append.
+   * Callers may omit `seq` when appending; `appendRunLog` stamps it. */
+  seq?: number;
 }
 
 export function usePipelineState() {
@@ -12,9 +17,14 @@ export function usePipelineState() {
   const [nodeLogs, setNodeLogs] = useState<Record<string, NodeLogLine[]>>({});
   const runLogRef = useRef<RunLogLine[]>([]);
   const nodeLogsRef = useRef<Record<string, NodeLogLine[]>>({});
+  const runLogSeqRef = useRef(0);
 
   function appendRunLog(line: RunLogLine) {
-    const next = [...runLogRef.current, line];
+    const stamped: RunLogLine =
+      typeof line.seq === 'number'
+        ? line
+        : { ...line, seq: ++runLogSeqRef.current };
+    const next = [...runLogRef.current, stamped];
     runLogRef.current = next.length > 1000 ? next.slice(-1000) : next;
     setRunLog([...runLogRef.current]);
   }
