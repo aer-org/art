@@ -5,6 +5,26 @@ Goal: stop OOM and visible UI lag during long-running pipelines. Records
 each phase's intent, change set, and before/after probe numbers so the
 "did it actually help?" question has a paper trail.
 
+## TL;DR
+
+Same 70 s stress run (`/tmp/test_backpressure`: burst 50 k lines →
+trickle 30 s → 3-lane fanout 10 k lines each), one SSE client
+attached, single visualizer server on Node 22.
+
+| metric                | baseline   | after all phases | Δ                |
+|-----------------------|-----------:|-----------------:|------------------|
+| server peakHeapMB     |     1154.9 |               87 | **−92.5%**       |
+| server peakRssMB      |     3001.1 |              213 | **−92.9%**       |
+| sseBackpressuredTotal |     49 945 |               69 | **−99.9%**       |
+| CLI peakRssMB (heavy 55 MB script) |    154 |       132 | −14% (cap enforced) |
+
+CLI process now has a hard `CONTAINER_MAX_OUTPUT_SIZE` cap on
+container stdout/stderr accumulators that previously could grow until
+OOM. Server can host a busy run without buffer-queue explosion.
+Client skips dagre layout on status-only ticks and renders log lines
+through a windowed view instead of a 1000-`<div>` reconciliation
+festival.
+
 ## Why we're doing this
 
 Two user-visible symptoms triggered this work:
