@@ -4039,7 +4039,8 @@ describe('Command mode stage', () => {
   it('archives the script body in command.sh for script-only command stages', async () => {
     const groupDir = path.join(TEST_GROUPS_BASE, group.folder);
     fs.mkdirSync(path.join(groupDir, 'scripts'), { recursive: true });
-    const scriptBody = "#!/usr/bin/env bash\necho 'hello from script'\necho '[STAGE_COMPLETE]'\n";
+    const scriptBody =
+      "#!/usr/bin/env bash\necho 'hello from script'\necho '[STAGE_COMPLETE]'\n";
     fs.writeFileSync(path.join(groupDir, 'scripts', 'lint.sh'), scriptBody);
 
     // Mirror what the loader would synthesize for a kind:'command' stage.
