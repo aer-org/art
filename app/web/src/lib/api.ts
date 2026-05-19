@@ -88,11 +88,12 @@ export interface GraphEdge {
   target: string;
   marker?: string;
   isTemplate?: boolean;
-  /** Edge points to a template that sits earlier in topological order
-   * — a self-stitch (origin inside the same template) or a cross-
-   * template back-stitch to an already-shown lane. The renderer draws
-   * these as a curved arc (RetryEdge) instead of a straight bezier
-   * so they don't slice through whatever sits between the endpoints. */
+  /** Data-level "this is a self-stitch" flag (origin lives inside the
+   * target template). The renderer ALSO detects any edge whose source
+   * is laid out to the right of its target — a visual back-edge —
+   * and treats it the same way, so an authored cross-template back-
+   * stitch (e.g. an ECO review stage stitching back to floorplan)
+   * still arcs even though this flag isn't set on it. */
   isRetry?: boolean;
 }
 

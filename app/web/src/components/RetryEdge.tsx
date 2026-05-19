@@ -1,14 +1,13 @@
 /**
- * RetryEdge — curved arc for back-edges in the template DAG.
+ * RetryEdge — curved arc for back-edges.
  *
- * Used for `isRetry` edges. Two cases:
- *   1. Self-stitch (origin inside the same template, e.g.
- *      `fp-filter STAGE_ERROR → fp-init`) — arcs below the expanded
- *      lane so it doesn't slice through the intermediate stages.
- *   2. Cross-template back-stitch (origin in a template that sits
- *      *later* in topological order than the target) — arcs below
- *      the row of templates so the back-reference doesn't look like
- *      another forward transition.
+ * Used by any edge that PipelineGraph's layout flagged as a back-edge
+ * (source's laid-out x > target's x). Covers:
+ *   - Authored self-stitch (`isRetry` set in data; e.g. fp-filter
+ *     STAGE_ERROR → fp-init inside an expanded shrink-floorplan).
+ *   - Cross-template back-stitch (e.g. ECO_review stitching back to
+ *     shrink-floorplan after the forward chain has already placed
+ *     it earlier). Detected post-layout from dagre x positions.
  *
  * The arc drops to a depth proportional to horizontal distance
  * between source and target so longer back-edges arc further down.

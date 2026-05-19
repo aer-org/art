@@ -246,21 +246,52 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
     }
   }
 
-  const rfEdges: Edge[] = edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    label: e.marker,
-    className: [
-      e.isTemplate ? 'template' : '',
-      e.isRetry ? 'retry' : '',
-      isErrorMarker(e.marker) ? 'marker-error' : '',
-    ]
-      .filter(Boolean)
-      .join(' '),
-    type: e.isRetry ? 'retry' : undefined,
-    animated: false,
-  }));
+  // Visual back-edge detection: any edge whose source sits to the right
+  // of its target in the laid-out graph (sub-dagre for intra-template,
+  // outer dagre otherwise) should arc instead of slicing back through
+  // the row. Catches cross-template back-stitches that the data-level
+  // self-stitch flag can't see, e.g. an ECO_review stage inside one
+  // template that stitches back to an earlier template's entry.
+  const backEdgeIds = new Set<string>();
+  for (const e of edges) {
+    const srcTpl = idToTpl.get(e.source);
+    const tgtTpl = idToTpl.get(e.target);
+    let sX: number | undefined;
+    let tX: number | undefined;
+    if (srcTpl && srcTpl === tgtTpl) {
+      const sp = subPositions.get(e.source);
+      const tp = subPositions.get(e.target);
+      sX = sp?.x;
+      tX = tp?.x;
+    } else {
+      const sNode = outer.node(outerEndpoint(e.source));
+      const tNode = outer.node(outerEndpoint(e.target));
+      sX = sNode?.x;
+      tX = tNode?.x;
+    }
+    if (sX !== undefined && tX !== undefined && sX > tX) {
+      backEdgeIds.add(e.id);
+    }
+  }
+
+  const rfEdges: Edge[] = edges.map((e) => {
+    const isBack = e.isRetry || backEdgeIds.has(e.id);
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.marker,
+      className: [
+        e.isTemplate ? 'template' : '',
+        isBack ? 'retry' : '',
+        isErrorMarker(e.marker) ? 'marker-error' : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      type: isBack ? 'retry' : undefined,
+      animated: false,
+    };
+  });
   return { rfNodes, rfEdges };
 }
 
