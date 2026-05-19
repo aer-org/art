@@ -43,6 +43,15 @@ function isValidSubPath(subPath: string): boolean {
  * `sweep:S175x175`) still produces a diff. Anything we cannot diff is
  * returned in `skipped` with a human-readable reason — the caller logs it
  * and (at run start) gates on approval.
+ *
+ * Project mounts:
+ *   - Bare `project` is skipped by policy. A hardlink-snapshot of the
+ *     entire project tree would copy `.git`, `node_modules`, build
+ *     outputs, *and* the stage archive itself (`__art__/.state/runs/...`)
+ *     which lives inside the project, creating a recursive blow-up.
+ *   - `project:<sub>` resolves to `<projectDir>/<sub>` and goes through
+ *     the same size gate as any other rw mount. The only sub-paths
+ *     skipped are those that would snapshot `__art__/` itself.
  */
 export function classifyDiffMounts(
   mounts: Record<string, 'ro' | 'rw' | null | undefined>,
@@ -50,25 +59,41 @@ export function classifyDiffMounts(
 ): DiffMountDecision {
   const resolved: RwMount[] = [];
   const skipped: DiffMountSkip[] = [];
+  const projectDir = path.dirname(groupDir);
+  const artDirName = path.basename(groupDir);
   for (const [key, policy] of Object.entries(mounts ?? {})) {
     if (policy !== 'rw') continue;
     if (key === 'project') {
-      skipped.push({ key, reason: 'project mount (too large for snapshot)' });
+      skipped.push({
+        key,
+        reason:
+          'project mount (whole tree includes __art__; use project:<sub> for targeted diffs)',
+      });
       continue;
     }
     if (key.includes(':')) {
       const sepIdx = key.indexOf(':');
       const parentKey = key.slice(0, sepIdx);
       const subPath = key.slice(sepIdx + 1);
-      if (parentKey === 'project') {
-        skipped.push({
-          key,
-          reason: 'project sub-path (too large for snapshot)',
-        });
-        continue;
-      }
       if (!isValidSubPath(subPath)) {
         skipped.push({ key, reason: `invalid sub-path "${subPath}"` });
+        continue;
+      }
+      if (parentKey === 'project') {
+        if (
+          subPath === artDirName ||
+          subPath.startsWith(`${artDirName}/`)
+        ) {
+          skipped.push({
+            key,
+            reason: `project sub-path overlaps with ${artDirName}/`,
+          });
+          continue;
+        }
+        resolved.push({
+          name: key.replace(/[:/]/g, '__'),
+          hostPath: path.join(projectDir, subPath),
+        });
         continue;
       }
       resolved.push({
