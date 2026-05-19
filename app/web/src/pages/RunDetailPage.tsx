@@ -208,11 +208,15 @@ export function RunDetailPage(props: {
     );
   }
 
-  const hasExecution = execution.stage !== null;
-  const sidebarOpen =
-    !!selectedStage &&
-    !!selectedNode &&
-    (authored !== null || hasExecution || execution.loading);
+  // Open the sidebar whenever the user clicked a graph node. StageSidebar
+  // renders its own empty state ("No authored config and no execution
+  // record") for stitched-lane stages that the lane never reached — a
+  // failed lane's later stages still appear as graph nodes (they're in
+  // dispatchTree.stageNames) but have no on-disk archive. Previously we
+  // gated `sidebarOpen` on `authored || execution.stage || loading`,
+  // which silently dismissed the sidebar a moment after click for those
+  // never-executed stages and looked like a broken click handler.
+  const sidebarOpen = !!selectedStage && !!selectedNode;
   const l3Open = sidebarOpen && l3 !== null;
   const l4Open = l4 !== null;
 

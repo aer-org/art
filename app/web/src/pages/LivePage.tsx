@@ -197,13 +197,14 @@ export function LivePage(props: {
     isOverview ? null : (selectedStage ?? null),
   );
 
-  // Sidebar opens whenever there's something to show — either an
-  // authored config or an execution record (or both). We do not
-  // pre-require either: a still-loading state renders "Loading…"
-  // inside the sidebar instead of refusing to open.
-  const hasExecution = execution.stage !== null;
-  const inspectorOpen =
-    !!selectedStage && (authored !== null || hasExecution || execution.loading);
+  // Open the inspector whenever the user clicked a graph node.
+  // StageSidebar's own empty state ("No authored config and no
+  // execution record") covers the case where a stitched-lane stage
+  // never actually ran (failed lane's later stages are still in the
+  // graph because they're in dispatchTree.stageNames, but have no
+  // archive). Previously this was gated on authored / execution /
+  // loading and silently dismissed the click for those nodes.
+  const inspectorOpen = !!selectedStage;
   const l3Open = inspectorOpen && l3 !== null;
   const layoutClass = l3Open
     ? 'inspector-with-l3'
