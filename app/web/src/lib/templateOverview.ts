@@ -197,6 +197,82 @@ function buildBarrierTable(
   return out;
 }
 
+/**
+ * Compute the set of spawn-site keys (`originId\0targetTemplate`) that
+ * are *back-edges* in the template DAG — i.e. a stitch that points to
+ * a template that already sits earlier in topological order. Includes
+ * self-stitches (origin scope === target template) and any cross-
+ * template stitch that loops back to a sibling already laid out before
+ * the source.
+ *
+ * Renderer uses this to swap the edge to `RetryEdge` (curved arc) so
+ * the user can tell "forward to a new lane" from "back to an already-
+ * shown lane" — without it, dagre routes the back-edge through whatever
+ * happens to be between the two templates and the visual cue is lost.
+ */
+function computeBackEdgeKeys(
+  barriers: Map<string, BarrierMeta>,
+): Set<string> {
+  // 1) Template→template graph from cross spawns. Base origins and
+  //    self-stitches are excluded from topo so they don't distort rank.
+  const inDeg = new Map<string, number>();
+  const adj = new Map<string, string[]>();
+  for (const t of barriers.keys()) {
+    inDeg.set(t, 0);
+    adj.set(t, []);
+  }
+  for (const [target, meta] of barriers) {
+    for (const site of meta.spawnSites) {
+      const src = site.scopeOfOrigin;
+      if (src === BASE_SCOPE || src === target) continue;
+      adj.get(src)?.push(target);
+      inDeg.set(target, (inDeg.get(target) ?? 0) + 1);
+    }
+  }
+  // 2) Kahn's topological sort, alphabetic tie-break for stability.
+  const rank = new Map<string, number>();
+  const q: string[] = [];
+  for (const [t, d] of inDeg) if (d === 0) q.push(t);
+  q.sort();
+  let nextRank = 0;
+  while (q.length > 0) {
+    const cur = q.shift()!;
+    rank.set(cur, nextRank++);
+    const next: string[] = [];
+    for (const nb of adj.get(cur) ?? []) {
+      const d = (inDeg.get(nb) ?? 0) - 1;
+      inDeg.set(nb, d);
+      if (d === 0) next.push(nb);
+    }
+    next.sort();
+    q.push(...next);
+  }
+  // 3) Templates left without a rank are in a cycle. Assign ascending
+  //    ranks alphabetically so the back-edge selection is deterministic
+  //    across reloads.
+  const stragglers = [...barriers.keys()]
+    .filter((k) => !rank.has(k))
+    .sort();
+  for (const k of stragglers) rank.set(k, nextRank++);
+
+  // 4) A spawn is a back-edge iff origin's rank >= target's rank.
+  //    Self-stitches satisfy this with equality. Base-origin spawns
+  //    are forward by definition (base sits "above" every template).
+  const out = new Set<string>();
+  for (const [target, meta] of barriers) {
+    const targetRank = rank.get(target)!;
+    for (const site of meta.spawnSites) {
+      if (site.scopeOfOrigin === BASE_SCOPE) continue;
+      const srcRank = rank.get(site.scopeOfOrigin);
+      if (srcRank === undefined) continue;
+      if (srcRank >= targetRank) {
+        out.add(`${site.originId}\0${target}`);
+      }
+    }
+  }
+  return out;
+}
+
 export function buildTemplateOverviewGraph(
   snapshot: PipelineSnapshot,
   expanded: Set<string>,
@@ -258,6 +334,7 @@ export function buildTemplateOverviewGraph(
   // ---- 3) Barrier metadata + visibility filter
   const referenced = collectReferencedTemplates(pipeline, templates);
   const barriers = buildBarrierTable(pipeline, templates, referenced);
+  const backEdgeKeys = computeBackEdgeKeys(barriers);
 
   function scopeVisible(scope: string): boolean {
     return scope === BASE_SCOPE || expanded.has(scope);
@@ -359,13 +436,14 @@ export function buildTemplateOverviewGraph(
   for (const b of visibleBarriers.values()) {
     const isOpen = expanded.has(b.template);
 
-    // Spawn edges: one per visible spawn site. A self-stitch (origin
-    // is itself inside template X) loops the lane back to its entry;
-    // tag it so the renderer can route around instead of cutting
-    // through the lane.
+    // Spawn edges: one per visible spawn site. Edges that point to a
+    // template earlier in topological order (self-stitches plus any
+    // cross-template back-stitch) get tagged `isRetry` so the renderer
+    // can arc around them — otherwise dagre would slice straight back
+    // through whatever templates sit between source and target.
     for (const site of b.spawnSites) {
       if (!nodeIds.has(site.originId)) continue;
-      const isRetry = site.scopeOfOrigin === b.template;
+      const isRetry = backEdgeKeys.has(`${site.originId}\0${b.template}`);
       if (isOpen) {
         // Lane is visible — spawn straight into the entry stage.
         const tpl = templates[b.template];

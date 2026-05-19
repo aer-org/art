@@ -1,13 +1,16 @@
 /**
- * RetryEdge — custom edge that loops a self-stitch back to a template's
- * entry by arcing BELOW the lane instead of slicing straight through it.
+ * RetryEdge — curved arc for back-edges in the template DAG.
  *
- * Used for `isRetry` edges (typically `fp-filter STAGE_ERROR → fp-init`
- * inside an expanded template). The default bezier edge would draw a
- * line right through the intermediate stages, which reads as a
- * forward transition and visually collides with the success chain.
+ * Used for `isRetry` edges. Two cases:
+ *   1. Self-stitch (origin inside the same template, e.g.
+ *      `fp-filter STAGE_ERROR → fp-init`) — arcs below the expanded
+ *      lane so it doesn't slice through the intermediate stages.
+ *   2. Cross-template back-stitch (origin in a template that sits
+ *      *later* in topological order than the target) — arcs below
+ *      the row of templates so the back-reference doesn't look like
+ *      another forward transition.
  *
- * The arc drops to a depth proportional to the horizontal distance
+ * The arc drops to a depth proportional to horizontal distance
  * between source and target so longer back-edges arc further down.
  */
 import { BaseEdge, EdgeLabelRenderer, type EdgeProps } from '@xyflow/react';
