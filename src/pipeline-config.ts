@@ -11,6 +11,11 @@ import {
 } from './mcp-registry.js';
 import type { PipelineConfig } from './pipeline-types.js';
 import { assertConfigAcyclic } from './stitch.js';
+import {
+  TransitionShapeError,
+  transitionLabel,
+  validateTransitionShape,
+} from './transition-shape.js';
 
 export type PipelineConfigLoadErrorKind = 'missing' | 'invalid' | 'parse';
 
@@ -312,219 +317,32 @@ export function loadPipelineConfig(
 
       let afterTimeoutTransitions = 0;
       for (const t of stage.transitions) {
-        const tAny = t as unknown as Record<string, unknown>;
-        const transitionName = t.afterTimeout
-          ? 'afterTimeout'
-          : (t.marker ?? '<missing-marker>');
-        if (tAny.retry !== undefined) {
-          return invalid(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "retry" is no longer supported',
-          );
-        }
-        if (tAny.next_dynamic !== undefined) {
-          return invalid(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "next_dynamic" is no longer supported',
-          );
-        }
-        if (
-          t.afterTimeout !== undefined &&
-          typeof t.afterTimeout !== 'boolean'
-        ) {
-          return invalid(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "afterTimeout" must be a boolean',
-          );
-        }
-        if (t.afterTimeout) {
-          afterTimeoutTransitions++;
-          if (!isCommandStage) {
-            return invalid(
-              { groupFolder, stage: stage.name },
-              'Transition "afterTimeout" is only supported for command stages',
-            );
-          }
-          if (t.marker !== undefined) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: t.marker },
-              'Transition "afterTimeout" cannot be combined with "marker"',
-            );
-          }
-          if (t.countFrom !== undefined || t.substitutionsFrom !== undefined) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "afterTimeout" does not support payload-driven fanout fields',
-            );
-          }
-        } else if (typeof t.marker !== 'string' || t.marker.length === 0) {
-          return invalid(
-            { groupFolder, stage: stage.name },
-            'Transition "marker" is required unless "afterTimeout" is true',
-          );
-        }
-        if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
-          return invalid(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "next" is required (use null to end the current scope)',
-          );
-        }
-        const isNextArray = Array.isArray(t.next);
-        if (isNextArray) {
-          const arr = t.next as unknown[];
-          if (arr.length === 0) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "next" array must contain at least one target (use null to end the current scope)',
-            );
-          }
-          const seen = new Set<string>();
-          for (const entry of arr) {
-            if (typeof entry !== 'string' || entry.length === 0) {
-              return invalid(
-                {
-                  groupFolder,
-                  stage: stage.name,
-                  marker: transitionName,
-                  next: t.next,
-                },
-                'Transition "next" array entries must be non-empty strings',
-              );
-            }
-            if (seen.has(entry)) {
-              return invalid(
-                {
-                  groupFolder,
-                  stage: stage.name,
-                  marker: transitionName,
-                  duplicate: entry,
-                },
-                `Transition "next" array contains duplicate target "${entry}"`,
-              );
-            }
-            seen.add(entry);
-          }
-        } else if (t.next !== null && typeof t.next !== 'string') {
-          return invalid(
-            {
-              groupFolder,
-              stage: stage.name,
-              marker: transitionName,
-              next: t.next,
-            },
-            'Transition "next" must be a string, an array of strings, or null',
-          );
-        }
-        const hasNextString = typeof t.next === 'string';
-        const hasTemplate = t.template !== undefined;
-        if (isNextArray && hasTemplate) {
-          return invalid(
-            { groupFolder, stage: stage.name, marker: transitionName },
-            'Transition "next" array cannot be combined with "template" — template stitch produces its own per-lane downstream',
-          );
-        }
-        if (hasTemplate) {
-          if (typeof t.template !== 'string' || t.template.length === 0) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "template" must be a non-empty string',
-            );
-          }
-        }
-        if (t.count !== undefined) {
-          if (!Number.isInteger(t.count) || (t.count as number) < 1) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "count" must be a positive integer',
-            );
-          }
-          if (!hasTemplate) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "count" requires "template"',
-            );
-          }
-        }
-        if (t.countFrom !== undefined) {
-          if (t.countFrom !== 'payload') {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "countFrom" only accepts "payload"',
-            );
-          }
-          if (!hasTemplate) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "countFrom" requires "template"',
-            );
-          }
-          if (t.count !== undefined) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition must have either "count" or "countFrom", not both',
-            );
-          }
-        }
-        if (t.substitutionsFrom !== undefined) {
-          if (t.substitutionsFrom !== 'payload') {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "substitutionsFrom" only accepts "payload"',
-            );
-          }
-          if (t.countFrom !== 'payload') {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "substitutionsFrom" requires "countFrom: \\"payload\\""',
-            );
-          }
-        }
-        if (t.joinPolicy !== undefined) {
-          if (
-            t.joinPolicy !== 'all_success' &&
-            t.joinPolicy !== 'any_success' &&
-            t.joinPolicy !== 'all_settled'
-          ) {
+        let shape;
+        try {
+          shape = validateTransitionShape(t, { isCommandStage });
+        } catch (err) {
+          if (err instanceof TransitionShapeError) {
             return invalid(
               {
                 groupFolder,
                 stage: stage.name,
-                marker: transitionName,
-                joinPolicy: t.joinPolicy,
+                marker: transitionLabel(t),
+                ...err.details,
               },
-              'Transition "joinPolicy" must be one of "all_success", "any_success", or "all_settled"',
+              `Transition ${err.message}`,
             );
           }
-          if (!hasTemplate) {
-            return invalid(
-              { groupFolder, stage: stage.name, marker: transitionName },
-              'Transition "joinPolicy" requires "template"',
-            );
-          }
+          throw err;
         }
-        if (
-          t.outcome !== undefined &&
-          t.outcome !== 'success' &&
-          t.outcome !== 'error'
-        ) {
-          return invalid(
-            {
-              groupFolder,
-              stage: stage.name,
-              marker: transitionName,
-              outcome: t.outcome,
-            },
-            'Transition "outcome" must be "success" or "error"',
-          );
-        }
-        if (hasNextString && !stageNames.has(t.next as string)) {
+        if (t.afterTimeout) afterTimeoutTransitions++;
+        if (shape.hasNextString && !stageNames.has(t.next as string)) {
           return invalid(
             { groupFolder, stage: stage.name, target: t.next },
             'Transition "next" must reference an existing stage in this pipeline',
           );
         }
-        if (isNextArray) {
-          for (const entry of t.next as string[]) {
+        if (shape.hasNextArray) {
+          for (const entry of shape.nextArrayEntries) {
             if (!stageNames.has(entry)) {
               return invalid(
                 { groupFolder, stage: stage.name, target: entry },

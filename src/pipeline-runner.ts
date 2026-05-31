@@ -164,6 +164,9 @@ function getExclusiveLock(key: string): ExclusiveLock {
 interface StageHandle {
   name: string;
   ipc: StageIpcEndpoint;
+  // Name of the spawned container, captured via onProcess. Used to stop just
+  // this stage's container on a close timeout without tearing down siblings.
+  containerName: string | null;
   containerPromise: Promise<ContainerOutput>;
   outboundPoller: NodeJS.Timeout | null;
   pendingResult: {
@@ -1748,6 +1751,7 @@ PAYLOAD FORMATS:
     const handle: StageHandle = {
       name: stageConfig.name,
       ipc,
+      containerName: null,
       containerPromise: null!,
       outboundPoller: null,
       pendingResult: createDeferred(),
@@ -1895,7 +1899,10 @@ PAYLOAD FORMATS:
           ephemeralSystemPrompt,
           externalMcpServers: resolvedExternalMcpServers,
         },
-        (proc, containerName) => this.onProcess(proc, containerName),
+        (proc, containerName) => {
+          handle.containerName = containerName;
+          this.onProcess(proc, containerName);
+        },
         onOutput,
         logStream,
         handle.stageStdoutLog ?? undefined,
@@ -2084,6 +2091,7 @@ PAYLOAD FORMATS:
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
+      handle.containerName = containerName;
       this.onProcess(container, containerName);
 
       // Ring-buffered tails — see container-runner.ts. The disk archive
@@ -2388,12 +2396,20 @@ PAYLOAD FORMATS:
     ]);
     if (settled === 'timeout') {
       logger.warn(
-        { stage: handle.name },
+        { stage: handle.name, containerName: handle.containerName },
         'Stage did not exit in 5s, force-stopping',
       );
+      // Stop ONLY this stage's container. Using the run-wide
+      // cleanupRunContainers here would docker-stop every container sharing
+      // the run-id label — including sibling fan-out lanes that are still
+      // legitimately working and haven't emitted their marker yet, killing
+      // them with SIGKILL (137) and forcing respawns.
       try {
-        const { cleanupRunContainers } = await import('./container-runtime.js');
-        cleanupRunContainers(this.runId);
+        if (handle.containerName) {
+          const { stopSingleContainer } =
+            await import('./container-runtime.js');
+          stopSingleContainer(handle.containerName);
+        }
       } catch {
         /* best effort */
       }

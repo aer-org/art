@@ -379,7 +379,7 @@ export function PipelineGraph({ nodes, edges, onNodeClick }: Props) {
         nodesConnectable={false}
         elementsSelectable
       >
-        <Background color="#2a2f3d" gap={20} />
+        <Background color="#c7ccd6" gap={20} />
         <Controls showInteractive={false} />
         <MiniMap
           position="top-left"

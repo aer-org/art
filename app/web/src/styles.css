@@ -12,6 +12,9 @@
   --bad: #ef4444;
   --pending: #4a5568;
   --running: #3b82f6;
+  /* Graph canvas: light so dark nodes stay visible when zoomed out. */
+  --graph-bg: #eef1f5;
+  --graph-dots: #c7ccd6;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -247,11 +250,11 @@ input, textarea {
   font-weight: 700;
   margin-bottom: 4px;
 }
-.stage-node.success { border-color: var(--good); background: rgba(34,197,94,0.1); }
+.stage-node.success { border-color: var(--good); background: #18271f; }
 .stage-node.success::before { content: "✓ DONE"; display: block; font-size: 9px; letter-spacing: 0; font-weight: 700; color: var(--good); margin-bottom: 4px; }
 .stage-node.error {
   border-color: var(--bad);
-  background: rgba(239,68,68,0.15);
+  background: #3a2228;
   box-shadow: 0 0 0 4px rgba(239,68,68,0.35), 0 0 28px rgba(239,68,68,0.75);
 }
 .stage-node.error::before { content: "✗ FAILED"; display: block; font-size: 9px; letter-spacing: 0; font-weight: 700; color: var(--bad); margin-bottom: 4px; }
@@ -871,7 +874,7 @@ input, textarea {
 }
 
 /* React Flow tweaks */
-.react-flow__background { background: var(--bg); }
+.react-flow__background { background: var(--graph-bg); }
 .react-flow__edge-path { stroke: var(--fg-dim); stroke-width: 1.5; }
 .react-flow__edge.template .react-flow__edge-path { stroke-dasharray: 6 4; }
 .react-flow__edge.retry .react-flow__edge-path {
@@ -1033,14 +1036,14 @@ input, textarea {
  * curve glances past a node. dagre already reserves rank-space for the
  * label, but the pill is a safety net for edges that cross diagonally. */
 .react-flow__edge-textbg {
-  fill: var(--bg);
+  fill: var(--graph-bg);
   rx: 3;
   ry: 3;
 }
 .react-flow__edge-text {
   font-family: var(--mono);
   font-size: 10px;
-  fill: var(--fg-dim);
+  fill: #1a1a1a;
 }
 .react-flow__attribution { display: none; }
 
@@ -1535,11 +1538,11 @@ input, textarea {
 .inspector .react-flow__edge-text {
   font-family: var(--mono);
   font-size: 10px;
-  fill: var(--fg-dim);
+  fill: #1a1a1a;
   letter-spacing: 0.04em;
 }
 .inspector .react-flow__edge-textbg {
-  fill: var(--panel);
+  fill: var(--graph-bg);
 }
 
 /* --- StageSidebar (L2) --------------------------------------------- */

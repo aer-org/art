@@ -210,10 +210,7 @@ describe('classifyDiffMounts', () => {
   });
 
   it('resolves non-project sub-paths under groupDir', () => {
-    const { resolved } = classifyDiffMounts(
-      { 'sweep:lane-0': 'rw' },
-      groupDir,
-    );
+    const { resolved } = classifyDiffMounts({ 'sweep:lane-0': 'rw' }, groupDir);
     expect(resolved).toEqual([
       { name: 'sweep__lane-0', hostPath: '/proj/__art__/sweep/lane-0' },
     ]);

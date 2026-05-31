@@ -50,7 +50,9 @@ apt-get install -y --no-install-recommends \
     libxshmfence1 \
     gcc \
     g++ \
-    coreutils
+    coreutils \
+    python3 \
+    python3-pip
 
 # --- Packages with distro-dependent names ---
 install_one_of chromium chromium-browser

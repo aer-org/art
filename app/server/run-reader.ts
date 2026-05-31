@@ -637,7 +637,12 @@ export function readPipelineStateForRun(
   const completed = new Set<string>();
   const activations = new Map<string, number>();
   const completions = new Map<string, number>();
-  let currentStage: unknown = null;
+  // Union of every actively-running stage across all scope files. Each fan-out
+  // lane writes its own scope file (PIPELINE_STATE.<dispatchId>.json) carrying
+  // only that lane's currentStage/runningStages, so we must accumulate rather
+  // than overwrite — otherwise only the last lane processed survives and just
+  // one node shows as "running" in the visualizer.
+  const currentStages = new Set<string>();
   let status: unknown = 'success';
   let lastUpdated = '';
 
@@ -674,8 +679,13 @@ export function readPipelineStateForRun(
       completions.set(name, (completions.get(name) ?? 0) + (n ?? 0));
     }
 
-    // Pick deepest non-null currentStage (the actively running scope).
-    if (s.currentStage != null) currentStage = s.currentStage;
+    // Accumulate the running set from every scope (union, not overwrite).
+    const cs = s.currentStage;
+    if (typeof cs === 'string') currentStages.add(cs);
+    else if (Array.isArray(cs))
+      for (const x of cs) if (typeof x === 'string') currentStages.add(x);
+    for (const r of (s.runningStages as string[] | undefined) ?? [])
+      currentStages.add(r);
     if (s.status === 'error') status = 'error';
     else if (s.status === 'running' && status !== 'error') status = 'running';
     const u = typeof s.lastUpdated === 'string' ? s.lastUpdated : '';
@@ -689,7 +699,7 @@ export function readPipelineStateForRun(
     completedStages: [...completed],
     activations: Object.fromEntries(activations),
     completions: Object.fromEntries(completions),
-    currentStage,
+    currentStage: currentStages.size > 0 ? [...currentStages] : null,
     status,
     lastUpdated: lastUpdated || (root.lastUpdated ?? ''),
   };

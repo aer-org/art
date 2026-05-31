@@ -80,10 +80,7 @@ export function classifyDiffMounts(
         continue;
       }
       if (parentKey === 'project') {
-        if (
-          subPath === artDirName ||
-          subPath.startsWith(`${artDirName}/`)
-        ) {
+        if (subPath === artDirName || subPath.startsWith(`${artDirName}/`)) {
           skipped.push({
             key,
             reason: `project sub-path overlaps with ${artDirName}/`,

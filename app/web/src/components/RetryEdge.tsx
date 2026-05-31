@@ -46,8 +46,8 @@ export function RetryEdge({
               fontSize: 10,
               padding: '1px 5px',
               borderRadius: 3,
-              background: 'var(--bg)',
-              color: 'var(--accent)',
+              background: 'var(--graph-bg)',
+              color: '#1a1a1a',
               fontFamily: 'var(--mono)',
               pointerEvents: 'none',
             }}

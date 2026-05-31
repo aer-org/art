@@ -4,7 +4,7 @@ import type { AdditionalMount } from './types.js';
 
 export interface PipelineTransition {
   marker?: string; // Marker name (e.g. "STAGE_COMPLETE"). Required unless `afterTimeout` is true.
-  next?: string | string[] | null; // Downstream stage in the current scope, or null to end the current scope. Arrays are runtime-only fan-out targets.
+  next?: string | string[] | null; // Downstream stage(s) in the current scope, or null to end the current scope. Array form is heterogeneous fan-out (each target spawns in parallel); cannot combine with `template`.
   template?: string; // Template name to stitch before continuing to `next`.
   count?: number; // With `template`: insert N copies in parallel + synthesized join. Requires `template`. Mutually exclusive with `countFrom`.
   countFrom?: 'payload'; // Derive lane count from marker payload (JSON array length). Requires `template`. Mutually exclusive with `count`.

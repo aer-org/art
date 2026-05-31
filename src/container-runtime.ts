@@ -691,6 +691,19 @@ export function stopContainer(name: string): string {
   return `${bin} stop ${name}`;
 }
 
+/**
+ * Stop a single container by name (best-effort). Unlike cleanupRunContainers,
+ * this targets only the named container and never touches sibling stages that
+ * share the run-id label.
+ */
+export function stopSingleContainer(name: string): void {
+  try {
+    execSync(stopContainer(name), { stdio: 'pipe' });
+  } catch {
+    /* already stopped */
+  }
+}
+
 /** Ensure the container runtime is reachable. */
 export function ensureContainerRuntimeRunning(): void {
   const rt = getRuntime();
