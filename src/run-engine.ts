@@ -48,8 +48,9 @@ export async function runPipeline(opts: {
   runId: string;
   artDir: string;
   stage?: string;
+  pipelinePath?: string;
 }): Promise<void> {
-  const { group, runId, artDir, stage } = opts;
+  const { group, runId, artDir, stage, pipelinePath } = opts;
 
   // Initialize container runtime
   await initRuntime();
@@ -109,12 +110,12 @@ export async function runPipeline(opts: {
     console.log(text);
   };
 
-  const loadedConfig = loadPipelineConfig(group.folder);
+  const loadedConfig = loadPipelineConfig(group.folder, groupDir, pipelinePath);
   if (!loadedConfig) {
     console.error(
       formatPipelineConfigLoadError(
         getLastPipelineConfigLoadError(),
-        'PIPELINE.json',
+        pipelinePath ? path.basename(pipelinePath) : 'PIPELINE.json',
       ),
     );
     proxyServer?.close();

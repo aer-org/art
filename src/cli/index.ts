@@ -39,7 +39,7 @@ async function main(): Promise<void> {
       // Positional = anything that isn't a flag AND isn't the value
       // immediately following a value-taking flag. We treat --stage and
       // --model as value-taking; the value after them is consumed here.
-      const valueFlags = new Set(['--stage', '--model']);
+      const valueFlags = new Set(['--stage', '--model', '--pipeline']);
       const runPositional: string[] = [];
       for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -56,6 +56,8 @@ async function main(): Promise<void> {
       const stageName = stageIdx !== -1 ? args[stageIdx + 1] : undefined;
       const modelIdx = args.indexOf('--model');
       const model = modelIdx !== -1 ? args[modelIdx + 1] : undefined;
+      const pipelineIdx = args.indexOf('--pipeline');
+      const pipeline = pipelineIdx !== -1 ? args[pipelineIdx + 1] : undefined;
       // If the user picked a Claude model but didn't pass --claude /
       // --codex explicitly, infer the provider from the model id so the
       // model actually takes effect. The codex engine ignores ART_MODEL,
@@ -80,6 +82,7 @@ async function main(): Promise<void> {
         skipPreflight,
         stage: stageName,
         assumeYes: yes,
+        pipeline,
       });
       break;
     }
@@ -114,6 +117,12 @@ Usage:
   art init [dir]              Create __art__/ scaffold and empty PIPELINE.json
   art run [dir]               Start the agent pipeline engine with Codex
   art run --claude [dir]      Start the agent pipeline engine with Claude Code
+  art run --pipeline <p> [dir] Use an alternative pipeline instead of
+                              __art__/PIPELINE.json. <p> is a path, or a name
+                              resolved against __art__/pipelines/<p> (with or
+                              without a .json suffix). Shared assets
+                              (scripts/, agents/, templates/) still resolve
+                              from __art__/.
   art run --model <id>        Override the agent model
                               (e.g. claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5)
                               Claude model ids auto-switch the provider to --claude.

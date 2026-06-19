@@ -19,12 +19,14 @@ export async function setupEngine(opts: {
   artDir: string;
   credentialProxyPort?: number;
   ensureImages?: boolean;
+  pipelinePath?: string;
 }): Promise<EngineSetupResult> {
   const {
     projectDir,
     artDir,
     credentialProxyPort = 3002,
     ensureImages = false,
+    pipelinePath,
   } = opts;
 
   const folderName = `art-${path.basename(projectDir).replace(/[^A-Za-z0-9_-]/g, '-')}`;
@@ -56,10 +58,10 @@ export async function setupEngine(opts: {
     });
 
     // Only add images actually referenced by pipeline stages
-    const pipelinePath = path.join(artDir, 'PIPELINE.json');
-    if (fs.existsSync(pipelinePath)) {
+    const pipelineFile = pipelinePath ?? path.join(artDir, 'PIPELINE.json');
+    if (fs.existsSync(pipelineFile)) {
       try {
-        const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+        const pipeline = JSON.parse(fs.readFileSync(pipelineFile, 'utf-8'));
         for (const stage of pipeline.stages || []) {
           if (stage.image && !needed.has(stage.image)) {
             const regEntry = imageRegistry[stage.image];

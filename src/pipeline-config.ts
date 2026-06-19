@@ -96,9 +96,14 @@ export function formatPipelineConfigLoadError(
 /**
  * Load and validate a pipeline config.
  * @param pipelinePath - Absolute path to a pipeline JSON file. When provided,
- *   groupFolder/groupDir are ignored and the file is loaded directly.
- * Bundle-relative assets (agents/, templates/) resolve from the directory
- * containing the pipeline file (bundleDir).
+ *   it overrides the default `<dir>/PIPELINE.json` and the named file is
+ *   loaded instead. This lets `art run --pipeline <file>` select an
+ *   alternative pipeline (e.g. eco-only vs full) without renaming files.
+ * Bundle-relative assets (agents/, templates/, scripts/) resolve from the
+ * group dir (bundleDir) — NOT from the directory containing the pipeline
+ * file — so a pipeline kept in `<art>/pipelines/` still finds the shared
+ * `<art>/scripts` and `<art>/agents`. Only when neither groupDir nor
+ * groupFolder is given does bundleDir fall back to the pipeline file's dir.
  * Returns null if the file doesn't exist or fails validation.
  * Call getLastPipelineConfigLoadError() for the reason.
  */
@@ -108,12 +113,22 @@ export function loadPipelineConfig(
   pipelinePath?: string,
 ): PipelineConfig | null {
   lastPipelineConfigLoadError = null;
-  const dir = groupDir ?? resolveGroupFolderPath(groupFolder);
+  const dir =
+    groupDir ?? (groupFolder ? resolveGroupFolderPath(groupFolder) : undefined);
   if (!pipelinePath) {
+    if (!dir) {
+      return setPipelineConfigLoadError({
+        kind: 'missing',
+        path: '(unresolved)',
+        message: 'No pipeline path, groupDir, or groupFolder provided',
+      });
+    }
     pipelinePath = path.join(dir, 'PIPELINE.json');
   }
 
-  const bundleDir = path.dirname(pipelinePath);
+  // Assets resolve from the group dir when known; otherwise fall back to the
+  // pipeline file's own directory (preserves standalone-file behavior).
+  const bundleDir = dir ?? path.dirname(pipelinePath);
 
   if (!fs.existsSync(pipelinePath)) {
     return setPipelineConfigLoadError({
