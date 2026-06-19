@@ -4,7 +4,7 @@
   "stages": [
     {
       "name": "run",
-      "command": "echo '[TEST_DONE]'",
+      "kind": "command",
       "image": "node:22-slim",
       "successMarker": "TEST_DONE",
       "mounts": {},

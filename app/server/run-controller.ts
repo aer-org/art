@@ -124,7 +124,11 @@ class RunController extends EventEmitter {
 
   start(
     projectDir: string,
-    opts?: { skipPreflight?: boolean; authWarning?: string },
+    opts?: {
+      skipPreflight?: boolean;
+      authWarning?: string;
+      model?: string;
+    },
   ): { ok: true; pid: number } | { ok: false; status: number; reason: string } {
     if (this.isRunning(projectDir)) {
       return { ok: false, status: 409, reason: 'A run is already in progress for this project.' };
@@ -137,7 +141,12 @@ class RunController extends EventEmitter {
       };
     }
 
-    const args = ['run', ...(opts?.skipPreflight ? ['--skip-preflight'] : []), projectDir];
+    const args = [
+      'run',
+      ...(opts?.skipPreflight ? ['--skip-preflight'] : []),
+      ...(opts?.model ? ['--model', opts.model] : []),
+      projectDir,
+    ];
     const log: string[] = [];
     this.recentLogs.set(projectDir, log);
     const startedAt = Date.now();

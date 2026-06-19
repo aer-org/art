@@ -2,8 +2,7 @@
   "stages": [
     {
       "name": "stage-a",
-      "prompt": "",
-      "command": "echo '[A_DONE]'",
+      "kind": "command",
       "image": "node:22-slim",
       "successMarker": "A_DONE",
       "mounts": {},
@@ -14,8 +13,7 @@
     },
     {
       "name": "stage-b",
-      "prompt": "",
-      "command": "echo '[B_DONE]'",
+      "kind": "command",
       "image": "node:22-slim",
       "successMarker": "B_DONE",
       "mounts": {},
@@ -26,8 +24,7 @@
     },
     {
       "name": "stage-c",
-      "prompt": "",
-      "command": "echo '[COMPLETE]'",
+      "kind": "command",
       "image": "node:22-slim",
       "successMarker": "COMPLETE",
       "mounts": {},

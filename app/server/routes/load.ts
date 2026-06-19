@@ -8,10 +8,7 @@ import { ART_BIN, ART_DIR_NAME, childProcessEnv } from '../config.ts';
 import { rememberLastProject } from '../last-project.ts';
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
-import {
-  buildTemplateOverview,
-  collectReferencedTemplates,
-} from '../pipeline-template-overview.ts';
+import { collectReferencedTemplates } from '../pipeline-template-overview.ts';
 import { readPipelineStateForRun } from '../run-reader.ts';
 import { runController } from '../run-controller.ts';
 import type { PipelineState } from '../types.ts';
@@ -53,6 +50,8 @@ function snapshotResponse(projectDir: string, initialized: boolean) {
           liveRunId,
         ) as PipelineState | null) ?? snap?.state ?? null)
       : (snap?.state ?? null);
+  // Overview mode: the client builds the graph from pipeline + templates.
+  // Server only builds the live/post-stitch graph.
   const graph = showLive
     ? buildGraph(snap?.pipeline ?? null, liveState, {
         isRunning,
@@ -62,13 +61,10 @@ function snapshotResponse(projectDir: string, initialized: boolean) {
           (isRunStarting ? runStarting?.startedAt : null) ??
           null,
       })
-    : project
-      ? buildTemplateOverview(snap?.pipeline ?? null, project.artDir)
-      : { nodes: [], edges: [] };
-  const templates =
-    !showLive && project
-      ? collectReferencedTemplates(snap?.pipeline ?? null, project.artDir)
-      : undefined;
+    : { nodes: [], edges: [] };
+  const templates = project
+    ? collectReferencedTemplates(snap?.pipeline ?? null, project.artDir)
+    : undefined;
   return {
     projectDir,
     initialized,
@@ -157,10 +153,8 @@ export function registerLoadRoutes(app: FastifyInstance): void {
             (isRunStarting ? runStarting?.startedAt : null) ??
             null,
         })
-      : buildTemplateOverview(snap.pipeline, project.artDir);
-    const templates = showLive
-      ? undefined
-      : collectReferencedTemplates(snap.pipeline, project.artDir);
+      : { nodes: [], edges: [] };
+    const templates = collectReferencedTemplates(snap.pipeline, project.artDir);
     return {
       projectDir: abs,
       initialized,

@@ -739,4 +739,17 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+// The Claude Agent SDK leaves child processes (the `claude` CLI and the IPC
+// MCP stdio server) attached to the event loop, so simply returning from
+// main() does not terminate the process. The container would then linger past
+// the host's 5s close-and-wait window, get SIGKILL'd (exit 137), and trip the
+// run-wide container cleanup — taking down sibling stages that are still
+// working. Force a clean exit once main() settles so the container terminates
+// promptly after consuming the _close sentinel.
+main().then(
+  () => process.exit(0),
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  },
+);

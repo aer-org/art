@@ -44,6 +44,7 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      rmSync: vi.fn(),
     },
   };
 });
@@ -297,43 +298,150 @@ describe('container-runner MCP config generation', () => {
     await resultPromise;
   });
 
-  it('defaults container args provider to Codex with passthrough auth', () => {
-    const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
-    delete process.env.ART_CODEX_AUTH_MODE;
+  // === Codex auth mode: defaults + isolation guarantees ===============
+  //
+  // Two modes:
+  //   - host-managed (default): host runs codex-auth-proxy, container
+  //     fetches a short-lived login from it at startup. Container's
+  //     mounted `.codex/auth.json` is removed so the real refresh
+  //     token never lands on the in-container filesystem.
+  //   - passthrough: host's ~/.codex/auth.json is copy-mounted into
+  //     the container so the codex binary reads tokens straight off
+  //     disk. Weaker isolation; kept as opt-in.
+  //
+  // Tests below verify both the *args* (env vars on docker run) AND
+  // the *side effects* on the in-container session dir.
 
+  function withEnv(
+    overrides: Record<string, string | undefined>,
+    fn: () => void | Promise<void>,
+  ): void | Promise<void> {
+    const previous: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(overrides)) {
+      previous[k] = process.env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     try {
-      const args = buildContainerArgs([], 'art-test-default-provider');
-
-      expect(args).toContain('ART_CODEX_AUTH_MODE=passthrough');
-      expect(args.join(' ')).not.toContain('ART_CODEX_AUTH_PROXY_URL=');
-      expect(args.join(' ')).not.toContain('ANTHROPIC_BASE_URL=');
-    } finally {
-      if (previousAuthMode === undefined) {
-        delete process.env.ART_CODEX_AUTH_MODE;
-      } else {
-        process.env.ART_CODEX_AUTH_MODE = previousAuthMode;
+      const result = fn();
+      if (result instanceof Promise) {
+        return result.finally(restore);
+      }
+      restore();
+    } catch (err) {
+      restore();
+      throw err;
+    }
+    function restore() {
+      for (const [k, v] of Object.entries(previous)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
       }
     }
+  }
+
+  it('Codex default is host-managed + host-network → proxy on 127.0.0.1', () => {
+    withEnv(
+      { ART_CODEX_AUTH_MODE: undefined, ART_HOST_NETWORK: undefined },
+      () => {
+        const args = buildContainerArgs([], 'art-test-codex-default');
+        const argsStr = args.join(' ');
+
+        // Mode marker the in-container codex-engine reads.
+        expect(args).toContain('ART_CODEX_AUTH_MODE=host-managed');
+        // Default network is host → proxy address is loopback.
+        expect(args).toContain(
+          'ART_CODEX_AUTH_PROXY_URL=http://127.0.0.1:3002',
+        );
+        expect(args).toContain('--network=host');
+        // No Anthropic plumbing on the Codex provider path.
+        expect(argsStr).not.toContain('ANTHROPIC_BASE_URL=');
+      },
+    );
   });
 
-  it('allows explicit Codex host-managed auth opt-in', () => {
-    const previousAuthMode = process.env.ART_CODEX_AUTH_MODE;
-    process.env.ART_CODEX_AUTH_MODE = 'host-managed';
-
-    try {
-      const args = buildContainerArgs([], 'art-test-host-managed-provider');
+  it('Codex host-managed under ART_HOST_NETWORK=0 routes via host.docker.internal', () => {
+    withEnv({ ART_CODEX_AUTH_MODE: undefined, ART_HOST_NETWORK: '0' }, () => {
+      const args = buildContainerArgs([], 'art-test-codex-bridge');
 
       expect(args).toContain('ART_CODEX_AUTH_MODE=host-managed');
       expect(args).toContain(
         'ART_CODEX_AUTH_PROXY_URL=http://host.docker.internal:3002',
       );
-    } finally {
-      if (previousAuthMode === undefined) {
-        delete process.env.ART_CODEX_AUTH_MODE;
-      } else {
-        process.env.ART_CODEX_AUTH_MODE = previousAuthMode;
-      }
-    }
+      // No --network=host when bridge mode is forced.
+      expect(args.join(' ')).not.toContain('--network=host');
+    });
+  });
+
+  it('Codex passthrough opt-in suppresses host proxy URL', () => {
+    withEnv({ ART_CODEX_AUTH_MODE: 'passthrough' }, () => {
+      const args = buildContainerArgs([], 'art-test-codex-passthrough');
+
+      expect(args).toContain('ART_CODEX_AUTH_MODE=passthrough');
+      // Passthrough doesn't speak to the host proxy at all — the
+      // codex binary reads the real auth.json off the mounted
+      // session dir directly.
+      expect(args.join(' ')).not.toContain('ART_CODEX_AUTH_PROXY_URL=');
+    });
+  });
+
+  it('Codex host-managed (default) does NOT bind-mount host auth.json into container', async () => {
+    const fsModule = await import('fs');
+    const codexAuthModule = await import('../../src/codex-auth.js');
+    const mockedFs = vi.mocked(fsModule.default);
+    const mockedEnsureAuth = vi.mocked(codexAuthModule.ensureCodexSessionAuth);
+
+    await withEnv({ ART_CODEX_AUTH_MODE: undefined }, async () => {
+      // Pretend a stale auth.json was left over from a previous
+      // run so we can observe the host-managed cleanup path.
+      mockedFs.existsSync.mockImplementation(
+        (p) =>
+          typeof p === 'string' &&
+          p.endsWith('/sessions/test-group/.codex/auth.json'),
+      );
+
+      const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+      // Passthrough copy path must NOT have run.
+      expect(mockedEnsureAuth).not.toHaveBeenCalled();
+      // And the stale token file must have been wiped from the
+      // container-bound session dir.
+      const removedPaths = mockedFs.rmSync.mock.calls.map(([p]) => p as string);
+      expect(removedPaths).toContain(
+        '/tmp/aer-art-test-data/sessions/test-group/.codex/auth.json',
+      );
+
+      mockedFs.existsSync.mockReset();
+      mockedFs.existsSync.mockReturnValue(false);
+      fakeProc.emit('close', 0);
+      await resultPromise;
+    });
+  });
+
+  it('Codex passthrough copies host auth.json into the container-bound session dir', async () => {
+    const codexAuthModule = await import('../../src/codex-auth.js');
+    const mockedEnsureAuth = vi.mocked(codexAuthModule.ensureCodexSessionAuth);
+    const fsModule = await import('fs');
+    const mockedFs = vi.mocked(fsModule.default);
+
+    await withEnv({ ART_CODEX_AUTH_MODE: 'passthrough' }, async () => {
+      const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+      expect(mockedEnsureAuth).toHaveBeenCalledTimes(1);
+      const [authDestDir] = mockedEnsureAuth.mock.calls[0]!;
+      // Target dir is the per-group container-mounted .codex dir.
+      expect(authDestDir).toBe(
+        '/tmp/aer-art-test-data/sessions/test-group/.codex',
+      );
+      // No `rmSync` of auth.json (we WANT it there).
+      const removedAuthFiles = mockedFs.rmSync.mock.calls
+        .map(([p]) => p as string)
+        .filter((p) => p.endsWith('/.codex/auth.json'));
+      expect(removedAuthFiles).toEqual([]);
+
+      fakeProc.emit('close', 0);
+      await resultPromise;
+    });
   });
 
   it('writes stage-local Codex config.toml with external MCP servers', async () => {

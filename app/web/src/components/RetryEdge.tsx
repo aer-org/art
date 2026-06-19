@@ -1,13 +1,15 @@
 /**
- * RetryEdge — custom edge that loops a self-stitch back to a template's
- * entry by arcing BELOW the lane instead of slicing straight through it.
+ * RetryEdge — curved arc for back-edges.
  *
- * Used for `isRetry` edges (typically `fp-filter STAGE_ERROR → fp-init`
- * inside an expanded template). The default bezier edge would draw a
- * line right through the intermediate stages, which reads as a
- * forward transition and visually collides with the success chain.
+ * Used by any edge that PipelineGraph's layout flagged as a back-edge
+ * (source's laid-out x > target's x). Covers:
+ *   - Authored self-stitch (`isRetry` set in data; e.g. fp-filter
+ *     STAGE_ERROR → fp-init inside an expanded shrink-floorplan).
+ *   - Cross-template back-stitch (e.g. ECO_review stitching back to
+ *     shrink-floorplan after the forward chain has already placed
+ *     it earlier). Detected post-layout from dagre x positions.
  *
- * The arc drops to a depth proportional to the horizontal distance
+ * The arc drops to a depth proportional to horizontal distance
  * between source and target so longer back-edges arc further down.
  */
 import { BaseEdge, EdgeLabelRenderer, type EdgeProps } from '@xyflow/react';
@@ -44,8 +46,8 @@ export function RetryEdge({
               fontSize: 10,
               padding: '1px 5px',
               borderRadius: 3,
-              background: 'var(--bg)',
-              color: 'var(--accent)',
+              background: 'var(--graph-bg)',
+              color: '#1a1a1a',
               fontFamily: 'var(--mono)',
               pointerEvents: 'none',
             }}

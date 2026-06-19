@@ -20,7 +20,12 @@ import fs from 'fs';
 import path from 'path';
 
 import { resolveAgentRefs } from './agent-ref.js';
-import type { PipelineStage, PipelineTransition } from './pipeline-types.js';
+import type { PipelineStage } from './pipeline-types.js';
+import {
+  TransitionShapeError,
+  transitionLabel,
+  validateTransitionShape,
+} from './transition-shape.js';
 
 export interface PipelineTemplate {
   name: string;
@@ -83,7 +88,26 @@ export function loadPipelineTemplate(
     resolveAgentRefs(obj.stages, bundleDir);
   }
 
-  return validatePipelineTemplate(parsed, name);
+  const template = validatePipelineTemplate(parsed, name);
+
+  // Validate + synthesize command stages. Script file must exist under
+  // <bundleDir>/scripts/<stage_name>.sh; runtime gets command +
+  // scripts: 'ro' mount the same way base stages do.
+  const scriptsDir = path.join(bundleDir, 'scripts');
+  for (const stage of template.stages) {
+    const stageAny = stage as unknown as Record<string, unknown>;
+    if (stageAny.kind !== 'command') continue;
+    const scriptPath = path.join(scriptsDir, `${stage.name}.sh`);
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(
+        `Template "${name}": command stage "${stage.name}" requires __art__/scripts/${stage.name}.sh`,
+      );
+    }
+    stage.command = `bash /workspace/scripts/${stage.name}.sh`;
+    stage.mounts = { ...stage.mounts, scripts: 'ro' };
+  }
+
+  return template;
 }
 
 /**
@@ -116,14 +140,22 @@ export function validatePipelineTemplate(
   }
 
   // Second pass: scope-check transitions now that all stage names are known.
+  // `next` may be a string or an array of strings; both forms must reference
+  // stages inside this template (cross-template handoffs go through
+  // `template:`).
   for (const stage of stages) {
     for (const t of stage.transitions) {
-      if (typeof t.next === 'string' && !stageNames.has(t.next)) {
-        const transitionName = t.afterTimeout
-          ? 'afterTimeout'
-          : (t.marker ?? '<missing-marker>');
+      const targets =
+        typeof t.next === 'string'
+          ? [t.next]
+          : Array.isArray(t.next)
+            ? (t.next as string[])
+            : [];
+      for (const target of targets) {
+        if (stageNames.has(target)) continue;
+        const transitionName = transitionLabel(t);
         throw new Error(
-          `Template "${name}": stage "${stage.name}" transition "${transitionName}" — "next" must reference a stage inside this template (got "${t.next}"; use "template" for cross-template handoffs)`,
+          `Template "${name}": stage "${stage.name}" transition "${transitionName}" — "next" must reference a stage inside this template (got "${target}"; use "template" for cross-template handoffs)`,
         );
       }
     }
@@ -176,15 +208,46 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       `Template "${templateName}": stage "${stage.name}" uses unsupported "prompt_append" field; include the text in "prompt"`,
     );
   }
-  let afterTimeoutTransitions = 0;
-  for (const t of stage.transitions) {
-    validateTransitionShape(t, stage.name, templateName);
-    if (t.afterTimeout) afterTimeoutTransitions++;
-  }
-  if (stageAny.kind !== undefined) {
+  if (stageAny.kind !== undefined && stageAny.kind !== 'command') {
     throw new Error(
-      `Template "${templateName}": stage "${stage.name}" uses unsupported "kind" field; omit it and set "command" for command stages`,
+      `Template "${templateName}": stage "${stage.name}" — "kind" must be "command" or omitted (agent stage)`,
     );
+  }
+  const isCommandStage = stageAny.kind === 'command';
+  if (isCommandStage) {
+    if (stage.command !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not author a "command" field`,
+      );
+    }
+    if (stage.prompt !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not author a "prompt" field`,
+      );
+    }
+    if ((stage as { agent?: unknown }).agent !== undefined) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not author an "agent" ref`,
+      );
+    }
+    const reservedMountKey = Object.keys(stage.mounts ?? {}).find(
+      (k) => k === 'scripts' || k.startsWith('scripts:'),
+    );
+    if (reservedMountKey) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — command stages must not declare a "scripts" mount`,
+      );
+    }
+  }
+  if (stage.env) {
+    const reservedEnvKey = Object.keys(stage.env).find((k) =>
+      k.startsWith('ART_'),
+    );
+    if (reservedEnvKey) {
+      throw new Error(
+        `Template "${templateName}": stage "${stage.name}" — env key "${reservedEnvKey}" uses reserved ART_* prefix`,
+      );
+    }
   }
   if (stage.timeout !== undefined) {
     if (!Number.isFinite(stage.timeout) || stage.timeout <= 0) {
@@ -192,7 +255,7 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
         `Template "${templateName}": stage "${stage.name}" has invalid timeout "${String(stage.timeout)}" (must be a positive number of milliseconds)`,
       );
     }
-    if (!stage.command) {
+    if (!isCommandStage) {
       throw new Error(
         `Template "${templateName}": stage "${stage.name}" may only use "timeout" on command stages`,
       );
@@ -208,152 +271,24 @@ function validateStageShape(stage: PipelineStage, templateName: string): void {
       `Template "${templateName}": stage "${stage.name}" cannot author runtime "join" metadata`,
     );
   }
-  if (afterTimeoutTransitions > 0 && !stage.command) {
-    throw new Error(
-      `Template "${templateName}": stage "${stage.name}" may only use "afterTimeout" transitions on command stages`,
-    );
+
+  let afterTimeoutTransitions = 0;
+  for (const t of stage.transitions) {
+    try {
+      validateTransitionShape(t, { isCommandStage });
+    } catch (err) {
+      if (err instanceof TransitionShapeError) {
+        throw new Error(
+          `Template "${templateName}": stage "${stage.name}" transition "${transitionLabel(t)}" — ${err.message}`,
+        );
+      }
+      throw err;
+    }
+    if (t.afterTimeout) afterTimeoutTransitions++;
   }
   if (afterTimeoutTransitions > 1) {
     throw new Error(
       `Template "${templateName}": stage "${stage.name}" may only declare one "afterTimeout" transition`,
-    );
-  }
-}
-
-function validateTransitionShape(
-  t: PipelineTransition,
-  stageName: string,
-  templateName: string,
-): void {
-  if (!t || typeof t !== 'object') {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" has a non-object transition`,
-    );
-  }
-  const tAny = t as unknown as Record<string, unknown>;
-  const transitionName = t.afterTimeout
-    ? 'afterTimeout'
-    : (t.marker ?? '<missing-marker>');
-  if (tAny.retry !== undefined) {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "retry" is no longer supported`,
-    );
-  }
-  if (tAny.next_dynamic !== undefined) {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next_dynamic" is no longer supported`,
-    );
-  }
-  if (t.afterTimeout !== undefined && typeof t.afterTimeout !== 'boolean') {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "afterTimeout" must be a boolean`,
-    );
-  }
-  if (t.afterTimeout) {
-    if (t.marker !== undefined) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "afterTimeout" cannot be combined with "marker"`,
-      );
-    }
-  } else if (typeof t.marker !== 'string' || t.marker.length === 0) {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "marker" is required unless "afterTimeout" is true`,
-    );
-  }
-  if (t.next !== undefined && t.next !== null && typeof t.next !== 'string') {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next" must be a string or null (authored arrays are not allowed)`,
-    );
-  }
-  if (!Object.prototype.hasOwnProperty.call(tAny, 'next')) {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next" is required (use null to end the current template invocation)`,
-    );
-  }
-  const hasNext = t.next === null || typeof t.next === 'string';
-  const hasTemplate = t.template !== undefined;
-  if (!hasNext) {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "next" must be a string or null`,
-    );
-  }
-  if (hasTemplate) {
-    if (typeof t.template !== 'string' || t.template.length === 0) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "template" must be a non-empty string`,
-      );
-    }
-  }
-  if (tAny.count !== undefined) {
-    const c = tAny.count;
-    if (typeof c !== 'number' || !Number.isInteger(c) || c < 1) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "count" must be a positive integer`,
-      );
-    }
-    if (!hasTemplate) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "count" requires "template"`,
-      );
-    }
-  }
-  if (t.countFrom !== undefined) {
-    if (t.countFrom !== 'payload') {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "countFrom" only accepts "payload"`,
-      );
-    }
-    if (!hasTemplate) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "countFrom" requires "template"`,
-      );
-    }
-    if (tAny.count !== undefined) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — must have either "count" or "countFrom", not both`,
-      );
-    }
-  }
-  if (t.substitutionsFrom !== undefined) {
-    if (t.substitutionsFrom !== 'payload') {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "substitutionsFrom" only accepts "payload"`,
-      );
-    }
-    if (t.countFrom !== 'payload') {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "substitutionsFrom" requires "countFrom: \\"payload\\""`,
-      );
-    }
-    if (t.afterTimeout) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "afterTimeout" does not support payload-driven fanout fields`,
-      );
-    }
-  }
-  if (t.joinPolicy !== undefined) {
-    if (
-      t.joinPolicy !== 'all_success' &&
-      t.joinPolicy !== 'any_success' &&
-      t.joinPolicy !== 'all_settled'
-    ) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "joinPolicy" must be one of "all_success", "any_success", or "all_settled"`,
-      );
-    }
-    if (!hasTemplate) {
-      throw new Error(
-        `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "joinPolicy" requires "template"`,
-      );
-    }
-  }
-  if (
-    t.outcome !== undefined &&
-    t.outcome !== 'success' &&
-    t.outcome !== 'error'
-  ) {
-    throw new Error(
-      `Template "${templateName}": stage "${stageName}" transition "${transitionName}" — "outcome" must be "success" or "error"`,
     );
   }
 }
@@ -373,8 +308,14 @@ function assertTemplateInternalAcyclic(
   for (const s of stages) {
     const outgoing = new Set<string>();
     for (const t of s.transitions) {
-      if (typeof t.next === 'string' && stageNames.has(t.next)) {
-        outgoing.add(t.next);
+      const targets =
+        typeof t.next === 'string'
+          ? [t.next]
+          : Array.isArray(t.next)
+            ? (t.next as string[])
+            : [];
+      for (const target of targets) {
+        if (stageNames.has(target)) outgoing.add(target);
       }
     }
     adj.set(s.name, outgoing);

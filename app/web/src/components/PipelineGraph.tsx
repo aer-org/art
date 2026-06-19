@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -246,26 +246,116 @@ function layout(nodes: GraphNode[], edges: GraphEdge[]) {
     }
   }
 
-  const rfEdges: Edge[] = edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    label: e.marker,
-    className: [
-      e.isTemplate ? 'template' : '',
-      e.isRetry ? 'retry' : '',
-      isErrorMarker(e.marker) ? 'marker-error' : '',
-    ]
-      .filter(Boolean)
-      .join(' '),
-    type: e.isRetry ? 'retry' : undefined,
-    animated: false,
-  }));
+  // Visual back-edge detection: any edge whose source sits to the right
+  // of its target in the laid-out graph (sub-dagre for intra-template,
+  // outer dagre otherwise) should arc instead of slicing back through
+  // the row. Catches cross-template back-stitches that the data-level
+  // self-stitch flag can't see, e.g. an ECO_review stage inside one
+  // template that stitches back to an earlier template's entry.
+  const backEdgeIds = new Set<string>();
+  for (const e of edges) {
+    const srcTpl = idToTpl.get(e.source);
+    const tgtTpl = idToTpl.get(e.target);
+    let sX: number | undefined;
+    let tX: number | undefined;
+    if (srcTpl && srcTpl === tgtTpl) {
+      const sp = subPositions.get(e.source);
+      const tp = subPositions.get(e.target);
+      sX = sp?.x;
+      tX = tp?.x;
+    } else {
+      const sNode = outer.node(outerEndpoint(e.source));
+      const tNode = outer.node(outerEndpoint(e.target));
+      sX = sNode?.x;
+      tX = tNode?.x;
+    }
+    if (sX !== undefined && tX !== undefined && sX > tX) {
+      backEdgeIds.add(e.id);
+    }
+  }
+
+  const rfEdges: Edge[] = edges.map((e) => {
+    const isBack = e.isRetry || backEdgeIds.has(e.id);
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.marker,
+      className: [
+        e.isTemplate ? 'template' : '',
+        isBack ? 'retry' : '',
+        isErrorMarker(e.marker) ? 'marker-error' : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      type: isBack ? 'retry' : undefined,
+      animated: false,
+    };
+  });
   return { rfNodes, rfEdges };
 }
 
+// Structural fingerprint of (nodes, edges) that captures everything
+// `layout()` actually reads — id + kind + isStitched/templateName (lane
+// containment) + edge endpoints + marker. *Excludes* status, retryCount,
+// label, error and other per-tick mutations so dagre is not re-run when
+// only a stage's status flipped.
+function layoutFingerprint(nodes: GraphNode[], edges: GraphEdge[]): string {
+  const parts: string[] = [];
+  for (const n of nodes) {
+    parts.push(
+      `${n.id}|${n.kind}|${n.isStitched ? 1 : 0}|${n.templateName ?? ''}`,
+    );
+  }
+  parts.push('§');
+  for (const e of edges) {
+    parts.push(
+      `${e.id}|${e.source}|${e.target}|${e.marker ?? ''}|${e.isRetry ? 1 : 0}|${e.isTemplate ? 1 : 0}`,
+    );
+  }
+  return parts.join('\n');
+}
+
 export function PipelineGraph({ nodes, edges, onNodeClick }: Props) {
-  const { rfNodes, rfEdges } = useMemo(() => layout(nodes, edges), [nodes, edges]);
+  // Cache the previous layout result keyed by the structural fingerprint
+  // above. When only stage status (or any other layout-irrelevant field)
+  // changes, we reuse positions and just swap the live node data onto
+  // the cached ReactFlow nodes — sidestepping dagre's 3-pass hierarchical
+  // layout, which dominated client CPU during a busy run.
+  const layoutCache = useRef<{
+    fp: string;
+    nodesById: Map<string, Node>;
+    rfNodes: Node[];
+    rfEdges: Edge[];
+  } | null>(null);
+
+  const { rfNodes, rfEdges } = useMemo(() => {
+    const fp = layoutFingerprint(nodes, edges);
+    const cache = layoutCache.current;
+    if (cache && cache.fp === fp) {
+      // Same structure → reuse positions. Update each ReactFlow node's
+      // `data.stage` to the latest GraphNode so status / retry / error
+      // re-render, but keep the cached position so ReactFlow doesn't
+      // re-layout.
+      const freshById = new Map(nodes.map((n) => [n.id, n] as const));
+      const rfNodes: Node[] = cache.rfNodes.map((rn) => {
+        const fresh = freshById.get(rn.id);
+        if (!fresh || rn.type !== 'stage') return rn;
+        const data = rn.data as { stage?: GraphNode; revealIndex?: number };
+        if (data.stage === fresh) return rn;
+        return { ...rn, data: { ...data, stage: fresh } };
+      });
+      return { rfNodes, rfEdges: cache.rfEdges };
+    }
+    const result = layout(nodes, edges);
+    layoutCache.current = {
+      fp,
+      nodesById: new Map(result.rfNodes.map((rn) => [rn.id, rn] as const)),
+      rfNodes: result.rfNodes,
+      rfEdges: result.rfEdges,
+    };
+    return result;
+  }, [nodes, edges]);
 
   if (nodes.length === 0) {
     return (
@@ -289,7 +379,7 @@ export function PipelineGraph({ nodes, edges, onNodeClick }: Props) {
         nodesConnectable={false}
         elementsSelectable
       >
-        <Background color="#2a2f3d" gap={20} />
+        <Background color="#c7ccd6" gap={20} />
         <Controls showInteractive={false} />
         <MiniMap
           position="top-left"

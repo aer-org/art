@@ -4,13 +4,22 @@ import { projectState } from '../project-state.ts';
 import { runController } from '../run-controller.ts';
 import { authStatus } from '../preflight.ts';
 
+interface RunBody {
+  model?: string;
+}
+
 export function registerRunRoutes(app: FastifyInstance): void {
-  app.post('/api/run', async (_req, reply) => {
+  app.post<{ Body: RunBody | undefined }>('/api/run', async (req, reply) => {
     const project = projectState.current;
     if (!project) return reply.code(400).send({ error: 'No project loaded.' });
     const auth = authStatus(project.projectDir);
+    const model =
+      typeof req.body?.model === 'string' && req.body.model.length > 0
+        ? req.body.model
+        : undefined;
     const result = runController.start(project.projectDir, {
       skipPreflight: !auth.present,
+      model,
       authWarning: auth.present
         ? undefined
         : 'Claude authentication is not configured. Running with `art run --skip-preflight` so the GUI can show logs; agent stages may fail until Initial Setup is completed.',

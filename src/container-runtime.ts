@@ -175,6 +175,15 @@ function detectProxyBindHost(rt: RuntimeConfig): string {
     return process.env.CREDENTIAL_PROXY_HOST;
   }
 
+  // Host-network mode (now the default): container shares the host's
+  // network namespace so the proxy is reachable on loopback. Same
+  // rationale as udocker.
+  const hostNetworkEnv = process.env.ART_HOST_NETWORK;
+  const hostNetwork =
+    hostNetworkEnv === undefined ||
+    (hostNetworkEnv !== '0' && hostNetworkEnv.toLowerCase() !== 'false');
+  if (hostNetwork) return '127.0.0.1';
+
   // udocker: no network isolation, container uses host network directly
   if (rt.kind === 'udocker') return '127.0.0.1';
 
@@ -680,6 +689,19 @@ export function writableMountArgs(
 export function stopContainer(name: string): string {
   const bin = cachedRuntime?.bin ?? 'docker';
   return `${bin} stop ${name}`;
+}
+
+/**
+ * Stop a single container by name (best-effort). Unlike cleanupRunContainers,
+ * this targets only the named container and never touches sibling stages that
+ * share the run-id label.
+ */
+export function stopSingleContainer(name: string): void {
+  try {
+    execSync(stopContainer(name), { stdio: 'pipe' });
+  } catch {
+    /* already stopped */
+  }
 }
 
 /** Ensure the container runtime is reachable. */

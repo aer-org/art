@@ -184,6 +184,10 @@ export function buildGraph(
       // from. The frontend uses this to wrap the lane in a containment
       // box matching the template-overview style.
       templateName: stageTemplate.get(stage.name),
+      // Authored local name (pre-rename). For base stages this is the
+      // same as `name`; for stitched lanes it's the source-template
+      // stage name, used by the client to look up static config.
+      localName: stage.dispatch?.localName ?? stage.name,
     });
   }
   const nodeIds = new Set(nodes.map((node) => node.id));

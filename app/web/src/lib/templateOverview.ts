@@ -197,6 +197,7 @@ function buildBarrierTable(
   return out;
 }
 
+
 export function buildTemplateOverviewGraph(
   snapshot: PipelineSnapshot,
   expanded: Set<string>,
@@ -233,6 +234,7 @@ export function buildTemplateOverviewGraph(
       status: 'pending',
       isStitched: false,
       isTemplatePlaceholder: false,
+      localName: s.name,
     });
   }
 
@@ -249,6 +251,7 @@ export function buildTemplateOverviewGraph(
         isStitched: true,
         isTemplatePlaceholder: false,
         templateName: tplName,
+        localName: s.name,
       });
     }
   }
@@ -293,6 +296,27 @@ export function buildTemplateOverviewGraph(
   }
 
   // ---- 4) Edges
+  // 4a-base) Plain transitions between base-pipeline stages. Stage
+  // chains like `cleanup → init → summarize` only exist in the base
+  // pipeline (no template), so they aren't picked up by the per-
+  // template or per-barrier loops below. Skip transitions that
+  // already participate in a barrier wiring (template-bearing) since
+  // those are emitted in 4b.
+  for (const s of pipeline.stages ?? []) {
+    for (const t of s.transitions ?? []) {
+      if (t.template) continue; // 4b handles template-bearing transitions
+      const nexts = asArray(t.next);
+      for (const nxt of nexts) {
+        if (!nodeIds.has(nxt)) continue;
+        addEdge({
+          source: s.name,
+          target: nxt,
+          marker: t.marker,
+        });
+      }
+    }
+  }
+
   // 4a) Intra-template stage transitions for every expanded template.
   for (const tplName of expanded) {
     const tpl = templates[tplName];
@@ -336,10 +360,13 @@ export function buildTemplateOverviewGraph(
   for (const b of visibleBarriers.values()) {
     const isOpen = expanded.has(b.template);
 
-    // Spawn edges: one per visible spawn site. A self-stitch (origin
-    // is itself inside template X) loops the lane back to its entry;
-    // tag it so the renderer can route around instead of cutting
-    // through the lane.
+    // Spawn edges: one per visible spawn site. Self-stitch (origin in
+    // the same template) is tagged isRetry up-front since it's a
+    // structural property — RetryEdge then arcs under the lane.
+    // Cross-template back-stitches are detected post-layout in
+    // PipelineGraph (after dagre actually places nodes), since the
+    // template DAG's topological order doesn't always match dagre's
+    // visual order when base-flow and template spawns interleave.
     for (const site of b.spawnSites) {
       if (!nodeIds.has(site.originId)) continue;
       const isRetry = site.scopeOfOrigin === b.template;
@@ -393,12 +420,8 @@ export function buildTemplateOverviewGraph(
   return { nodes, edges };
 }
 
-export function isTemplateStageId(id: string): boolean {
-  return id.startsWith('tpl::');
-}
-
-export function templateOfStageId(id: string): string | null {
-  if (!isTemplateStageId(id)) return null;
-  const m = /^tpl::([^:]+)::/.exec(id);
-  return m ? m[1] : null;
-}
+// Note: the `tpl::<name>::<stage>` id format is an internal unique-key
+// scheme for the overview graph (base stage names can collide with
+// stages inside templates). Consumers must never parse it — read
+// `templateName` and `localName` off the GraphNode itself, both of
+// which are set by every builder.

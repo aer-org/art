@@ -204,7 +204,33 @@ describe('validatePipelineTemplate', () => {
     ).toThrow(/prompt_append/);
   });
 
-  it('rejects authored array next', () => {
+  it('accepts authored array next for heterogeneous fan-out', () => {
+    const t = validatePipelineTemplate(
+      {
+        stages: [
+          {
+            name: 's1',
+            mounts: {},
+            transitions: [{ marker: 'OK', next: ['a', 'b'] }],
+          },
+          {
+            name: 'a',
+            mounts: {},
+            transitions: [{ marker: 'OK', next: null }],
+          },
+          {
+            name: 'b',
+            mounts: {},
+            transitions: [{ marker: 'OK', next: null }],
+          },
+        ],
+      },
+      'tpl',
+    );
+    expect(t.stages[0].transitions[0].next).toEqual(['a', 'b']);
+  });
+
+  it('rejects array next that references stages outside this template', () => {
     expect(() =>
       validatePipelineTemplate(
         {
@@ -212,13 +238,18 @@ describe('validatePipelineTemplate', () => {
             {
               name: 's1',
               mounts: {},
-              transitions: [{ marker: 'OK', next: ['a', 'b'] }],
+              transitions: [{ marker: 'OK', next: ['a', 'ghost'] }],
+            },
+            {
+              name: 'a',
+              mounts: {},
+              transitions: [{ marker: 'OK', next: null }],
             },
           ],
         },
         'tpl',
       ),
-    ).toThrow(/string or null/);
+    ).toThrow(/must reference a stage inside this template.*ghost/);
   });
 
   it('rejects retry field', () => {
@@ -507,7 +538,7 @@ describe('validatePipelineTemplate', () => {
           stages: [
             {
               name: 'lint',
-              command: 'npm run lint',
+              kind: 'command',
               timeout: 30_000,
               mounts: {},
               transitions: [
@@ -564,7 +595,7 @@ describe('validatePipelineTemplate', () => {
           stages: [
             {
               name: 'lint',
-              command: 'npm run lint',
+              kind: 'command',
               mounts: {},
               transitions: [
                 { marker: 'STAGE_ERROR', afterTimeout: true, next: null },

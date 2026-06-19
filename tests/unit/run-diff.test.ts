@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import {
   captureStagePreState,
+  classifyDiffMounts,
   diffStagePostState,
   diffHostBinariesAvailable,
   dirSizeBytes,
@@ -123,6 +124,107 @@ describe('diffHostBinariesAvailable', () => {
     // We expect dev hosts to have both. CI: same. Just assert call works.
     const r = diffHostBinariesAvailable();
     expect(typeof r).toBe('boolean');
+  });
+});
+
+describe('classifyDiffMounts', () => {
+  // groupDir is the project's __art__/ — same convention as cli/run.ts.
+  const groupDir = '/proj/__art__';
+
+  it('resolves a plain art-managed rw mount', () => {
+    const { resolved, skipped } = classifyDiffMounts(
+      { results: 'rw', plan: 'ro' },
+      groupDir,
+    );
+    expect(resolved).toEqual([
+      { name: 'results', hostPath: '/proj/__art__/results' },
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('skips bare `project` (whole tree would include __art__)', () => {
+    const { resolved, skipped } = classifyDiffMounts(
+      { project: 'rw' },
+      groupDir,
+    );
+    expect(resolved).toEqual([]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].key).toBe('project');
+    expect(skipped[0].reason).toMatch(/project mount/);
+  });
+
+  it('resolves a project sub-path to <projectDir>/<sub>', () => {
+    const { resolved, skipped } = classifyDiffMounts(
+      { 'project:reports': 'rw' },
+      groupDir,
+    );
+    expect(resolved).toEqual([
+      { name: 'project__reports', hostPath: '/proj/reports' },
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('resolves a nested project sub-path', () => {
+    const { resolved } = classifyDiffMounts(
+      { 'project:build/outputs': 'rw' },
+      groupDir,
+    );
+    expect(resolved).toEqual([
+      {
+        name: 'project__build__outputs',
+        hostPath: '/proj/build/outputs',
+      },
+    ]);
+  });
+
+  it('skips project sub-paths overlapping __art__', () => {
+    const { resolved, skipped } = classifyDiffMounts(
+      {
+        'project:__art__': 'rw',
+        'project:__art__/something': 'rw',
+        'project:reports': 'rw',
+      },
+      groupDir,
+    );
+    expect(resolved).toEqual([
+      { name: 'project__reports', hostPath: '/proj/reports' },
+    ]);
+    expect(skipped.map((s) => s.key).sort()).toEqual([
+      'project:__art__',
+      'project:__art__/something',
+    ]);
+    for (const s of skipped) expect(s.reason).toMatch(/__art__/);
+  });
+
+  it('skips invalid sub-paths', () => {
+    const { resolved, skipped } = classifyDiffMounts(
+      { 'project:': 'rw', 'project:../escape': 'rw', 'sweep:./.': 'rw' },
+      groupDir,
+    );
+    expect(resolved).toEqual([]);
+    expect(skipped.map((s) => s.key).sort()).toEqual([
+      'project:',
+      'project:../escape',
+      'sweep:./.',
+    ]);
+  });
+
+  it('resolves non-project sub-paths under groupDir', () => {
+    const { resolved } = classifyDiffMounts({ 'sweep:lane-0': 'rw' }, groupDir);
+    expect(resolved).toEqual([
+      { name: 'sweep__lane-0', hostPath: '/proj/__art__/sweep/lane-0' },
+    ]);
+  });
+
+  it('ignores ro / null mounts', () => {
+    const { resolved, skipped } = classifyDiffMounts(
+      { results: 'ro', 'project:src': null, 'project:reports': 'rw' },
+      groupDir,
+    );
+    expect(resolved).toEqual([
+      { name: 'project__reports', hostPath: '/proj/reports' },
+    ]);
+    expect(skipped).toEqual([]);
   });
 });
 

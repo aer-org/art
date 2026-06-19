@@ -11,18 +11,21 @@ Convert a user's plan (free-form text, plan.md, or verbal description) into a **
 
 ```
 <pipeline-name>/
-  pipeline.json              # Orchestration (stages, transitions, mounts) — NO inline prompts
+  pipeline.json              # Orchestration (stages, transitions, mounts) — NO inline prompts, NO command strings
   agents/
     scope-analysis.md        # Agent prompt for the "scope-analysis" stage
     implementation.md        # Agent prompt for the "implementation" stage
     review.md                # ...
+  scripts/
+    git-init.sh              # Shell script for the "git-init" command stage
+    train.sh                 # ...
   templates/
-    experiment.json          # Reusable sub-graph (prompts also stripped)
+    experiment.json          # Reusable sub-graph (prompts and commands also stripped)
   dockerfiles/
     custom-build.Dockerfile  # Custom Dockerfile definitions (optional)
 ```
 
-**Key rule**: keep authored agent instructions out of `pipeline.json` and template JSON. Prefer `agent: "<agent-ref>"` on agent stages, with prompts in `agents/<agent-ref>.md`. Inline `prompt` is still accepted for compatibility/import flows, but generated bundles should keep orchestration (JSON) and instructions (markdown) cleanly decoupled.
+**Key rule**: keep behavior out of `pipeline.json` and template JSON. Agent stages put their prompt in `agents/<ref>.md`; command stages put their shell logic in `scripts/<stage_name>.sh`. The pipeline JSON is pure orchestration: which stages exist, how they connect, what mounts/env they need. The loader rejects any command stage that authors a `command` field, or any stage that uses a reserved (`ART_*`) env key.
 
 ### How it works with the registry
 
@@ -52,9 +55,9 @@ interface PipelineTransition {
 
 interface PipelineStage {
   name: string;
-  agent?: string;                     // Agent prompt ref loaded from agents/<agent>.md; cannot combine with inline prompt
-  prompt?: string;                    // Inline prompt. Avoid in generated bundles; use `agent` for agent stages
-  command?: string;                   // If set, stage is command mode (`sh -c`), not agent mode
+  kind?: "command";                   // Required marker for command stages. Omit (or any other value is rejected) for agent stages.
+  agent?: string;                     // Agent stage: prompt ref loaded from agents/<agent>.md. Mutually exclusive with inline `prompt`.
+  prompt?: string;                    // Agent stage: inline prompt text. Not allowed on `kind: "command"` stages.
   successMarker?: string;             // Command stdout substring that immediately resolves STAGE_COMPLETE
   errorMarker?: string;               // Command stdout substring that immediately resolves STAGE_ERROR
   timeout?: number;                   // Command stages only, milliseconds
@@ -65,12 +68,14 @@ interface PipelineStage {
   gpu?: boolean;
   runAsRoot?: boolean;
   privileged?: boolean;
-  env?: Record<string, string>;
+  env?: Record<string, string>;       // Author env vars. Keys starting with ART_* are reserved by the runtime — rejected at load time.
   devices?: string[];
   exclusive?: string;
-  mcpAccess?: string[];
+  mcpAccess?: string[];               // Agent stages only.
   resumeSession?: boolean;
-  join?: never;                       // Runtime-generated only; never author this
+  // Runtime-only — never author these. The validator rejects any
+  // attempt to set `command` (synthesized from kind + scripts/<name>.sh)
+  // or `join`.
   transitions: PipelineTransition[];
 }
 
@@ -89,12 +94,48 @@ interface PipelineTemplate {      // templates/<name>.json
 
 | | Agent stage | Command stage |
 |---|---|---|
-| Instructions | Prefer `agent: "<ref>"` + `agents/<ref>.md`; inline `prompt` is allowed but avoid for generated bundles | `command`; `prompt` may be omitted or `""` |
-| `command` | Absent or undefined | Shell string (`sh -c`) |
+| Marker | omit `kind` | `kind: "command"` |
+| Instructions | Prefer `agent: "<ref>"` + `agents/<ref>.md`; inline `prompt` is allowed but avoid for generated bundles | A shell script at `__art__/scripts/<stage_name>.sh` — `command` field is **not authored** |
 | `image` | Optional (registry key or omit for default) | Optional (image name or omit for default; choose explicit image when tools are needed) |
-| Execution | Claude/Codex agent with tools | `sh -c <command>`, no agent |
-| Marker emission | Agent prints `[MARKER]` in response | Automatic based on `successMarker`/exit code |
+| Execution | Claude/Codex agent with tools | `bash /workspace/scripts/<name>.sh` (runtime-synthesized; runs under `sh -c`) |
+| Marker emission | Agent prints `[MARKER]` in response | Script prints marker to stdout, or relies on exit code |
 | Transitions | N transitions with custom markers | `STAGE_COMPLETE` + `STAGE_ERROR`, plus optional `afterTimeout` |
+
+#### Command stage authoring
+
+Command stages are authored as:
+- `kind: "command"` in the stage object (required)
+- One shell script per stage at `__art__/scripts/<stage_name>.sh` (required; validator rejects load if missing)
+- **No** `command` field — runtime synthesizes `command: "bash /workspace/scripts/<stage_name>.sh"`
+- **No** `prompt` / `agent` field — command stages have no prompt
+- **No** authored `mounts.scripts` — runtime auto-injects `scripts: "ro"` so the script directory is readable
+- All other stage fields (`image`, `mounts`, `hostMounts`, `successMarker`, `errorMarker`, `timeout`, `env`, `transitions`, …) author as usual
+
+The shell script is the entire stage logic. Templates can reference command stages too — `templates/<tpl>.json` with a `kind: "command"` stage shares the same `__art__/scripts/<stage_name>.sh` file (one script per local stage name; lanes spawned from one template all execute the same script with different `ART_*` env).
+
+#### Runtime ART_* env vars (auto-injected)
+
+Every stage (command and agent) gets a small set of read-only env vars so scripts and prompts can identify which lane they are without authoring `{{x}}` substitution into the `command` field:
+
+| Var | Value |
+|---|---|
+| `ART_STAGE_NAME` | Authored local name (template's stage name, or base stage name) |
+| `ART_INSERT_ID` | `dispatch.invocationId` (e.g. `d_400d365517`); `root` for non-stitched stages |
+| `ART_LANE_INDEX` | `dispatch.copyIndex` as string (`0`, `1`, `2`, …); `0` for non-stitched and `count: 1` lanes |
+| `ART_DISPATCH_NODE_ID` | Full dispatch tree id (`<invocationId>_<index>`); `root` at the top scope |
+
+For payload-driven lanes (`substitutionsFrom: "payload"`), each top-level field of `payload[i]` becomes an additional `ART_<UPPER_KEY>` var. Reserved keys `insertId` / `index` are skipped (already mapped above).
+
+```sh
+#!/usr/bin/env bash
+# __art__/scripts/probe.sh — author per-lane scratch dir
+WORK="/workspace/lane-${ART_INSERT_ID}-${ART_LANE_INDEX}"
+mkdir -p "$WORK"; cd "$WORK"
+python /workspace/scripts-extra/run.py --variant "${ART_VARIANT}" --seed "${ART_SEED}"
+echo '[STAGE_COMPLETE]'
+```
+
+`ART_*` is a **reserved env prefix**. The validator rejects any `env` key starting with `ART_`.
 
 #### Command stage success detection
 
@@ -104,7 +145,7 @@ interface PipelineTemplate {      // templates/<name>.json
 
 Command stages may set `timeout` in milliseconds. If the command times out, an `afterTimeout: true` transition is used when present; otherwise the runner falls back to `STAGE_ERROR`. `afterTimeout` transitions are command-only, cannot also declare `marker`, cannot use payload-driven fanout fields, and each command stage may declare at most one.
 
-Command stages may stitch templates after `STAGE_COMPLETE`/`STAGE_ERROR` transitions just like agent stages. For payload-driven fanout (`countFrom: "payload"`), the command must print a fenced marker payload to stdout using the transition marker, for example `[STAGE_COMPLETE]` followed by `---PAYLOAD_START---...---PAYLOAD_END---`. Prefer exit-code success detection for this pattern; if `successMarker` fires before the complete fenced block is in stdout, stitch runs without a payload and fails.
+Command stages may stitch templates after `STAGE_COMPLETE`/`STAGE_ERROR` transitions just like agent stages. For payload-driven fanout (`countFrom: "payload"`), the script must print a fenced marker payload to stdout using the transition marker, for example `[STAGE_COMPLETE]` followed by `---PAYLOAD_START---...---PAYLOAD_END---`. Prefer exit-code success detection for this pattern; if `successMarker` fires before the complete fenced block is in stdout, stitch runs without a payload and fails.
 
 #### Agent prompt sources
 
@@ -185,23 +226,27 @@ Rule of thumb: pick array `next` for heterogeneous siblings (B and C are differe
 ```
 
 ```jsonc
-// templates/experiment.json
+// templates/experiment.json — `test` is a command stage; its script lives at __art__/scripts/test.sh
 {
   "entry": "build",
   "stages": [
     { "name": "build", "agent": "build", "mounts": {"project": "rw"}, "transitions": [{ "marker": "OK", "next": "test", "prompt": "Build changes are ready to test" }] },
-    { "name": "test", "prompt": "", "command": "npm test", "image": "node:22-slim", "mounts": {"project": "ro"}, "transitions": [{ "marker": "STAGE_COMPLETE", "next": null, "prompt": "Tests passed" }, { "marker": "STAGE_ERROR", "next": null, "prompt": "Tests failed" }] }
+    { "name": "test", "kind": "command", "image": "node:22-slim", "mounts": {"project": "ro"}, "transitions": [{ "marker": "STAGE_COMPLETE", "next": null, "prompt": "Tests passed" }, { "marker": "STAGE_ERROR", "next": null, "prompt": "Tests failed" }] }
   ]
 }
 ```
 
-Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template fields (`prompt`, `mounts`, `hostMounts`, `env`, `image`, `command`, `successMarker`, `errorMarker`, `transitions`). Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`).
+Substitution at stitch-time: `{{insertId}}` and `{{index}}` are available in template stage fields that authors can still write — `prompt`, `mounts` keys, `hostMounts`, `env` values, `image`, `successMarker`, `errorMarker`, `transitions`. Use them for per-instance workdir scoping (e.g. `"mounts": { "lane-{{insertId}}": "rw" }`). For per-lane data inside a command stage's shell script, prefer the `ART_*` env vars (above) over substituting into authored fields — the `command` field is synthesized, not author-substituted.
 
 Rules:
 - `next` is **always required** per transition. Scope-local: reference a stage in the current scope, an array of such names for heterogeneous fan-out, or `null` to end
 - `next` arrays must be non-empty, contain only existing-stage names, have no duplicates, and produce no cycles (DAG enforced at load)
 - `next: [...]` cannot combine with `template:` on the same transition; template stitch and array fan-out are different mechanisms
-- Stage `kind`, `fan_in`, `prompts`, and `prompt_append` are legacy and invalid
+- Stage `kind` must be `"command"` or omitted (agent stage). Legacy values are rejected
+- Command stages (`kind: "command"`) must not author `command`, `prompt`, `agent`, or `mounts.scripts` (runtime synthesizes/injects all four)
+- Command stages require `__art__/scripts/<stage_name>.sh` to exist at load time
+- `env` keys starting with `ART_*` are reserved at the author level (runtime-injected)
+- Stage `fan_in`, `prompts`, and `prompt_append` are legacy and invalid
 - Transition `retry`, `next_dynamic`, and `kind: "dynamic-fanout"` are legacy and invalid
 - `count` requires `template` and must be a positive integer. Stitch synthesizes a join stage; `next: null` edges inside the template return to that join
 - `count` and `countFrom` are mutually exclusive
@@ -298,8 +343,31 @@ Two flavors. Pick the one that matches the shape of the parallel work:
 ```
 
 ### Command stages
-```json
-{ "name": "train", "prompt": "", "command": "python train.py", "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04", "gpu": true, "timeout": 3600000, "mounts": { "project": "ro", "results": "rw" }, "transitions": [{ "marker": "STAGE_COMPLETE", "next": "review", "prompt": "Training completed successfully" }, { "marker": "STAGE_ERROR", "next": null, "prompt": "Training failed" }, { "afterTimeout": true, "next": null }] }
+
+PIPELINE.json — pure config, no command string:
+```jsonc
+{
+  "name": "train",
+  "kind": "command",
+  "image": "nvidia/cuda:12.4.1-devel-ubuntu22.04",
+  "gpu": true,
+  "timeout": 3600000,
+  "mounts": { "project": "ro", "results": "rw" },
+  "transitions": [
+    { "marker": "STAGE_COMPLETE", "next": "review", "prompt": "Training completed successfully" },
+    { "marker": "STAGE_ERROR", "next": null, "prompt": "Training failed" },
+    { "afterTimeout": true, "next": null }
+  ]
+}
+```
+
+`__art__/scripts/train.sh` — all the logic:
+```sh
+#!/usr/bin/env bash
+set -euo pipefail
+cd /workspace/project
+python train.py > /workspace/results/run.log 2>&1
+echo '[STAGE_COMPLETE]'
 ```
 
 ---
@@ -346,16 +414,19 @@ When this skill is invoked:
 
 7. **Write agent prompts** as markdown files following the guidelines above.
 
-8. **Run the checklist** (below).
+8. **Write command scripts** to `<name>/scripts/<stage_name>.sh` — one file per command stage. Use ART_* env vars for per-lane data.
 
-9. **Write the bundle:**
-   - `mkdir -p <name>/agents <name>/templates <name>/dockerfiles`
-   - Write `<name>/pipeline.json` (2-space indent, **no inline prompts** for generated agent stages)
-   - Put `agent: "<agent-ref>"` on each generated agent stage
-   - Write each agent prompt to `<name>/agents/<agent-ref>.md`
-   - Write templates to `<name>/templates/<name>.json` (agent instructions stripped into `agents/`)
-   - Write template agent prompts to `<name>/agents/<agent-ref>.md` as well
-   - Create mount directories under the bundle dir for art-managed keys
+9. **Run the checklist** (below).
+
+10. **Write the bundle:**
+    - `mkdir -p <name>/agents <name>/templates <name>/scripts <name>/dockerfiles`
+    - Write `<name>/pipeline.json` (2-space indent, **no inline prompts** for generated agent stages)
+    - Put `agent: "<agent-ref>"` on each generated agent stage; put `kind: "command"` (and no `command` / `prompt`) on each command stage
+    - Write each agent prompt to `<name>/agents/<agent-ref>.md`
+    - Write each command script to `<name>/scripts/<stage_name>.sh`
+    - Write templates to `<name>/templates/<name>.json` (agent instructions stripped into `agents/`; command logic stripped into `scripts/`)
+    - Write template agent prompts to `<name>/agents/<agent-ref>.md` as well
+    - Create mount directories under the bundle dir for art-managed keys
 
 ---
 
@@ -367,9 +438,12 @@ When this skill is invoked:
 - [ ] Every transition's `next` references an existing stage in the same scope (string form), every entry of an array references an existing stage in the same scope, or `next` is `null`
 - [ ] Array `next` is non-empty, contains no duplicates, and does not appear on a transition that also sets `template`
 - [ ] Every stage has at least one transition
-- [ ] Command stages have `command`, use marker transitions only for `STAGE_COMPLETE`/`STAGE_ERROR`, and choose an explicit `image` when the default image lacks required tools
+- [ ] Command stages have `kind: "command"`, no `command` / `prompt` / `agent` / `mounts.scripts` authored, and a `scripts/<stage_name>.sh` file exists
+- [ ] Command stages use marker transitions only for `STAGE_COMPLETE`/`STAGE_ERROR`, and choose an explicit `image` when the default image lacks required tools
+- [ ] Command scripts read per-lane data via `ART_*` env vars (`ART_STAGE_NAME`, `ART_INSERT_ID`, `ART_LANE_INDEX`, `ART_DISPATCH_NODE_ID`, plus `ART_<UPPER>` for payload-driven lanes), not substitution
+- [ ] No `env` key starts with `ART_` (reserved by the runtime)
 - [ ] Command `timeout` appears only on command stages; `afterTimeout` is command-only, markerless, and declared at most once per stage
-- [ ] Agent stages have no `command` field and define exactly one of `agent` or inline `prompt`
+- [ ] Agent stages have no `kind`, no `command`, and define exactly one of `agent` or inline `prompt`
 - [ ] Generated agent stages use `agent` refs instead of inline `prompt`
 - [ ] Every `agent` ref has a corresponding `agents/<agent-ref>.md` file with non-empty content
 - [ ] Template JSON files also have agent instructions stripped; their agent refs point into `agents/` too

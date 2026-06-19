@@ -29,9 +29,10 @@ describe('scaffoldArtDir', () => {
 
     expect(pipeline.stages).toEqual([]);
 
-    for (const dir of ['agents', 'templates']) {
+    for (const dir of ['agents', 'templates', 'scripts']) {
       expect(fs.existsSync(path.join(artDir, dir))).toBe(true);
     }
+    expect(fs.existsSync(path.join(artDir, 'scripts', '.gitkeep'))).toBe(true);
     for (const dir of [
       'logs',
       'plan',

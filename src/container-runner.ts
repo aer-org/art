@@ -50,6 +50,7 @@ import { ensureCodexSessionAuth } from './codex-auth.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import type { ResolvedExternalMcpServer } from './mcp-registry.js';
+import { TailBuffer } from './tail-buffer.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -94,12 +95,20 @@ interface VolumeMount {
 type AgentProvider = 'claude' | 'codex';
 
 function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
-  // Host-managed auth requires containers to reach a host-side proxy, which can
-  // be blocked by local firewall policy. Keep passthrough as the safe default
-  // and allow explicit opt-in where the proxy path is known to work.
-  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
-    ? 'host-managed'
-    : 'passthrough';
+  // Host-managed mirrors Claude's credential-proxy pattern: the
+  // container never sees the real OAuth token — codex-engine inside
+  // the container fetches a short-lived login from a host-side proxy
+  // (codex-auth-proxy `/refresh`) at startup. This is the default now
+  // that ART_HOST_NETWORK is default-on; the bridge → host firewall
+  // blocker that originally forced passthrough is gone.
+  //
+  // Set ART_CODEX_AUTH_MODE=passthrough to bind-mount the host's
+  // ~/.codex/auth.json into the container as plaintext (legacy
+  // behavior, weaker isolation — the in-container codex binary can
+  // read the real refresh + access tokens directly off disk).
+  return process.env.ART_CODEX_AUTH_MODE === 'passthrough'
+    ? 'passthrough'
+    : 'host-managed';
 }
 
 function resolveProvider(
@@ -386,6 +395,13 @@ export function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // Plumb the runtime model override (set by `art run --model <id>`)
+  // through to the agent-runner so the SDK / codex query honors it.
+  // Empty string means "use SDK / engine default" — same as unset.
+  if (process.env.ART_MODEL) {
+    args.push('-e', `ART_MODEL=${process.env.ART_MODEL}`);
+  }
+
   // User-defined environment variables ($VAR references resolved from host env)
   if (env) {
     for (const [key, value] of Object.entries(env)) {
@@ -404,11 +420,25 @@ export function buildContainerArgs(
     }
   }
 
+  // Host-network mode is the default: routes the credential / codex
+  // auth proxy via 127.0.0.1 instead of relying on docker0 →
+  // host.docker.internal, which silently breaks on Linux distros
+  // (RHEL/Rocky and similar) that ship with a restrictive iptables
+  // FORWARD policy. Set `ART_HOST_NETWORK=0` (or `false`) to opt back
+  // into bridge networking on environments where host network is
+  // undesirable (port collisions, multi-tenant boxes, etc.).
+  const hostNetworkEnv = process.env.ART_HOST_NETWORK;
+  const hostNetwork =
+    hostNetworkEnv === undefined ||
+    (hostNetworkEnv !== '0' && hostNetworkEnv.toLowerCase() !== 'false');
+  const proxyHost = hostNetwork ? '127.0.0.1' : rt.hostGateway;
+  if (hostNetwork) args.push('--network=host');
+
   if (provider === 'claude') {
     // Route API traffic through the credential proxy (containers never see real secrets)
     args.push(
       '-e',
-      `ANTHROPIC_BASE_URL=http://${rt.hostGateway}:${getCredentialProxyPort()}`,
+      `ANTHROPIC_BASE_URL=http://${proxyHost}:${getCredentialProxyPort()}`,
     );
 
     // Mirror the host's auth method with a placeholder value.
@@ -425,13 +455,15 @@ export function buildContainerArgs(
     if (resolveCodexAuthMode() === 'host-managed') {
       args.push(
         '-e',
-        `ART_CODEX_AUTH_PROXY_URL=http://${rt.hostGateway}:${getCodexAuthProxyPort()}`,
+        `ART_CODEX_AUTH_PROXY_URL=http://${proxyHost}:${getCodexAuthProxyPort()}`,
       );
     }
   }
 
-  // Runtime-specific args for host gateway resolution
-  args.push(...hostGatewayArgs());
+  // Runtime-specific args for host gateway resolution. Host network
+  // mode already shares the host's network namespace, so the
+  // --add-host stanza is unnecessary (and noisy in `docker run` args).
+  if (!hostNetwork) args.push(...hostGatewayArgs());
 
   // Podman rootless: --userns=keep-id handles UID mapping, skip --user
   if (rt.kind === 'podman' && rt.rootless) {
@@ -518,6 +550,12 @@ export async function runContainerAgent(
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   logStream?: fs.WriteStream,
+  // Optional per-stage tees of raw container stdout / stderr. Caller
+  // owns lifecycle (open before spawn, close after exit). Unlike
+  // `logStream` these get raw chunks with no `[stage] ` prefix, so a
+  // future reader sees exactly what the container wrote.
+  stdoutStream?: fs.WriteStream,
+  stderrStream?: fs.WriteStream,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
   const provider = resolveProvider(group, input.provider);
@@ -597,10 +635,45 @@ export async function runContainerAgent(
 
     onProcess(container, containerName);
 
-    let stdout = '';
-    let stderr = '';
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
+    // Ring-buffered tails of stdout / stderr. Caps total heap held by
+    // the runner at CONTAINER_MAX_OUTPUT_SIZE bytes each; older content
+    // is dropped from the head as new chunks arrive. The disk archive
+    // (stdoutStream / stderrStream / logStream) is the canonical full
+    // transcript — these tails exist only for marker parsing and the
+    // error-tail snippet returned in ContainerOutput.error.
+    const stdoutBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+    const stderrBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+
+    // Backpressure: if any downstream stream's write() returns false,
+    // pause the container's stdout/stderr until every stalled writer
+    // emits 'drain'. Without this the Node-level write queue grows
+    // unbounded when the consumer (disk, SSE bridge) is slow.
+    let stdoutStalled = 0;
+    let stderrStalled = 0;
+    const noteStdoutWrite = (
+      stream: NodeJS.WritableStream,
+      ok: boolean,
+    ): void => {
+      if (ok) return;
+      stdoutStalled++;
+      if (stdoutStalled === 1) container.stdout!.pause();
+      stream.once('drain', () => {
+        stdoutStalled--;
+        if (stdoutStalled === 0) container.stdout!.resume();
+      });
+    };
+    const noteStderrWrite = (
+      stream: NodeJS.WritableStream,
+      ok: boolean,
+    ): void => {
+      if (ok) return;
+      stderrStalled++;
+      if (stderrStalled === 1) container.stderr!.pause();
+      stream.once('drain', () => {
+        stderrStalled--;
+        if (stderrStalled === 0) container.stderr!.resume();
+      });
+    };
 
     // Stream container output to external log if provided
     if (logStream) {
@@ -632,6 +705,8 @@ export async function runContainerAgent(
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
+      if (stdoutStream)
+        noteStdoutWrite(stdoutStream, stdoutStream.write(chunk));
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,
@@ -639,23 +714,10 @@ export async function runContainerAgent(
           logRemainder,
         );
         logRemainder = remainder;
-        if (prefixed) logStream.write(prefixed);
+        if (prefixed) noteStdoutWrite(logStream, logStream.write(prefixed));
       }
 
-      // Always accumulate for logging
-      if (!stdoutTruncated) {
-        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
-        if (chunk.length > remaining) {
-          stdout += chunk.slice(0, remaining);
-          stdoutTruncated = true;
-          logger.warn(
-            { group: group.name, size: stdout.length },
-            'Container stdout truncated due to size limit',
-          );
-        } else {
-          stdout += chunk;
-        }
-      }
+      stdoutBuf.append(chunk);
 
       // Stream-parse for output markers
       if (onOutput) {
@@ -693,6 +755,8 @@ export async function runContainerAgent(
 
     container.stderr.on('data', (data) => {
       const chunk = data.toString();
+      if (stderrStream)
+        noteStderrWrite(stderrStream, stderrStream.write(chunk));
       if (logStream) {
         const { prefixed, remainder } = prefixLogLines(
           chunk,
@@ -700,7 +764,7 @@ export async function runContainerAgent(
           logStderrRemainder,
         );
         logStderrRemainder = remainder;
-        if (prefixed) logStream.write(prefixed);
+        if (prefixed) noteStderrWrite(logStream, logStream.write(prefixed));
       }
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
@@ -708,18 +772,7 @@ export async function runContainerAgent(
       }
       // Don't reset timeout on stderr — SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
-      if (stderrTruncated) return;
-      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
-      if (chunk.length > remaining) {
-        stderr += chunk.slice(0, remaining);
-        stderrTruncated = true;
-        logger.warn(
-          { group: group.name, size: stderr.length },
-          'Container stderr truncated due to size limit',
-        );
-      } else {
-        stderr += chunk;
-      }
+      stderrBuf.append(chunk);
     });
 
     let timedOut = false;
@@ -840,6 +893,14 @@ export async function runContainerAgent(
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
       const isVerbose =
         process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
+
+      // Materialize tails once for the close-time consumers (debug log
+      // file, error message, marker-pair parser). The disk archive has
+      // the full content; these strings are only the recent tail.
+      const stdout = stdoutBuf.toString();
+      const stderr = stderrBuf.toString();
+      const stdoutTruncated = stdoutBuf.truncated;
+      const stderrTruncated = stderrBuf.truncated;
 
       const logLines = [
         `=== Container Run Log ===`,

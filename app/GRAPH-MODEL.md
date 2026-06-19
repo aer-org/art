@@ -14,10 +14,10 @@ One graph model for two surfaces:
    actual dispatch state. Barriers exist as concrete runtime objects with
    status, settlements, ownerNodeId.
 2. **Template overview** (Live page when no run is active,
-   `buildTemplateOverview` + client-side expansion): renders the *space*
-   of possible flows declared by `PIPELINE.json` + `templates/*.json`,
-   independent of any run. Barriers are *synthesized* from the static
-   template structure.
+   `buildTemplateOverviewGraph` in `app/web/src/lib/templateOverview.ts`,
+   client-side only): renders the *space* of possible flows declared
+   by `PIPELINE.json` + `templates/*.json`, independent of any run.
+   Barriers are *synthesized* from the static template structure.
 
 Both views render the same topology. The only difference is whether
 barriers carry runtime metadata (status, settlements) or only structural
@@ -196,9 +196,11 @@ Steps:
      base spawns always carry an explicit `next`).
    - Skip self-cascades.
 
-Server-side `buildTemplateOverview` (still around for snapshot
-fallback) currently emits the legacy pill-based collapsed view; the
-client overrides it whenever `snapshot.templates` is available.
+The template-overview graph is built entirely on the client. The
+server snapshot ships `pipeline` + `templates` and an empty graph in
+overview mode; `buildTemplateOverviewGraph` consumes them and rebuilds
+the graph in response to per-template expansion toggles without a
+round-trip.
 
 Live-run `buildGraph` implements the same node/edge shape: every
 spawn site emits `origin → child.entryStage` directly, the barrier

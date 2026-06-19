@@ -3,15 +3,48 @@ import type { FastifyInstance } from 'fastify';
 import { debugStats } from '../debug-stats.ts';
 import { projectState } from '../project-state.ts';
 import { buildGraph } from '../pipeline-graph.ts';
-import {
-  buildTemplateOverview,
-  collectReferencedTemplates,
-} from '../pipeline-template-overview.ts';
+import { collectReferencedTemplates } from '../pipeline-template-overview.ts';
 import { readPipelineStateForRun } from '../run-reader.ts';
 import { runController } from '../run-controller.ts';
-import type { NodeLogLine, PipelineState } from '../types.ts';
+import type {
+  Graph,
+  NodeLogLine,
+  PipelineConfig,
+  PipelineState,
+} from '../types.ts';
 
 const RUN_STARTING_CLOCK_SKEW_MS = 1000;
+
+// Per-mode single-entry caches keyed by the inputs that actually drive
+// the output. pipeline-watcher's readCachedJson preserves object
+// identity for unchanged files, so identity comparison here is exact
+// enough — every member of `key` is the same reference across SSE
+// broadcasts when the underlying inputs haven't changed.
+//
+// Without this, every connected client recomputed buildGraph (~hundreds
+// of stages worst case) on every chokidar-driven snapshot tick. With
+// multiple tabs open during a long run this was the dominant CPU draw
+// on the server side.
+type LiveGraphKey = readonly [
+  PipelineConfig | null,
+  PipelineState | null,
+  boolean, // isRunning
+  boolean, // isRunStarting
+  number | null, // activeRunStartedAt
+];
+let liveGraphCache: { key: LiveGraphKey; value: Graph } | null = null;
+
+type OverviewKey = readonly [PipelineConfig | null, string];
+let templatesCache: {
+  key: OverviewKey;
+  value: ReturnType<typeof collectReferencedTemplates>;
+} | null = null;
+
+function keysEqual<T extends readonly unknown[]>(a: T, b: T): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 function stateCatchesRunStart(
   state: { lastUpdated?: unknown } | null | undefined,
@@ -34,7 +67,23 @@ export function registerStateRoutes(app: FastifyInstance): void {
     debugStats.sseConnections += 1;
     debugStats.sseTotalConnections += 1;
 
+    // Drop high-volume log events while the socket's write queue is
+    // already saturated. A busy run can emit ~80 000 run-log / node-log
+    // lines in 70 s — far faster than a typical client can drain — and
+    // queueing them all has been observed to push server RSS to multi-
+    // GB. The disk archive (stages/<n>/stdout.log, agent stream log)
+    // is the canonical record; the next snapshot tick brings the
+    // client back to a consistent view.
+    //
+    // Critical events (snapshot, run-exit, run-log-reset, run-starting)
+    // are always sent — they're rare and convey state transitions that
+    // can't be inferred from missed log lines.
+    const DROPPABLE = new Set(['run-log', 'node-log']);
     const send = (event: string, data: unknown) => {
+      if (DROPPABLE.has(event) && reply.raw.writableNeedDrain) {
+        debugStats.sseWritesBackpressured += 1;
+        return;
+      }
       const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
       debugStats.sseWritesTotal += 1;
       const ok = reply.raw.write(payload);
@@ -82,22 +131,50 @@ export function registerStateRoutes(app: FastifyInstance): void {
               liveRunId,
             ) as PipelineState | null) ?? snap.state)
           : snap.state;
-      const graph = showLive
-        ? buildGraph(snap.pipeline, liveState, {
+      let graph: Graph;
+      if (showLive) {
+        const activeStartedAt =
+          activeRun?.startedAt ??
+          (isRunStarting ? (runStarting?.startedAt ?? null) : null) ??
+          null;
+        const key: LiveGraphKey = [
+          snap.pipeline,
+          liveState,
+          isRunning,
+          isRunStarting,
+          activeStartedAt,
+        ] as const;
+        if (liveGraphCache && keysEqual(liveGraphCache.key, key)) {
+          graph = liveGraphCache.value;
+        } else {
+          graph = buildGraph(snap.pipeline, liveState, {
             isRunning,
             isRunStarting,
-            activeRunStartedAt:
-              activeRun?.startedAt ??
-              (isRunStarting ? runStarting?.startedAt : null) ??
-              null,
-          })
-        : buildTemplateOverview(snap.pipeline, project.artDir);
-      // Ship raw template files alongside the overview so the client can
-      // inline-expand a template without a server round-trip. Skipped in
-      // live mode (graph already contains per-stage detail).
-      const templates = showLive
-        ? undefined
-        : collectReferencedTemplates(snap.pipeline, project.artDir);
+            activeRunStartedAt: activeStartedAt,
+          });
+          liveGraphCache = { key, value: graph };
+        }
+      } else {
+        // Overview mode: the client (web/src/lib/templateOverview.ts)
+        // builds the graph from snapshot.pipeline + snapshot.templates.
+        // Server doesn't ship a duplicate.
+        graph = { nodes: [], edges: [] };
+      }
+      // Ship raw template files in both modes. Overview needs them for
+      // inline-expansion; Live needs them so the inspector can resolve
+      // authored config for stitched-lane stages (the post-stitch graph
+      // exposes templateName + localName but not the underlying template
+      // body, which is what L2/L3 actually render for un-executed lanes).
+      let templates: ReturnType<typeof collectReferencedTemplates> | undefined;
+      {
+        const key: OverviewKey = [snap.pipeline, project.artDir] as const;
+        if (templatesCache && keysEqual(templatesCache.key, key)) {
+          templates = templatesCache.value;
+        } else {
+          templates = collectReferencedTemplates(snap.pipeline, project.artDir);
+          templatesCache = { key, value: templates };
+        }
+      }
       send('snapshot', {
         projectDir: project.projectDir,
         pipeline: snap.pipeline,

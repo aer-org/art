@@ -12,6 +12,9 @@
   --bad: #ef4444;
   --pending: #4a5568;
   --running: #3b82f6;
+  /* Graph canvas: light so dark nodes stay visible when zoomed out. */
+  --graph-bg: #eef1f5;
+  --graph-dots: #c7ccd6;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -47,10 +50,14 @@ input, textarea {
 
 .app-root {
   display: grid;
-  grid-template-columns: minmax(360px, 40%) 1fr;
+  grid-template-columns: minmax(360px, 40%) 28px 1fr;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns 180ms ease-out;
+}
+.app-root.chat-collapsed {
+  grid-template-columns: 0 28px 1fr;
 }
 
 .left-pane, .right-pane {
@@ -60,6 +67,50 @@ input, textarea {
   border-right: 1px solid var(--border);
 }
 .right-pane { border-right: none; }
+
+/* Keep ChatPanel mounted but hidden when collapsed so useChat state
+   (chatId, messages, draft) survives the toggle. */
+.app-root.chat-collapsed .left-pane {
+  visibility: hidden;
+}
+
+.chat-toggle-bar {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 0;
+  gap: 12px;
+}
+.chat-toggle-bar button {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.chat-toggle-bar button:hover {
+  background: var(--panel-2);
+}
+.chat-toggle-bar .label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+  white-space: nowrap;
+}
 
 .banner {
   background: var(--bad);
@@ -95,6 +146,20 @@ input, textarea {
   color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 0;
+}
+.run-bar .model-select {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+  max-width: 140px;
+}
+.run-bar .model-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .status-dot {
   width: 10px;
@@ -185,11 +250,11 @@ input, textarea {
   font-weight: 700;
   margin-bottom: 4px;
 }
-.stage-node.success { border-color: var(--good); background: rgba(34,197,94,0.1); }
+.stage-node.success { border-color: var(--good); background: #18271f; }
 .stage-node.success::before { content: "✓ DONE"; display: block; font-size: 9px; letter-spacing: 0; font-weight: 700; color: var(--good); margin-bottom: 4px; }
 .stage-node.error {
   border-color: var(--bad);
-  background: rgba(239,68,68,0.15);
+  background: #3a2228;
   box-shadow: 0 0 0 4px rgba(239,68,68,0.35), 0 0 28px rgba(239,68,68,0.75);
 }
 .stage-node.error::before { content: "✗ FAILED"; display: block; font-size: 9px; letter-spacing: 0; font-weight: 700; color: var(--bad); margin-bottom: 4px; }
@@ -809,7 +874,7 @@ input, textarea {
 }
 
 /* React Flow tweaks */
-.react-flow__background { background: var(--bg); }
+.react-flow__background { background: var(--graph-bg); }
 .react-flow__edge-path { stroke: var(--fg-dim); stroke-width: 1.5; }
 .react-flow__edge.template .react-flow__edge-path { stroke-dasharray: 6 4; }
 .react-flow__edge.retry .react-flow__edge-path {
@@ -971,14 +1036,14 @@ input, textarea {
  * curve glances past a node. dagre already reserves rank-space for the
  * label, but the pill is a safety net for edges that cross diagonally. */
 .react-flow__edge-textbg {
-  fill: var(--bg);
+  fill: var(--graph-bg);
   rx: 3;
   ry: 3;
 }
 .react-flow__edge-text {
   font-family: var(--mono);
   font-size: 10px;
-  fill: var(--fg-dim);
+  fill: #1a1a1a;
 }
 .react-flow__attribution { display: none; }
 
@@ -1473,11 +1538,11 @@ input, textarea {
 .inspector .react-flow__edge-text {
   font-family: var(--mono);
   font-size: 10px;
-  fill: var(--fg-dim);
+  fill: #1a1a1a;
   letter-spacing: 0.04em;
 }
 .inspector .react-flow__edge-textbg {
-  fill: var(--panel);
+  fill: var(--graph-bg);
 }
 
 /* --- StageSidebar (L2) --------------------------------------------- */
@@ -1727,6 +1792,17 @@ input, textarea {
   word-break: break-word;
   max-height: none;
 }
+
+/* Shell-script token highlighting (L3CommandViewer) */
+.l3-sh .sh-shebang { color: #7c8aa3; font-style: italic; }
+.l3-sh .sh-comment { color: #6b7384; font-style: italic; }
+.l3-sh .sh-string  { color: #98c379; }
+.l3-sh .sh-var     { color: #5b8def; }
+.l3-sh .sh-keyword { color: #c678dd; font-weight: 600; }
+.l3-sh .sh-builtin { color: #e5c07b; }
+.l3-sh .sh-op      { color: #56b6c2; }
+.l3-sh .sh-number  { color: #d19a66; }
+.l3-sh .sh-plain   { color: var(--fg); }
 
 /* Markdown render for prompt / initial-handoff viewers */
 .l3-md {

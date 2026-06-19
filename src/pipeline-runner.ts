@@ -12,7 +12,11 @@ import { createHash } from 'crypto';
 
 import { spawn } from 'child_process';
 
-import { CONTAINER_IMAGE, getDataDir } from './config.js';
+import {
+  CONTAINER_IMAGE,
+  CONTAINER_MAX_OUTPUT_SIZE,
+  getDataDir,
+} from './config.js';
 import {
   buildContainerArgs,
   ContainerOutput,
@@ -42,6 +46,8 @@ import {
   resolveStageMcpServers,
 } from './mcp-registry.js';
 import { loadPipelineTemplate } from './pipeline-template.js';
+import { mergeStageEnv } from './stage-env.js';
+import { TailBuffer } from './tail-buffer.js';
 import {
   assertNoNameCollision,
   buildStitchInvocation,
@@ -158,6 +164,9 @@ function getExclusiveLock(key: string): ExclusiveLock {
 interface StageHandle {
   name: string;
   ipc: StageIpcEndpoint;
+  // Name of the spawned container, captured via onProcess. Used to stop just
+  // this stage's container on a close timeout without tearing down siblings.
+  containerName: string | null;
   containerPromise: Promise<ContainerOutput>;
   outboundPoller: NodeJS.Timeout | null;
   pendingResult: {
@@ -169,6 +178,14 @@ interface StageHandle {
   // rw mount set used for it. Consumed at stage completion to produce diffs.
   preStateDir: string | null;
   rwMounts: { name: string; hostPath: string }[];
+  // Per-stage raw stdout / stderr tees so the visualizer can show
+  // what the container actually wrote, separate from the prefixed
+  // shared pipeline log. Filenames match readStageStream's mapping:
+  //   agent stage → agent.stream.log (no per-stream split: agent process
+  //                                   stdout is unified)
+  //   command stage → stdout.log + stderr.log
+  stageStdoutLog: fs.WriteStream | null;
+  stageStderrLog: fs.WriteStream | null;
 }
 
 function readUserInput(promptText: string): Promise<string> {
@@ -1404,10 +1421,26 @@ PAYLOAD FORMATS:
         );
       }
       if (stageConfig.command) {
-        fs.writeFileSync(
-          path.join(stageDir, 'command.sh'),
-          stageConfig.command,
-        );
+        // For script-only command stages (`kind: 'command'`), the loader
+        // synthesizes `stageConfig.command` as `bash /workspace/scripts/
+        // <localName>.sh`. Archive the actual script body so the run's
+        // L3 viewer + the command-hash provenance reflect what ran, not
+        // the invocation wrapper.
+        let body = stageConfig.command;
+        if ((stageConfig as { kind?: string }).kind === 'command') {
+          const localName = stageConfig.dispatch?.localName ?? stageConfig.name;
+          try {
+            body = fs.readFileSync(
+              path.join(this.bundleDir, 'scripts', `${localName}.sh`),
+              'utf-8',
+            );
+          } catch {
+            // Script missing — fall back to the invocation one-liner so
+            // the archive is non-empty. Validator should have caught this
+            // upstream; keep a soft fallback for in-flight migrations.
+          }
+        }
+        fs.writeFileSync(path.join(stageDir, 'command.sh'), body);
         // Command stages also have shell/timeout/env worth preserving.
         // Kept separate from command.sh so the .sh file is exec-friendly.
         fs.writeFileSync(
@@ -1416,7 +1449,7 @@ PAYLOAD FORMATS:
             {
               shell: 'sh -c',
               timeoutMs: stageConfig.timeout ?? null,
-              env: stageConfig.env ?? {},
+              env: mergeStageEnv(stageConfig),
             },
             null,
             2,
@@ -1649,7 +1682,7 @@ PAYLOAD FORMATS:
         gpu: stageConfig.gpu === true,
         runAsRoot: stageConfig.runAsRoot === true,
         privileged: stageConfig.privileged === true,
-        env: stageConfig.env,
+        env: mergeStageEnv(stageConfig),
         externalMcpServers: resolvedExternalMcpServers,
         internalMounts,
       },
@@ -1690,7 +1723,7 @@ PAYLOAD FORMATS:
             gpu: stageConfig.gpu === true,
             runAsRoot: stageConfig.runAsRoot === true,
             privileged: stageConfig.privileged === true,
-            env: stageConfig.env ?? {},
+            env: mergeStageEnv(stageConfig),
           },
           null,
           2,
@@ -1702,15 +1735,31 @@ PAYLOAD FORMATS:
       );
     }
 
+    // Open per-stage stdout/stderr tees. Command stages get
+    // stdout.log + stderr.log; agent stages get a single
+    // agent.stream.log so the readStageStream("agent") panel finds
+    // it. Streams are closed when the container promise settles.
+    const isCommandStage = !!stageConfig.command;
+    const stageStdoutLog = fs.createWriteStream(
+      path.join(stageDir, isCommandStage ? 'stdout.log' : 'agent.stream.log'),
+      { flags: 'a' },
+    );
+    const stageStderrLog = isCommandStage
+      ? fs.createWriteStream(path.join(stageDir, 'stderr.log'), { flags: 'a' })
+      : null;
+
     const handle: StageHandle = {
       name: stageConfig.name,
       ipc,
+      containerName: null,
       containerPromise: null!,
       outboundPoller: null,
       pendingResult: createDeferred(),
       resultTexts: [],
       preStateDir,
       rwMounts,
+      stageStdoutLog,
+      stageStderrLog,
     };
 
     let outboundDrainRunning = false;
@@ -1850,9 +1899,14 @@ PAYLOAD FORMATS:
           ephemeralSystemPrompt,
           externalMcpServers: resolvedExternalMcpServers,
         },
-        (proc, containerName) => this.onProcess(proc, containerName),
+        (proc, containerName) => {
+          handle.containerName = containerName;
+          this.onProcess(proc, containerName);
+        },
         onOutput,
         logStream,
+        handle.stageStdoutLog ?? undefined,
+        handle.stageStderrLog ?? undefined,
       );
     }
 
@@ -1902,6 +1956,12 @@ PAYLOAD FORMATS:
       .finally(() => {
         this.stopStageOutboundPolling(handle);
         pollOutboundMessages();
+        // Flush + close per-stage stdout / stderr tees. `end()` waits
+        // for the kernel write queue to drain before closing the fd.
+        handle.stageStdoutLog?.end();
+        handle.stageStderrLog?.end();
+        handle.stageStdoutLog = null;
+        handle.stageStderrLog = null;
       });
 
     return handle;
@@ -2007,7 +2067,7 @@ PAYLOAD FORMATS:
       'sh',
       this.runId,
       privileged,
-      stageConfig.env,
+      mergeStageEnv(stageConfig),
       resolveProvider(),
     );
     containerArgs.push('-c', stageConfig.command!);
@@ -2031,13 +2091,54 @@ PAYLOAD FORMATS:
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
+      handle.containerName = containerName;
       this.onProcess(container, containerName);
 
-      let stdout = '';
-      let stderr = '';
+      // Ring-buffered tails — see container-runner.ts. The disk archive
+      // (handle.stageStdoutLog / stageStderrLog / logStream) is the full
+      // transcript; these tails feed the close-time payload scan + the
+      // error tail. Streaming successMarker / errorMarker detection
+      // uses a tiny sliding window (below) instead of materializing the
+      // whole tail on every chunk.
+      const stdoutBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+      const stderrBuf = new TailBuffer(CONTAINER_MAX_OUTPUT_SIZE);
+      const streamingMarkerLen = Math.max(
+        stageConfig.successMarker?.length ?? 0,
+        stageConfig.errorMarker?.length ?? 0,
+      );
+      let streamingSearchTail = '';
       let cmdLogRemainder = '';
       let cmdLogStderrRemainder = '';
       let cmdNotifyRemainder = '';
+      // Backpressure plumbing (mirrors container-runner). When any disk
+      // write returns false we pause the source stream until every
+      // stalled writer emits 'drain'.
+      let cmdStdoutStalled = 0;
+      let cmdStderrStalled = 0;
+      const noteCmdStdoutWrite = (
+        s: NodeJS.WritableStream,
+        ok: boolean,
+      ): void => {
+        if (ok) return;
+        cmdStdoutStalled++;
+        if (cmdStdoutStalled === 1) container.stdout!.pause();
+        s.once('drain', () => {
+          cmdStdoutStalled--;
+          if (cmdStdoutStalled === 0) container.stdout!.resume();
+        });
+      };
+      const noteCmdStderrWrite = (
+        s: NodeJS.WritableStream,
+        ok: boolean,
+      ): void => {
+        if (ok) return;
+        cmdStderrStalled++;
+        if (cmdStderrStalled === 1) container.stderr!.pause();
+        s.once('drain', () => {
+          cmdStderrStalled--;
+          if (cmdStderrStalled === 0) container.stderr!.resume();
+        });
+      };
       // Streaming marker detection: resolve pendingResult as soon as a marker
       // is found in stdout, without waiting for process exit.
       let markerResolved = false;
@@ -2061,19 +2162,25 @@ PAYLOAD FORMATS:
       ) => {
         if (markerResolved || !handle.pendingResult) return;
         markerResolved = true;
-        // On success, scan stdout for a fenced marker payload to forward to
-        // the next stage. Command stages don't emit payload structurally, but
-        // fenced `[MARKER] ... ---PAYLOAD_START--- ... ---PAYLOAD_END---`
-        // blocks in stdout are picked up so a command stage can feed a
-        // downstream payload-driven template fanout.
+        // Scan stdout for a fenced marker payload (`[MARKER] ...
+        // ---PAYLOAD_START--- ... ---PAYLOAD_END---`) and forward it to
+        // the matched transition. This is the channel a command stage
+        // uses to feed a downstream payload-driven template fanout.
+        // Applies to both success and error transitions so a filter
+        // script can exit non-zero AND still hand its lane payload to
+        // a STAGE_ERROR re-stitch. The script's fenced block, when
+        // present, takes precedence over any caller-synthesized
+        // payload (e.g. "Exit code 1: ..."). When no authored
+        // transition matches, fall back to the synthesized one
+        // (STAGE_COMPLETE / STAGE_ERROR) so the marker scan still
+        // covers stages that omit the matching transition.
         let effectivePayload = payload;
-        if (
-          isSuccess &&
-          transition &&
-          !transition.afterTimeout &&
-          effectivePayload === null
-        ) {
-          const parsed = parseStageMarkers([stdout], [transition]);
+        const scanTransition = transition ?? fallback;
+        if (scanTransition && !scanTransition.afterTimeout) {
+          const parsed = parseStageMarkers(
+            [stdoutBuf.toString()],
+            [scanTransition],
+          );
           if (parsed.matched && parsed.payload !== null) {
             effectivePayload = parsed.payload;
           }
@@ -2090,7 +2197,13 @@ PAYLOAD FORMATS:
 
       container.stdout.on('data', (data) => {
         const chunk = data.toString();
-        stdout += chunk;
+        stdoutBuf.append(chunk);
+        if (handle.stageStdoutLog) {
+          noteCmdStdoutWrite(
+            handle.stageStdoutLog,
+            handle.stageStdoutLog.write(chunk),
+          );
+        }
         if (logStream) {
           const { prefixed, remainder } = prefixLogLines(
             chunk,
@@ -2098,7 +2211,9 @@ PAYLOAD FORMATS:
             cmdLogRemainder,
           );
           cmdLogRemainder = remainder;
-          if (prefixed) logStream.write(prefixed);
+          if (prefixed) {
+            noteCmdStdoutWrite(logStream, logStream.write(prefixed));
+          }
         }
 
         // Stream output to the user (prefixed with stage name).
@@ -2115,11 +2230,15 @@ PAYLOAD FORMATS:
           }
         }
 
-        // Streaming marker detection
-        if (!markerResolved) {
+        // Streaming marker detection: search a small sliding window
+        // (last `streamingMarkerLen` bytes of prior tail + this chunk)
+        // so we catch markers that straddle a chunk boundary without
+        // materializing the whole ring buffer per chunk.
+        if (!markerResolved && streamingMarkerLen > 0) {
+          const window = streamingSearchTail + chunk;
           if (
             stageConfig.successMarker &&
-            stdout.includes(stageConfig.successMarker)
+            window.includes(stageConfig.successMarker)
           ) {
             resolveTransition(
               completeTransition,
@@ -2129,7 +2248,7 @@ PAYLOAD FORMATS:
             );
           } else if (
             stageConfig.errorMarker &&
-            stdout.includes(stageConfig.errorMarker)
+            window.includes(stageConfig.errorMarker)
           ) {
             resolveTransition(
               errorTransition,
@@ -2139,12 +2258,19 @@ PAYLOAD FORMATS:
               true,
             );
           }
+          streamingSearchTail = window.slice(-streamingMarkerLen);
         }
       });
 
       container.stderr.on('data', (data) => {
         const chunk = data.toString();
-        stderr += chunk;
+        stderrBuf.append(chunk);
+        if (handle.stageStderrLog) {
+          noteCmdStderrWrite(
+            handle.stageStderrLog,
+            handle.stageStderrLog.write(chunk),
+          );
+        }
         if (logStream) {
           const { prefixed, remainder } = prefixLogLines(
             chunk,
@@ -2152,7 +2278,9 @@ PAYLOAD FORMATS:
             cmdLogStderrRemainder,
           );
           cmdLogStderrRemainder = remainder;
-          if (prefixed) logStream.write(prefixed);
+          if (prefixed) {
+            noteCmdStderrWrite(logStream, logStream.write(prefixed));
+          }
         }
       });
 
@@ -2167,6 +2295,8 @@ PAYLOAD FORMATS:
 
       container.on('close', (code) => {
         clearTimeout(timeout);
+        const stdout = stdoutBuf.toString();
+        const stderr = stderrBuf.toString();
 
         if (logStream) {
           if (cmdLogRemainder)
@@ -2266,12 +2396,20 @@ PAYLOAD FORMATS:
     ]);
     if (settled === 'timeout') {
       logger.warn(
-        { stage: handle.name },
+        { stage: handle.name, containerName: handle.containerName },
         'Stage did not exit in 5s, force-stopping',
       );
+      // Stop ONLY this stage's container. Using the run-wide
+      // cleanupRunContainers here would docker-stop every container sharing
+      // the run-id label — including sibling fan-out lanes that are still
+      // legitimately working and haven't emitted their marker yet, killing
+      // them with SIGKILL (137) and forcing respawns.
       try {
-        const { cleanupRunContainers } = await import('./container-runtime.js');
-        cleanupRunContainers(this.runId);
+        if (handle.containerName) {
+          const { stopSingleContainer } =
+            await import('./container-runtime.js');
+          stopSingleContainer(handle.containerName);
+        }
       } catch {
         /* best effort */
       }

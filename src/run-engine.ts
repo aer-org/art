@@ -35,11 +35,12 @@ function resolveProvider(): 'claude' | 'codex' {
 }
 
 function resolveCodexAuthMode(): 'passthrough' | 'host-managed' {
-  // Host-managed auth requires a container-to-host proxy connection. Default
-  // to passthrough so local firewall policy does not block ordinary runs.
-  return process.env.ART_CODEX_AUTH_MODE === 'host-managed'
-    ? 'host-managed'
-    : 'passthrough';
+  // Default: host-managed (matches container-runner.ts). The bridge →
+  // host firewall blocker that originally forced passthrough is now
+  // bypassed by ART_HOST_NETWORK=1 being the default.
+  return process.env.ART_CODEX_AUTH_MODE === 'passthrough'
+    ? 'passthrough'
+    : 'host-managed';
 }
 
 export async function runPipeline(opts: {
@@ -47,8 +48,9 @@ export async function runPipeline(opts: {
   runId: string;
   artDir: string;
   stage?: string;
+  pipelinePath?: string;
 }): Promise<void> {
-  const { group, runId, artDir, stage } = opts;
+  const { group, runId, artDir, stage, pipelinePath } = opts;
 
   // Initialize container runtime
   await initRuntime();
@@ -108,12 +110,12 @@ export async function runPipeline(opts: {
     console.log(text);
   };
 
-  const loadedConfig = loadPipelineConfig(group.folder);
+  const loadedConfig = loadPipelineConfig(group.folder, groupDir, pipelinePath);
   if (!loadedConfig) {
     console.error(
       formatPipelineConfigLoadError(
         getLastPipelineConfigLoadError(),
-        'PIPELINE.json',
+        pipelinePath ? path.basename(pipelinePath) : 'PIPELINE.json',
       ),
     );
     proxyServer?.close();

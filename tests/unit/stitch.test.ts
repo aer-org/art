@@ -40,6 +40,30 @@ function revertTemplate(): PipelineTemplate {
   };
 }
 
+function fanOutTemplate(): PipelineTemplate {
+  return {
+    name: 'fanout-tpl',
+    entry: 'head',
+    stages: [
+      {
+        name: 'head',
+        mounts: {},
+        transitions: [{ marker: 'OK', next: ['leftLane', 'rightLane'] }],
+      },
+      {
+        name: 'leftLane',
+        mounts: {},
+        transitions: [{ marker: 'OK', next: null }],
+      },
+      {
+        name: 'rightLane',
+        mounts: {},
+        transitions: [{ marker: 'OK', next: null }],
+      },
+    ],
+  };
+}
+
 function substTemplate(): PipelineTemplate {
   return {
     name: 'subst-tpl',
@@ -135,6 +159,27 @@ describe('buildStitchInvocation', () => {
       stageName('revert-tpl', 0, 'rebuild'),
     );
     expect(stages[1].transitions[0].next).toBeNull();
+  });
+
+  it('renames every entry of an authored array next during stitch rewire', () => {
+    const result = buildStitchInvocation({
+      originStage: 'review',
+      originTransitionIdx: 1,
+      template: fanOutTemplate(),
+      downstreamNext: 'finalize',
+      joinPolicy: 'all_success',
+      parentDispatchNodeId: ROOT_DISPATCH_NODE_ID,
+      mode: 'single',
+    });
+
+    const stages = result.children[0].config.stages;
+    const head = stages.find(
+      (s) => s.name === stageName('fanout-tpl', 0, 'head'),
+    )!;
+    expect(head.transitions[0].next).toEqual([
+      stageName('fanout-tpl', 0, 'leftLane'),
+      stageName('fanout-tpl', 0, 'rightLane'),
+    ]);
   });
 
   it('applies per-copy substitutions to allowed fields', () => {

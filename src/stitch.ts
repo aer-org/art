@@ -277,6 +277,10 @@ function rewireTransitionForNode(
   const out: PipelineTransition = { ...t };
   if (typeof t.next === 'string') {
     out.next = rename(t.next);
+  } else if (Array.isArray(t.next)) {
+    // Heterogeneous fan-out: rename every target so each lane points at the
+    // dispatch-scoped copy of the template's internal stage.
+    out.next = t.next.map(rename);
   } else {
     // Authored `next: null` means this child node has reached its terminal edge.
     out.next = null;

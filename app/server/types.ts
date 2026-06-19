@@ -40,6 +40,10 @@ export interface PipelineStage {
   resumeSession?: boolean;
   fan_in?: 'all';
   transitions?: PipelineTransition[];
+  // Runtime-only dispatch metadata attached to stitched lane stages.
+  // Carries the authored local name (pre dispatch-scope rename) so the
+  // visualizer can look up the source-template config for a lane.
+  dispatch?: { localName?: string; [k: string]: unknown };
   // pass-through anything else
   [extra: string]: unknown;
 }
@@ -123,6 +127,11 @@ export interface GraphNode {
   isStitched: boolean;
   isTemplatePlaceholder: boolean;
   templateName?: string;
+  // For stitched lanes, the authored stage name inside the source
+  // template (before dispatch-scoped rename). Lets the client look up
+  // the static stage config (prompt/command/mounts) for un-executed
+  // lanes — `name`/`id` carry the post-rename identity.
+  localName?: string;
   // Transparency layer (run-detail view only).
   retryCount?: number;
   nodeId?: string; // dispatch node ('root' or 'd_…')

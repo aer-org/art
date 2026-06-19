@@ -34,11 +34,12 @@ function parseSizeLimit(): number {
 async function runArtifactDiffSizeGate(
   artDir: string,
   assumeYes: boolean,
+  pipelineOverride?: string,
 ): Promise<void> {
   const limit = parseSizeLimit();
   const { dirSizeBytes, classifyDiffMounts } = await import('../run-diff.js');
 
-  const pipelinePath = path.join(artDir, 'PIPELINE.json');
+  const pipelinePath = pipelineOverride ?? path.join(artDir, 'PIPELINE.json');
   let stages: {
     name?: string;
     mounts?: Record<string, 'ro' | 'rw' | null | undefined>;
@@ -188,9 +189,48 @@ async function askConfirmation(prompt: string): Promise<boolean> {
   return trimmed === '' || trimmed === 'y' || trimmed === 'yes';
 }
 
+/**
+ * Resolve the --pipeline argument to an absolute pipeline JSON path.
+ * Accepts: an existing path (absolute or relative to cwd), or a bare name
+ * resolved against `<artDir>/pipelines/<name>` then `<artDir>/<name>`, trying
+ * both as-given and with a `.json` suffix. Returns undefined when no pipeline
+ * was requested. Exits with a clear error when the requested file is missing.
+ */
+function resolvePipelinePath(
+  artDir: string,
+  pipeline: string | undefined,
+): string | undefined {
+  if (!pipeline) return undefined;
+  const candidates: string[] = [];
+  const withJson = (p: string) =>
+    p.endsWith('.json') ? [p] : [p, `${p}.json`];
+  // Explicit path (absolute or relative to cwd)
+  if (pipeline.includes('/') || path.isAbsolute(pipeline)) {
+    candidates.push(...withJson(path.resolve(pipeline)));
+  } else {
+    // Bare name: look in __art__/pipelines first, then __art__ itself.
+    candidates.push(...withJson(path.join(artDir, 'pipelines', pipeline)));
+    candidates.push(...withJson(path.join(artDir, pipeline)));
+  }
+  const found = candidates.find((c) => fs.existsSync(c));
+  if (!found) {
+    console.error(
+      `Pipeline "${pipeline}" not found. Looked for:\n` +
+        candidates.map((c) => `  - ${c}`).join('\n'),
+    );
+    process.exit(1);
+  }
+  return found;
+}
+
 export async function run(
   targetDir: string,
-  opts?: { skipPreflight?: boolean; stage?: string; assumeYes?: boolean },
+  opts?: {
+    skipPreflight?: boolean;
+    stage?: string;
+    assumeYes?: boolean;
+    pipeline?: string;
+  },
 ): Promise<void> {
   preflight({ skipProviderCli: opts?.skipPreflight });
 
@@ -205,13 +245,20 @@ export async function run(
     process.exit(1);
   }
 
+  // Resolve an alternative pipeline if --pipeline was given. undefined means
+  // the default __art__/PIPELINE.json is used everywhere downstream.
+  const pipelinePath = resolvePipelinePath(artDir, opts?.pipeline);
+  if (pipelinePath) {
+    console.log(`Using pipeline: ${pipelinePath}`);
+  }
+
   // L1 artifact-diff size gate. We snapshot rw mounts via hardlink-copy
   // before each stage; the temporary space is roughly the modified
   // portion. For mounts that are already very large (multi-GB), warn the
   // user before stage 0 starts so the disk cost isn't a surprise mid-run.
   // Skip entirely if --no-diff is set or no rw mounts are huge.
   if (process.env.ART_NO_DIFF !== '1') {
-    await runArtifactDiffSizeGate(artDir, !!opts?.assumeYes);
+    await runArtifactDiffSizeGate(artDir, !!opts?.assumeYes, pipelinePath);
   }
 
   const { generateRunId } = await import('../run-manifest.js');
@@ -238,6 +285,7 @@ export async function run(
     projectDir,
     artDir,
     ensureImages: true,
+    pipelinePath,
   });
 
   // Pre-pull missing pipeline stage images
@@ -251,7 +299,7 @@ export async function run(
   const { contentHash: computeHash } = await import('../bundle.js');
 
   const bundleDir = artDir;
-  const pipelineConfig = loadPipelineConfig('', artDir);
+  const pipelineConfig = loadPipelineConfig('', artDir, pipelinePath);
   if (pipelineConfig) {
     const rt = getRuntime();
     const registry = loadImageRegistry();
@@ -409,5 +457,6 @@ export async function run(
     runId,
     artDir,
     stage: opts?.stage,
+    pipelinePath,
   });
 }

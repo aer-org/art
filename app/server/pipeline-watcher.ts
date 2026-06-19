@@ -24,6 +24,76 @@ export interface WatchedSnapshot {
 const AGENT_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
+ * Module-scope cache keyed by absolute file path. Each entry remembers
+ * the (mtimeMs, size) under which it was last read and the parsed /
+ * raw value. As long as the file is byte-identical (same mtime + size)
+ * across refreshes, we hand back the *same object reference* — which
+ * lets state.ts memoize `buildGraph` / `collectReferencedTemplates`
+ * with identity comparison instead of hashing the pipeline on every
+ * SSE broadcast.
+ *
+ * False negatives (file rewritten with same content but a new mtime)
+ * just cost one re-parse — correctness is preserved either way.
+ */
+interface FileCacheEntry {
+  mtimeMs: number;
+  size: number;
+  value: unknown;
+}
+const fileCache = new Map<string, FileCacheEntry>();
+
+function readCachedJson<T>(filePath: string): T | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    fileCache.delete(filePath);
+    return null;
+  }
+  const entry = fileCache.get(filePath);
+  if (entry && entry.mtimeMs === stat.mtimeMs && entry.size === stat.size) {
+    return entry.value as T;
+  }
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const value = JSON.parse(raw) as T;
+    fileCache.set(filePath, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      value,
+    });
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function readCachedText(filePath: string): string | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    fileCache.delete(filePath);
+    return null;
+  }
+  const entry = fileCache.get(filePath);
+  if (entry && entry.mtimeMs === stat.mtimeMs && entry.size === stat.size) {
+    return entry.value as string;
+  }
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    fileCache.set(filePath, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      value: raw,
+    });
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Inline agent-ref prompts so the visualizer can render the actual
  * authored text. Mirrors `resolveAgentRefs` in the core runtime but
  * is intentionally read-only and best-effort — a missing or
@@ -40,23 +110,23 @@ function resolveAgentRefsInPlace(
     if (!ref || stage.prompt) continue;
     if (!AGENT_REF_PATTERN.test(ref)) continue;
     const filePath = path.join(artDir, 'agents', `${ref}.md`);
-    try {
-      stage.prompt = fs.readFileSync(filePath, 'utf8');
+    // readCachedText returns the same string instance across refreshes
+    // when the underlying agent file is byte-identical, so the pipeline
+    // object stays byte-identical across refreshes too — letting
+    // identity-based graph caches in state.ts hit.
+    const text = readCachedText(filePath);
+    if (text !== null) {
+      stage.prompt = text;
       (stage as { promptSource?: string }).promptSource = `agents/${ref}.md`;
-    } catch {
-      /* leave prompt empty; UI will render the unresolved ref */
     }
+    /* else leave prompt empty; UI will render the unresolved ref */
   }
 }
 
-function safeParseJson<T>(filePath: string): T | null {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
+// Alias for readability — same caching semantics. Kept around because
+// readRunFolderAsManifest reads small per-run JSON files that become
+// stable after the run is sealed; caching them is a strict win.
+const safeParseJson = readCachedJson;
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -357,20 +427,24 @@ export class PipelineProject extends EventEmitter {
 
     let pipeline: PipelineConfig | null = null;
     let pipelineError: string | undefined;
-    try {
-      const raw = fs.readFileSync(pipelinePath, 'utf8');
-      pipeline = JSON.parse(raw) as PipelineConfig;
-      resolveAgentRefsInPlace(this.artDir, pipeline);
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') pipelineError = 'PIPELINE.json not found';
-      else pipelineError = `Could not parse PIPELINE.json: ${(e as Error).message}`;
+    if (fs.existsSync(pipelinePath)) {
+      pipeline = readCachedJson<PipelineConfig>(pipelinePath);
+      if (pipeline === null) {
+        pipelineError = 'Could not parse PIPELINE.json';
+      } else {
+        // resolveAgentRefsInPlace is idempotent: it skips stages whose
+        // prompt is already set, so re-running it on a cached pipeline
+        // is a no-op after the first call.
+        resolveAgentRefsInPlace(this.artDir, pipeline);
+      }
+    } else {
+      pipelineError = 'PIPELINE.json not found';
     }
 
     const latestRunPath = latestRunDir(runsDir);
     const latestRun = latestRunPath ? readRunFolderAsManifest(latestRunPath) : null;
     const state = latestRunPath
-      ? safeParseJson<PipelineState>(
+      ? readCachedJson<PipelineState>(
           path.join(latestRunPath, 'state', 'PIPELINE_STATE.json'),
         )
       : null;
