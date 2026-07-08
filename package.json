@@ -31,13 +31,13 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/node": "^25.5.0",
+    "@types/node": "^26.1.1",
     "@types/proper-lockfile": "^4.1.4",
     "@vitest/coverage-v8": "^4.1.9",
     "husky": "^9.1.7",
     "prettier": "^3.8.1",
     "tsx": "^4.19.0",
-    "typescript": "^6.0.2",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9"
   },
   "engines": {
